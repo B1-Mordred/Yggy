@@ -44,6 +44,8 @@ services:
     networks:
       - automation_net
       - notify_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       automation-api:
         condition: service_healthy

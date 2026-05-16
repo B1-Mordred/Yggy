@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from html import unescape
 
+from worker.clients.llm_client import OllamaSummarizer
 from worker.clients.rss_client import fetch_rss
 
 
@@ -142,7 +143,11 @@ def render_digest(task_config: dict, items: list[dict], errors: list[dict]) -> s
     return "\n".join(lines)
 
 
-def run_topic_digest(task_config: dict, rss_fetcher: Callable[[str, int], str] = fetch_rss) -> dict:
+def run_topic_digest(
+    task_config: dict,
+    rss_fetcher: Callable[[str, int], str] = fetch_rss,
+    summarizer: OllamaSummarizer | None = None,
+) -> dict:
     policy = task_config.get("policy", {})
     sources = task_config.get("sources", [])
     if policy.get("require_sources", True) and not sources:
@@ -150,12 +155,26 @@ def run_topic_digest(task_config: dict, rss_fetcher: Callable[[str, int], str] =
 
     items, errors = collect_items(task_config, rss_fetcher=rss_fetcher)
     dry_run = task_config.get("runtime", {}).get("dry_run", True)
+    message = render_digest(task_config, items, errors)
+    summary_mode = "deterministic"
+    summary_error = None
+    try:
+        llm_message = (summarizer or OllamaSummarizer()).summarize_digest(task_config, items, errors)
+        if llm_message:
+            message = llm_message
+            summary_mode = "llm"
+    except Exception as exc:
+        summary_error = exc.__class__.__name__
 
-    return {
+    result = {
         "status": "dry_run" if dry_run else "ready",
         "title": task_config.get("name", "Topic digest"),
         "items": items,
         "errors": errors,
-        "message": render_digest(task_config, items, errors),
+        "message": message,
         "source_count": len(sources),
+        "summary_mode": summary_mode,
     }
+    if summary_error:
+        result["summary_error"] = summary_error
+    return result

@@ -5,6 +5,17 @@ import pytest
 from worker.handlers.topic_digest import run_topic_digest
 
 
+class FakeSummarizer:
+    def __init__(self, message: str | None = None, error: Exception | None = None) -> None:
+        self.message = message
+        self.error = error
+
+    def summarize_digest(self, task_config: dict, items: list[dict], errors: list[dict]) -> str | None:
+        if self.error:
+            raise self.error
+        return self.message
+
+
 def test_topic_digest_requires_sources_when_required():
     with pytest.raises(ValueError):
         run_topic_digest({"name": "Digest", "sources": [], "policy": {"require_sources": True}})
@@ -61,3 +72,36 @@ def test_topic_digest_web_query_item_is_data_only():
     )
     assert result["items"][0]["type"] == "web_query"
     assert result["items"][0]["title"] == "Web query configured"
+
+
+def test_topic_digest_uses_enabled_summarizer():
+    result = run_topic_digest(
+        {
+            "name": "Digest",
+            "sources": [{"type": "web_query", "query": "Open WebUI Ollama security"}],
+            "filters": {"include": ["Open WebUI"], "exclude": []},
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True},
+        },
+        summarizer=FakeSummarizer("**Digest**\n\nLLM summary"),
+    )
+
+    assert result["summary_mode"] == "llm"
+    assert result["message"] == "**Digest**\n\nLLM summary"
+
+
+def test_topic_digest_falls_back_when_summarizer_errors():
+    result = run_topic_digest(
+        {
+            "name": "Digest",
+            "sources": [{"type": "web_query", "query": "Open WebUI Ollama security"}],
+            "filters": {"include": ["Open WebUI"], "exclude": []},
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True},
+        },
+        summarizer=FakeSummarizer(error=TimeoutError("slow model")),
+    )
+
+    assert result["summary_mode"] == "deterministic"
+    assert result["summary_error"] == "TimeoutError"
+    assert "Review the dry-run output" in result["message"]
