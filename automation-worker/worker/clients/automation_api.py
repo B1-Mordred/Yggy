@@ -41,6 +41,13 @@ class AutomationApiClient:
         response.raise_for_status()
         return response.json()
 
+    def claim_run(self, run_id: str) -> dict | None:
+        response = httpx.post(f"{self.base_url}/runs/{run_id}/claim", headers=self.headers, timeout=10)
+        if response.status_code == 409:
+            return None
+        response.raise_for_status()
+        return response.json()
+
     def complete_run(self, run_id: str, status: str, log: dict) -> dict:
         response = httpx.patch(
             f"{self.base_url}/runs/{run_id}",

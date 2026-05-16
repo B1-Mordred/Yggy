@@ -745,6 +745,12 @@ def handle_automation_request(user_text: str) -> str | None:
             return 'Which automation task should I run? Give me the task id.'
         status_code, body = automation_request('POST', f'/tasks/{task_id}/run')
         if status_code in {200, 202}:
+            if isinstance(body, dict) and body.get('deduplicated'):
+                return (
+                    f"Run not queued for task `{task_id}` because `{body.get('reason', body.get('status', 'deduplicated'))}`.\n\n"
+                    f"Existing run: `{body.get('run_id')}`\n\n"
+                    f"```json\n{json.dumps(body, indent=2)}\n```"
+                )
             return f"Run queued for task `{task_id}`.\n\n```json\n{json.dumps(body, indent=2)}\n```"
         return f'Automation API returned status `{status_code}` while queueing the run:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 

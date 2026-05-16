@@ -58,3 +58,31 @@ def test_worker_can_list_queued_runs(client):
 
     assert response.status_code == 200
     assert response.json()[0]["id"] == run_id
+
+
+def test_worker_claims_queued_run_once(client):
+    run_id = str(uuid.uuid4())
+    with Session(get_engine()) as session:
+        session.add(RunModel(id=run_id, task_id="worker_task", status="queued", log={"message": "queued"}))
+        session.commit()
+
+    first = client.post(f"/runs/{run_id}/claim", headers=WORKER_HEADERS)
+    second = client.post(f"/runs/{run_id}/claim", headers=WORKER_HEADERS)
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "running"
+    assert first.json()["dry_run"] is False
+    assert second.status_code == 409
+
+
+def test_worker_claim_preserves_dry_run_status(client):
+    run_id = str(uuid.uuid4())
+    with Session(get_engine()) as session:
+        session.add(RunModel(id=run_id, task_id="worker_task", status="queued_dry_run", log={"message": "queued"}))
+        session.commit()
+
+    response = client.post(f"/runs/{run_id}/claim", headers=WORKER_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "running_dry_run"
+    assert response.json()["dry_run"] is True

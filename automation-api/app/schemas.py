@@ -194,3 +194,7 @@ class RunUpdate(BaseModel):
     status: str
     log: dict[str, Any] = Field(default_factory=dict)
     completed: bool = True
+
+
+class TaskRunRequest(BaseModel):
+    force: bool = False

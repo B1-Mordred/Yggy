@@ -22,6 +22,7 @@ class Settings:
     discord_channel_briefings: str = ""
     discord_channel_alerts: str = ""
     discord_channel_approvals: str = ""
+    run_dedupe_seconds: int = 300
     version: str = "0.1.0"
 
 
@@ -50,4 +51,5 @@ def get_settings() -> Settings:
         discord_channel_briefings=os.getenv("DISCORD_CHANNEL_BRIEFINGS", ""),
         discord_channel_alerts=os.getenv("DISCORD_CHANNEL_ALERTS", ""),
         discord_channel_approvals=os.getenv("DISCORD_CHANNEL_APPROVALS", ""),
+        run_dedupe_seconds=int(os.getenv("AUTOMATION_RUN_DEDUPE_SECONDS", "300")),
     )

@@ -15,16 +15,36 @@ def result_message(config: dict, result: dict) -> str:
     return f"{config.get('name', config.get('id', 'Automation task'))}: {result}"
 
 
-def execute_task(client: AutomationApiClient, task: dict, run_id: str | None = None, run_status: str | None = None) -> dict:
+def execute_task(
+    client: AutomationApiClient,
+    task: dict,
+    run_id: str | None = None,
+    dry_run_override: bool | None = None,
+) -> dict:
     config = task.get("config", task)
     task_id = config["id"]
     dry_run = bool(config.get("runtime", {}).get("dry_run", True))
+    if dry_run_override is not None:
+        dry_run = dry_run_override
     if run_id is None:
         run = client.queue_run(task_id)
+        if run.get("deduplicated"):
+            return {
+                "task_id": task_id,
+                "run_id": run["run_id"],
+                "status": run["status"],
+                "result": {"status": "deduplicated", "reason": run.get("reason")},
+            }
         run_id = run["run_id"]
-        run_status = run.get("status")
-    if run_status == "queued_dry_run":
-        dry_run = True
+        claim = client.claim_run(run_id)
+        if claim is None:
+            return {
+                "task_id": task_id,
+                "run_id": run_id,
+                "status": "claim_conflict",
+                "result": {"status": "skipped", "reason": "run already claimed"},
+            }
+        dry_run = bool(claim.get("dry_run", dry_run))
 
     effective_config = dict(config)
     effective_runtime = dict(effective_config.get("runtime", {}))
@@ -86,7 +106,10 @@ def process_queued_runs(client: AutomationApiClient, tasks: list[dict] | None = 
             continue
         task_id = run["task_id"]
         task = task_index.get(task_id) or client.get_task(task_id)
-        result = execute_task(client, task, run_id=run["id"], run_status=run.get("status"))
+        claim = client.claim_run(run["id"])
+        if claim is None:
+            continue
+        result = execute_task(client, task, run_id=run["id"], dry_run_override=bool(claim.get("dry_run", False)))
         processed_task_ids.add(result["task_id"])
         print(result, flush=True)
     return processed_task_ids

@@ -12,6 +12,8 @@ from app.services.validation_service import redact_secrets
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
+CLAIMABLE_RUN_STATUSES = {"queued", "queued_dry_run"}
+
 
 def run_to_dict(run: RunModel) -> dict:
     return {
@@ -42,6 +44,28 @@ def get_run(
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
     return run_to_dict(run)
+
+
+@router.post("/{run_id}/claim")
+def claim_run(
+    run_id: str,
+    role: ApiRole = Depends(require_roles(ApiRole.ADMIN, ApiRole.WORKER)),
+    session: Session = Depends(get_session),
+) -> dict:
+    run = session.query(RunModel).filter(RunModel.id == run_id).with_for_update().one_or_none()
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
+    if run.status not in CLAIMABLE_RUN_STATUSES or run.completed_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="run is not claimable")
+
+    dry_run = run.status == "queued_dry_run"
+    run.status = "running_dry_run" if dry_run else "running"
+    run.log = redact_secrets({"message": "run claimed", "dry_run": dry_run, "task_id": run.task_id})
+    audit_event(session, role, "run.claim", "run", run.id, {"task_id": run.task_id, "dry_run": dry_run})
+    session.commit()
+    payload = run_to_dict(run)
+    payload["dry_run"] = dry_run
+    return payload
 
 
 @router.patch("/{run_id}")

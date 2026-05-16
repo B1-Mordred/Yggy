@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.audit import audit_event
 from app.auth import ApiRole, require_roles
+from app.config import get_settings
 from app.database import get_session
-from app.models import RunModel, TaskModel
+from app.models import RunModel, TaskModel, utcnow
 from app.policy import PolicyViolation, load_policy, validate_task_policy
-from app.schemas import ApprovalLevel, TaskConfig, approval_at_least
+from app.schemas import ApprovalLevel, TaskConfig, TaskRunRequest, approval_at_least
 from app.services.approval_service import create_approval_request, needs_initial_approval
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+ACTIVE_RUN_STATUSES = {"queued", "queued_dry_run", "running", "running_dry_run"}
+COMPLETED_RUN_STATUSES = {"completed"}
 
 
 def task_to_dict(task: TaskModel) -> dict:
@@ -183,6 +188,7 @@ def pause_task(
 @router.post("/{task_id}/run", status_code=status.HTTP_202_ACCEPTED)
 def run_task(
     task_id: str,
+    payload: TaskRunRequest | None = None,
     role: ApiRole = Depends(require_roles(ApiRole.TOOL, ApiRole.ADMIN, ApiRole.WORKER)),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -198,6 +204,32 @@ def run_task(
     if role == ApiRole.WORKER and not task.enabled and not dry_run:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="worker cannot run disabled non-dry-run task")
 
+    force = bool(payload.force) if payload else False
+    if force and role != ApiRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin required to force a duplicate run")
+
+    active_run = _latest_active_run(session, task.id)
+    if active_run:
+        return {
+            "run_id": active_run.id,
+            "status": active_run.status,
+            "deduplicated": True,
+            "reason": "active_run_exists",
+            "message": "run not queued because this task already has an active run",
+        }
+
+    recent_run = _latest_recent_completed_live_run(session, task.id) if not dry_run and not force else None
+    if recent_run:
+        return {
+            "run_id": recent_run.id,
+            "status": "duplicate_recent",
+            "deduplicated": True,
+            "reason": "recent_completed_run",
+            "duplicate_of": recent_run.id,
+            "dedupe_seconds": get_settings().run_dedupe_seconds,
+            "message": "run not queued because this task completed within the dedupe window",
+        }
+
     run = RunModel(
         id=str(uuid.uuid4()),
         task_id=task.id,
@@ -207,7 +239,33 @@ def run_task(
     session.add(run)
     audit_event(session, role, "task.run", "task", task.id, {"run_id": run.id, "dry_run": dry_run})
     session.commit()
-    return {"run_id": run.id, "status": run.status}
+    return {"run_id": run.id, "status": run.status, "deduplicated": False}
+
+
+def _latest_active_run(session: Session, task_id: str) -> RunModel | None:
+    return (
+        session.query(RunModel)
+        .filter(RunModel.task_id == task_id)
+        .filter(RunModel.status.in_(ACTIVE_RUN_STATUSES))
+        .filter(RunModel.completed_at.is_(None))
+        .order_by(RunModel.created_at.desc())
+        .first()
+    )
+
+
+def _latest_recent_completed_live_run(session: Session, task_id: str) -> RunModel | None:
+    dedupe_seconds = get_settings().run_dedupe_seconds
+    if dedupe_seconds <= 0:
+        return None
+    cutoff = utcnow() - timedelta(seconds=dedupe_seconds)
+    return (
+        session.query(RunModel)
+        .filter(RunModel.task_id == task_id)
+        .filter(RunModel.status.in_(COMPLETED_RUN_STATUSES))
+        .filter(RunModel.completed_at >= cutoff)
+        .order_by(RunModel.completed_at.desc())
+        .first()
+    )
 
 
 def _validate_or_422(task_config: TaskConfig) -> None:
