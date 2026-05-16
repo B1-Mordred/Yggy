@@ -8,6 +8,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +33,7 @@ INTENT_MIN_CONFIDENCE = float(os.environ.get('YGGDRASIL_INTENT_MIN_CONFIDENCE', 
 AUTOMATION_API_BASE_URL = os.environ.get('AUTOMATION_API_BASE_URL', 'http://127.0.0.1:8088').rstrip('/')
 AUTOMATION_TOOL_API_KEY = os.environ.get('AUTOMATION_TOOL_API_KEY', '').strip()
 PROPOSAL_RE = re.compile(r'\b(\d{14}_[A-Za-z0-9._-]+)\b')
+RUN_ID_RE = re.compile(r'\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b')
 AUTOMATION_TASK_ALIASES = {
     'daily brief': 'daily_local_ai_security_briefing',
     'daily briefing': 'daily_local_ai_security_briefing',
@@ -522,6 +524,11 @@ def automation_task_id_from_text(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def automation_run_id_from_text(text: str) -> str | None:
+    match = RUN_ID_RE.search(text)
+    return match.group(1).lower() if match else None
+
+
 def parse_schedule(text: str) -> tuple[str, str]:
     match = re.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b', text)
     hour = int(match.group(1)) if match else 8
@@ -644,6 +651,90 @@ def format_task_list(tasks: list[dict[str, Any]]) -> str:
     return '\n'.join(lines)
 
 
+def run_delivery_text(run: dict[str, Any]) -> str:
+    log = run.get('log') if isinstance(run.get('log'), dict) else {}
+    notification = log.get('notification') if isinstance(log.get('notification'), dict) else {}
+    if notification:
+        if notification.get('sent') is True:
+            transport = notification.get('transport') or 'configured transport'
+            return f"sent via {transport}"
+        if notification.get('dry_run') is True:
+            return 'dry-run only; no live Discord message sent'
+        return 'notification attempted but not marked sent'
+    if str(run.get('status', '')).endswith('dry_run'):
+        return 'dry-run only; no live Discord message sent'
+    return 'not recorded'
+
+
+def run_summary_values(run: dict[str, Any]) -> dict[str, Any]:
+    log = run.get('log') if isinstance(run.get('log'), dict) else {}
+    result = log.get('result') if isinstance(log.get('result'), dict) else {}
+    notification = log.get('notification') if isinstance(log.get('notification'), dict) else {}
+    items = result.get('items') if isinstance(result.get('items'), list) else []
+    errors = result.get('errors') if isinstance(result.get('errors'), list) else []
+    dry_run = notification.get('dry_run')
+    if dry_run is None:
+        dry_run = str(run.get('status', '')).endswith('dry_run') or bool(log.get('dry_run', False))
+    return {
+        'delivery': run_delivery_text(run),
+        'dry_run': dry_run,
+        'summary_mode': result.get('summary_mode') or 'n/a',
+        'summary_error': result.get('summary_error') or 'none',
+        'item_count': len(items),
+        'source_count': result.get('source_count', 'n/a'),
+        'errors': errors,
+        'failure': log.get('message') or log.get('error') or 'none',
+    }
+
+
+def format_run(run: dict[str, Any]) -> str:
+    values = run_summary_values(run)
+    source_errors = values['errors']
+    source_error_text = 'none' if not source_errors else ', '.join(
+        f"{error.get('source', 'source')}: {error.get('error', 'error')}" for error in source_errors[:3]
+    )
+    lines = [
+        f"Run `{run.get('id')}`",
+        "",
+        f"- Task: `{run.get('task_id')}`",
+        f"- Status: `{run.get('status')}`",
+        f"- Delivery: {values['delivery']}",
+        f"- Dry run: `{str(values['dry_run']).lower()}`",
+        f"- Summary mode: `{values['summary_mode']}`",
+        f"- Summary error: `{values['summary_error']}`",
+        f"- Items: `{values['item_count']}`",
+        f"- Sources: `{values['source_count']}`",
+        f"- Source errors: {source_error_text}",
+        f"- Created: `{run.get('created_at')}`",
+        f"- Completed: `{run.get('completed_at') or 'not completed'}`",
+    ]
+    if run.get('status') == 'failed':
+        lines.append(f"- Failure: {values['failure']}")
+    return '\n'.join(lines)
+
+
+def format_run_list(runs: list[dict[str, Any]], *, title: str = 'Automation runs') -> str:
+    if not runs:
+        return f'{title}: none found.'
+    lines = [f'{title}:']
+    for run in runs:
+        values = run_summary_values(run)
+        lines.append(
+            f"- `{run.get('id')}` `{run.get('status')}` task `{run.get('task_id')}`; "
+            f"delivery: {values['delivery']}; completed: `{run.get('completed_at') or 'not completed'}`"
+        )
+    return '\n'.join(lines)
+
+
+def query_runs_path(*, task_id: str | None = None, status_value: str | None = None, limit: int = 5) -> str:
+    params: dict[str, Any] = {'limit': limit}
+    if task_id:
+        params = {'task_id': task_id, **params}
+    if status_value:
+        params = {'status': status_value, **params}
+    return f"/runs?{urllib.parse.urlencode(params)}"
+
+
 def format_draft_response(status_code: int, body: Any, draft: dict[str, Any]) -> str:
     if status_code == 201 and isinstance(body, dict):
         task = body.get('task') or {}
@@ -679,7 +770,7 @@ def format_draft_response(status_code: int, body: Any, draft: dict[str, Any]) ->
 
 def handle_automation_request(user_text: str) -> str | None:
     lowered = user_text.lower()
-    automation_words = ('automation', 'automations', 'task', 'tasks', 'control plane')
+    automation_words = ('automation', 'automations', 'task', 'tasks', 'run', 'runs', 'control plane')
     project_words = (
         'daily brief',
         'daily briefing',
@@ -693,7 +784,8 @@ def handle_automation_request(user_text: str) -> str | None:
         'ollama',
         'yggdrasil',
     )
-    if not any(word in lowered for word in automation_words + project_words):
+    requested_run_id = automation_run_id_from_text(user_text)
+    if not requested_run_id and not any(word in lowered for word in automation_words + project_words):
         return None
 
     if re.search(r'\b(list|show all|what .*tasks|tasks\?)\b', lowered) and re.search(r'\b(task|tasks|automation|automations)\b', lowered):
@@ -725,6 +817,39 @@ def handle_automation_request(user_text: str) -> str | None:
                 "Approve only through the local admin CLI/UI."
             )
         return f'Automation API returned status `{status_code}` while requesting approval:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+
+    if requested_run_id:
+        status_code, body = automation_request('GET', f'/runs/{requested_run_id}')
+        if status_code == 200 and isinstance(body, dict):
+            return format_run(body)
+        return f'Automation API returned status `{status_code}` for run `{requested_run_id}`:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+
+    run_status_request = (
+        re.search(r'\b(latest|last|recent|failed|failures?|runs?)\b', lowered)
+        or re.search(r'\bdid\b.*\bsend\b', lowered)
+        or re.search(r'\b(sent|delivery|deliver(?:ed)?)\b', lowered)
+    )
+    if run_status_request and re.search(r'\b(run|runs|sent|send|delivery|delivered|failed|failure)\b', lowered):
+        task_id = automation_task_id_from_text(user_text)
+        if re.search(r'\b(failed|failures?)\b', lowered):
+            path = query_runs_path(task_id=task_id, status_value='failed', limit=5)
+            title = 'Failed automation runs' if task_id is None else f'Failed runs for `{task_id}`'
+            status_code, body = automation_request('GET', path)
+            if status_code == 200 and isinstance(body, list):
+                return format_run_list(body, title=title)
+            return f'Automation API returned status `{status_code}` while listing failed runs:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+
+        limit = 1 if re.search(r'\b(latest|last|did\b.*\bsend|sent|delivery|delivered)\b', lowered) else 5
+        path = query_runs_path(task_id=task_id, limit=limit)
+        status_code, body = automation_request('GET', path)
+        if status_code == 200 and isinstance(body, list):
+            if not body:
+                suffix = f' for `{task_id}`' if task_id else ''
+                return f'No automation runs found{suffix}.'
+            if limit == 1:
+                return format_run(body[0])
+            return format_run_list(body, title='Recent automation runs')
+        return f'Automation API returned status `{status_code}` while listing runs:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 
     if re.search(r'\b(show|get|inspect|details?|status)\b', lowered):
         task_id = automation_task_id_from_text(user_text)

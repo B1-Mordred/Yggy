@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.audit import audit_event
@@ -28,10 +28,19 @@ def run_to_dict(run: RunModel) -> dict:
 
 @router.get("")
 def list_runs(
+    task_id: str | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=100),
     role: ApiRole = Depends(require_roles(ApiRole.TOOL, ApiRole.ADMIN, ApiRole.WORKER)),
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    return [run_to_dict(run) for run in session.query(RunModel).order_by(RunModel.created_at.desc()).all()]
+    query = session.query(RunModel)
+    if task_id:
+        query = query.filter(RunModel.task_id == task_id)
+    if status_filter:
+        query = query.filter(RunModel.status == status_filter)
+    runs = query.order_by(RunModel.created_at.desc()).limit(limit).all()
+    return [run_to_dict(run) for run in runs]
 
 
 @router.get("/{run_id}")

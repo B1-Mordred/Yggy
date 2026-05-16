@@ -60,6 +60,26 @@ def test_worker_can_list_queued_runs(client):
     assert response.json()[0]["id"] == run_id
 
 
+def test_run_list_filters_by_task_status_and_limit(client):
+    with Session(get_engine()) as session:
+        session.add_all(
+            [
+                RunModel(id=str(uuid.uuid4()), task_id="daily", status="completed", log={"message": "ok"}),
+                RunModel(id=str(uuid.uuid4()), task_id="daily", status="failed", log={"message": "bad"}),
+                RunModel(id=str(uuid.uuid4()), task_id="other", status="failed", log={"message": "other"}),
+            ]
+        )
+        session.commit()
+
+    response = client.get("/runs?task_id=daily&status=failed&limit=1", headers=TOOL_HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["task_id"] == "daily"
+    assert body[0]["status"] == "failed"
+
+
 def test_worker_claims_queued_run_once(client):
     run_id = str(uuid.uuid4())
     with Session(get_engine()) as session:
