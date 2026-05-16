@@ -26,6 +26,9 @@ class Settings:
     run_retention_days: int = 30
     audit_retention_days: int = 90
     temp_task_retention_hours: int = 24
+    ops_dashboard_enabled: bool = True
+    ops_dashboard_user: str = "admin"
+    ops_dashboard_password: str = ""
     version: str = "0.1.0"
 
 
@@ -58,4 +61,7 @@ def get_settings() -> Settings:
         run_retention_days=int(os.getenv("AUTOMATION_RUN_RETENTION_DAYS", "30")),
         audit_retention_days=int(os.getenv("AUTOMATION_AUDIT_RETENTION_DAYS", "90")),
         temp_task_retention_hours=int(os.getenv("AUTOMATION_TEMP_TASK_RETENTION_HOURS", "24")),
+        ops_dashboard_enabled=env_bool("AUTOMATION_OPS_DASHBOARD_ENABLED", True),
+        ops_dashboard_user=os.getenv("AUTOMATION_OPS_DASHBOARD_USER", "admin"),
+        ops_dashboard_password=os.getenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", ""),
     )

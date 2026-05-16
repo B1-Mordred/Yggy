@@ -69,3 +69,23 @@ Admin one-off cleanup with defaults:
 curl -sS -X POST http://127.0.0.1:8088/maintenance/retention \
   -H "X-Automation-Api-Key: ${AUTOMATION_ADMIN_API_KEY}"
 ```
+
+## Local Operations Dashboard
+
+The API serves a read-only localhost dashboard at:
+
+```text
+http://127.0.0.1:8088/ops
+```
+
+It shows task state, latest runs, pending approvals, worker heartbeat, and retention status. It does not expose secrets, does not include raw run logs, and is not included in the OpenAPI tool schema.
+
+Configure it with separate local credentials:
+
+```text
+AUTOMATION_OPS_DASHBOARD_ENABLED=true
+AUTOMATION_OPS_DASHBOARD_USER=admin
+AUTOMATION_OPS_DASHBOARD_PASSWORD=replace-with-long-random-dashboard-password
+```
+
+Keep the dashboard bound to localhost unless it is placed behind a properly authenticated reverse proxy.
