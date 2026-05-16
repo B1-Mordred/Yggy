@@ -10,6 +10,7 @@ def test_tool_key_can_create_disabled_l1_draft(client):
     assert body["task"]["enabled"] is False
     assert body["task"]["status"] == "pending_approval"
     assert body["approval"]["approval_level"] == "L1_NOTIFY_ONLY"
+    assert body["approval"]["created_at"] is not None
 
 
 def test_tool_key_can_create_disabled_l0_draft(client):

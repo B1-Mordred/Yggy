@@ -92,9 +92,11 @@ def create_draft_task(
         config=task_config.model_dump(mode="json"),
     )
     session.add(task)
+    session.flush()
     approval_payload = None
     if needs_initial_approval(task_config.policy.approval_level):
         approval, nonce = create_approval_request(session, task, requested_by=task_config.created_by)
+        session.flush()
         approval_payload = approval_to_public(approval, nonce=nonce)
         task.status = "pending_approval"
     audit_event(session, role, "task.draft", "task", task.id, {"approval_level": task.approval_level})
@@ -152,6 +154,7 @@ def request_approval(
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
     approval, nonce = create_approval_request(session, task, requested_by=task.created_by)
+    session.flush()
     task.status = "pending_approval"
     audit_event(session, role, "approval.request", "task", task.id, {"approval_id": approval.id})
     session.commit()

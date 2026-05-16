@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -27,6 +27,7 @@ def get_engine():
             if url.endswith(":memory:"):
                 kwargs["poolclass"] = StaticPool
         _engine = create_engine(url, **kwargs)
+        _enable_sqlite_foreign_keys(_engine, url)
         _session_local = sessionmaker(bind=_engine, autoflush=False, autocommit=False, expire_on_commit=False)
     return _engine
 
@@ -41,7 +42,19 @@ def reset_engine_for_tests(database_url: str = "sqlite+pysqlite:///:memory:") ->
         poolclass=StaticPool,
         pool_pre_ping=True,
     )
+    _enable_sqlite_foreign_keys(_engine, database_url)
     _session_local = sessionmaker(bind=_engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+
+def _enable_sqlite_foreign_keys(engine, database_url: str) -> None:
+    if not database_url.startswith("sqlite"):
+        return
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, _connection_record):  # pragma: no cover - exercised by DB setup
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 def init_db() -> None:
