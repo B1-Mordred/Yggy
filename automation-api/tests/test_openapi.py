@@ -7,3 +7,4 @@ def test_openapi_schema_is_generated(client):
     data = response.json()
     assert data["info"]["title"] == "Yggy Automation API"
     assert "/tasks/draft" in data["paths"]
+    assert "/maintenance/retention" in data["paths"]

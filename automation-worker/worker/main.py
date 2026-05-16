@@ -8,6 +8,8 @@ from worker.handlers.server_health import run_server_health
 from worker.handlers.topic_digest import run_topic_digest
 from worker.scheduler import due_tasks
 
+_LAST_RETENTION_RUN_AT: float | None = None
+
 
 def result_message(config: dict, result: dict) -> str:
     if result.get("message"):
@@ -115,9 +117,27 @@ def process_queued_runs(client: AutomationApiClient, tasks: list[dict] | None = 
     return processed_task_ids
 
 
+def maybe_run_retention(client: AutomationApiClient, now: float | None = None) -> dict | None:
+    global _LAST_RETENTION_RUN_AT
+    interval = int(os.getenv("AUTOMATION_RETENTION_INTERVAL_SECONDS", "86400"))
+    if interval <= 0:
+        return None
+    current = time.monotonic() if now is None else now
+    if _LAST_RETENTION_RUN_AT is not None and current - _LAST_RETENTION_RUN_AT < interval:
+        return None
+    _LAST_RETENTION_RUN_AT = current
+    return client.run_retention()
+
+
 def run_once() -> None:
     client = AutomationApiClient.from_env()
     client.send_heartbeat(detail={"event": "poll"})
+    try:
+        retention = maybe_run_retention(client)
+        if retention is not None:
+            print({"status": "retention", "deleted": retention.get("deleted")}, flush=True)
+    except Exception as exc:
+        print({"status": "retention_error", "error": exc.__class__.__name__, "message": str(exc)}, flush=True)
     tasks = client.list_tasks()
     queued_task_ids = process_queued_runs(client, tasks)
     for task in due_tasks(tasks):

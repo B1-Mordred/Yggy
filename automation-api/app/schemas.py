@@ -206,3 +206,10 @@ class HeartbeatUpdate(BaseModel):
     service: str = Field(default="automation-worker", pattern=r"^[a-z0-9][a-z0-9_.-]{1,127}$")
     status: str = Field(default="ok", pattern=r"^[a-z_]{2,32}$")
     detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class RetentionRequest(BaseModel):
+    dry_run: bool = False
+    run_retention_days: int | None = Field(default=None, ge=1, le=3650)
+    audit_retention_days: int | None = Field(default=None, ge=1, le=3650)
+    temp_task_retention_hours: int | None = Field(default=None, ge=0, le=87600)

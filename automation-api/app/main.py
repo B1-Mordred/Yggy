@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.database import init_db
-from app.routers import approvals, health, notifications, runs, tasks, topics
+from app.routers import approvals, health, maintenance, notifications, runs, tasks, topics
 
 
 @asynccontextmanager
@@ -27,3 +27,4 @@ app.include_router(topics.router)
 app.include_router(approvals.router)
 app.include_router(runs.router)
 app.include_router(notifications.router)
+app.include_router(maintenance.router)

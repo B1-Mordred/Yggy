@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from worker.main import process_queued_runs, process_task
+from worker.main import maybe_run_retention, process_queued_runs, process_task
 
 
 class FakeClient:
@@ -8,6 +8,7 @@ class FakeClient:
         self.discord_calls: list[dict] = []
         self.completed_calls: list[dict] = []
         self.claim_calls: list[str] = []
+        self.retention_calls = 0
         self.runs: list[dict] = []
         self.tasks: dict[str, dict] = {}
 
@@ -29,6 +30,10 @@ class FakeClient:
 
     def send_heartbeat(self, status: str = "ok", detail: dict | None = None) -> dict:
         return {"ok": True, "status": status, "detail": detail or {}}
+
+    def run_retention(self) -> dict:
+        self.retention_calls += 1
+        return {"deleted": {"runs": 0, "audit_events": 0, "temporary_tasks": 0, "temporary_task_approvals": 0}}
 
     def send_discord(self, target: str, content: str, dry_run: bool) -> dict:
         self.discord_calls.append({"target": target, "content": content, "dry_run": dry_run})
@@ -204,3 +209,23 @@ def test_process_server_health_suppresses_discord_when_notify_false(monkeypatch)
     assert result["status"] == "completed_dry_run"
     assert client.discord_calls == []
     assert client.completed_calls[0]["log"]["notification"] is None
+
+
+def test_retention_runs_once_per_interval(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setenv("AUTOMATION_RETENTION_INTERVAL_SECONDS", "60")
+    monkeypatch.setattr("worker.main._LAST_RETENTION_RUN_AT", None)
+
+    assert maybe_run_retention(client, now=100.0) is not None
+    assert maybe_run_retention(client, now=120.0) is None
+    assert maybe_run_retention(client, now=161.0) is not None
+    assert client.retention_calls == 2
+
+
+def test_retention_can_be_disabled(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setenv("AUTOMATION_RETENTION_INTERVAL_SECONDS", "0")
+    monkeypatch.setattr("worker.main._LAST_RETENTION_RUN_AT", None)
+
+    assert maybe_run_retention(client, now=100.0) is None
+    assert client.retention_calls == 0
