@@ -35,6 +35,11 @@ AUTOMATION_TOOL_API_KEY = os.environ.get('AUTOMATION_TOOL_API_KEY', '').strip()
 PROPOSAL_RE = re.compile(r'\b(\d{14}_[A-Za-z0-9._-]+)\b')
 RUN_ID_RE = re.compile(r'\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b')
 AUTOMATION_TASK_ALIASES = {
+    'server health': 'morning_server_health_check',
+    'server health check': 'morning_server_health_check',
+    'morning server health': 'morning_server_health_check',
+    'morning server health check': 'morning_server_health_check',
+    'health check': 'morning_server_health_check',
     'daily brief': 'daily_local_ai_security_briefing',
     'daily briefing': 'daily_local_ai_security_briefing',
     'daily security brief': 'daily_local_ai_security_briefing',
@@ -687,7 +692,63 @@ def run_summary_values(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def format_health_run(run: dict[str, Any], result: dict[str, Any]) -> str:
+    values = run_summary_values(run)
+    checks = result.get('checks') if isinstance(result.get('checks'), list) else []
+    ok_count = result.get('ok_count')
+    if ok_count is None:
+        ok_count = sum(1 for check in checks if isinstance(check, dict) and check.get('ok') is True)
+    failed_count = result.get('failed_count')
+    if failed_count is None:
+        failed_count = sum(1 for check in checks if isinstance(check, dict) and check.get('ok') is not True)
+    total_count = len(checks)
+    notify = result.get('notify')
+    if notify is False:
+        delivery = 'alert suppressed; no anomalies detected'
+    else:
+        delivery = values['delivery']
+
+    lines = [
+        f"Run `{run.get('id')}`",
+        "",
+        f"- Task: `{run.get('task_id')}`",
+        f"- Status: `{run.get('status')}`",
+        f"- Health: `{result.get('status', 'unknown')}`",
+        f"- Delivery: {delivery}",
+        f"- Dry run: `{str(values['dry_run']).lower()}`",
+        f"- Checks: `{ok_count}/{total_count} ok`, failed `{failed_count}`",
+        f"- Created: `{run.get('created_at')}`",
+        f"- Completed: `{run.get('completed_at') or 'not completed'}`",
+    ]
+    if checks:
+        lines.extend(["", "Check details:"])
+        for check in checks[:8]:
+            if not isinstance(check, dict):
+                continue
+            name = check.get('name') or check.get('type') or 'check'
+            status_text = 'ok' if check.get('ok') is True else 'failed'
+            details: list[str] = []
+            if check.get('status_code') is not None:
+                details.append(f"status `{check.get('status_code')}`")
+            if check.get('latency_ms') is not None:
+                details.append(f"latency `{check.get('latency_ms')}ms`")
+            if check.get('worker_age_seconds') is not None:
+                details.append(f"worker age `{check.get('worker_age_seconds')}s`")
+            if check.get('model_count') is not None:
+                details.append(f"models `{check.get('model_count')}`")
+            if check.get('error'):
+                details.append(f"error: {check.get('error')}")
+            suffix = f" ({', '.join(details)})" if details else ''
+            lines.append(f"- `{name}`: {status_text}{suffix}")
+    return '\n'.join(lines)
+
+
 def format_run(run: dict[str, Any]) -> str:
+    log = run.get('log') if isinstance(run.get('log'), dict) else {}
+    result = log.get('result') if isinstance(log.get('result'), dict) else {}
+    if isinstance(result.get('checks'), list):
+        return format_health_run(run, result)
+
     values = run_summary_values(run)
     source_errors = values['errors']
     source_error_text = 'none' if not source_errors else ', '.join(
@@ -780,6 +841,10 @@ def handle_automation_request(user_text: str) -> str | None:
         'local ai briefing',
         'local ai security briefing',
         'daily local ai security briefing',
+        'server health',
+        'server health check',
+        'morning server health',
+        'morning server health check',
         'open webui',
         'ollama',
         'yggdrasil',
@@ -824,12 +889,22 @@ def handle_automation_request(user_text: str) -> str | None:
             return format_run(body)
         return f'Automation API returned status `{status_code}` for run `{requested_run_id}`:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 
+    server_health_status_request = bool(
+        re.search(r'\b(show|get|inspect|status|latest|last)\b', lowered)
+        and re.search(r'\b(server health|health check|morning server health)\b', lowered)
+        and 'task' not in lowered
+    )
+    explicit_run_request = bool(re.search(r'^\s*(run|execute|dry run|send|deliver|post|generate)\b', lowered))
     run_status_request = (
         re.search(r'\b(latest|last|recent|failed|failures?|runs?)\b', lowered)
         or re.search(r'\bdid\b.*\bsend\b', lowered)
         or re.search(r'\b(sent|delivery|deliver(?:ed)?)\b', lowered)
+        or server_health_status_request
     )
-    if run_status_request and re.search(r'\b(run|runs|sent|send|delivery|delivered|failed|failure)\b', lowered):
+    if run_status_request and not explicit_run_request and (
+        re.search(r'\b(run|runs|sent|send|delivery|delivered|failed|failure)\b', lowered)
+        or server_health_status_request
+    ):
         task_id = automation_task_id_from_text(user_text)
         if re.search(r'\b(failed|failures?)\b', lowered):
             path = query_runs_path(task_id=task_id, status_value='failed', limit=5)
@@ -839,7 +914,7 @@ def handle_automation_request(user_text: str) -> str | None:
                 return format_run_list(body, title=title)
             return f'Automation API returned status `{status_code}` while listing failed runs:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 
-        limit = 1 if re.search(r'\b(latest|last|did\b.*\bsend|sent|delivery|delivered)\b', lowered) else 5
+        limit = 1 if server_health_status_request or re.search(r'\b(latest|last|did\b.*\bsend|sent|delivery|delivered)\b', lowered) else 5
         path = query_runs_path(task_id=task_id, limit=limit)
         status_code, body = automation_request('GET', path)
         if status_code == 200 and isinstance(body, list):

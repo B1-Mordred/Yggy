@@ -36,6 +36,16 @@ class AutomationApiClient:
         response.raise_for_status()
         return response.json()
 
+    def send_heartbeat(self, status: str = "ok", detail: dict | None = None) -> dict:
+        response = httpx.post(
+            f"{self.base_url}/health/heartbeat",
+            headers=self.headers,
+            json={"service": "automation-worker", "status": status, "detail": detail or {}},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def queue_run(self, task_id: str) -> dict:
         response = httpx.post(f"{self.base_url}/tasks/{task_id}/run", headers=self.headers, timeout=10)
         response.raise_for_status()

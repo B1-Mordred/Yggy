@@ -27,6 +27,9 @@ class FakeClient:
     def list_runs(self) -> list[dict]:
         return self.runs
 
+    def send_heartbeat(self, status: str = "ok", detail: dict | None = None) -> dict:
+        return {"ok": True, "status": status, "detail": detail or {}}
+
     def send_discord(self, target: str, content: str, dry_run: bool) -> dict:
         self.discord_calls.append({"target": target, "content": content, "dry_run": dry_run})
         return {"sent": False, "dry_run": dry_run, "target": target}
@@ -174,3 +177,30 @@ def test_process_queued_run_skips_claim_conflict(monkeypatch):
     assert client.claim_calls == ["claim-conflict"]
     assert client.discord_calls == []
     assert client.completed_calls == []
+
+
+def test_process_server_health_suppresses_discord_when_notify_false(monkeypatch):
+    client = FakeClient()
+
+    def fake_health(config: dict) -> dict:
+        return {"status": "ok", "message": "No anomalies", "notify": False}
+
+    monkeypatch.setattr("worker.main.run_server_health", fake_health)
+
+    result = process_task(
+        client,
+        {
+            "enabled": True,
+            "config": {
+                "id": "morning_server_health_check",
+                "name": "Morning Server Health Check",
+                "type": "server_health",
+                "runtime": {"dry_run": True},
+                "output": {"channel": "discord", "target": "alerts", "format": "anomalies only"},
+            },
+        },
+    )
+
+    assert result["status"] == "completed_dry_run"
+    assert client.discord_calls == []
+    assert client.completed_calls[0]["log"]["notification"] is None

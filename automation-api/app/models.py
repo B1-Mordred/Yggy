@@ -67,6 +67,15 @@ class RunModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class HeartbeatModel(Base):
+    __tablename__ = "heartbeats"
+
+    service: Mapped[str] = mapped_column(String(128), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ok")
+    detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class AuditEventModel(Base):
     __tablename__ = "audit_events"
 

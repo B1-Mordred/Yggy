@@ -84,6 +84,8 @@ class CheckConfig(BaseModel):
     type: str
     name: str
     url: str
+    expected_status: int | None = Field(default=None, ge=100, le=599)
+    max_age_seconds: int | None = Field(default=None, ge=1, le=86400)
 
     @field_validator("url")
     @classmethod
@@ -198,3 +200,9 @@ class RunUpdate(BaseModel):
 
 class TaskRunRequest(BaseModel):
     force: bool = False
+
+
+class HeartbeatUpdate(BaseModel):
+    service: str = Field(default="automation-worker", pattern=r"^[a-z0-9][a-z0-9_.-]{1,127}$")
+    status: str = Field(default="ok", pattern=r"^[a-z_]{2,32}$")
+    detail: dict[str, Any] = Field(default_factory=dict)

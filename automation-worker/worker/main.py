@@ -70,7 +70,7 @@ def execute_task(
 
         notification = None
         output = effective_config.get("output", {})
-        if output.get("channel") == "discord" and result.get("status") != "skipped":
+        if output.get("channel") == "discord" and result.get("status") != "skipped" and result.get("notify", True):
             notification = client.send_discord(
                 target=output["target"],
                 content=result_message(effective_config, result),
@@ -117,6 +117,7 @@ def process_queued_runs(client: AutomationApiClient, tasks: list[dict] | None = 
 
 def run_once() -> None:
     client = AutomationApiClient.from_env()
+    client.send_heartbeat(detail={"event": "poll"})
     tasks = client.list_tasks()
     queued_task_ids = process_queued_runs(client, tasks)
     for task in due_tasks(tasks):

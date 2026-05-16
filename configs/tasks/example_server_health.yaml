@@ -12,11 +12,21 @@ trigger:
 
 checks:
   - type: http_health
-    name: open_webui
-    url: http://open-webui:8080/health
-  - type: http_health
     name: automation_api
     url: http://automation-api:8088/health
+  - type: worker_heartbeat
+    name: automation_worker
+    url: http://automation-api:8088/health
+    max_age_seconds: 180
+  - type: http_health
+    name: yggdrasil_action_api
+    url: http://host.docker.internal:8642/health
+  - type: http_health
+    name: open_webui
+    url: http://open-webui:8080/health
+  - type: ollama_tags
+    name: ollama
+    url: http://host.docker.internal:11434/api/tags
 
 output:
   channel: discord
