@@ -17,6 +17,11 @@ class Settings:
     discord_webhook_briefings: str = ""
     discord_webhook_alerts: str = ""
     discord_webhook_approvals: str = ""
+    discord_bot_token: str = ""
+    discord_home_channel: str = ""
+    discord_channel_briefings: str = ""
+    discord_channel_alerts: str = ""
+    discord_channel_approvals: str = ""
     version: str = "0.1.0"
 
 
@@ -40,4 +45,9 @@ def get_settings() -> Settings:
         discord_webhook_briefings=os.getenv("DISCORD_WEBHOOK_BRIEFINGS", ""),
         discord_webhook_alerts=os.getenv("DISCORD_WEBHOOK_ALERTS", ""),
         discord_webhook_approvals=os.getenv("DISCORD_WEBHOOK_APPROVALS", ""),
+        discord_bot_token=os.getenv("DISCORD_BOT_TOKEN", ""),
+        discord_home_channel=os.getenv("DISCORD_HOME_CHANNEL", ""),
+        discord_channel_briefings=os.getenv("DISCORD_CHANNEL_BRIEFINGS", ""),
+        discord_channel_alerts=os.getenv("DISCORD_CHANNEL_ALERTS", ""),
+        discord_channel_approvals=os.getenv("DISCORD_CHANNEL_APPROVALS", ""),
     )

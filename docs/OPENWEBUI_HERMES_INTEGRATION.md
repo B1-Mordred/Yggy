@@ -4,10 +4,10 @@ The existing setup has Open WebUI connected to Hermes/yggdrasil. Preserve that s
 
 ## Tool Server
 
-Expose:
+Expose from Open WebUI:
 
 ```text
-http://127.0.0.1:8088/openapi.json
+http://automation-api:8088/openapi.json
 ```
 
 or an equivalent local-only URL reachable by Open WebUI/Hermes.
@@ -19,6 +19,15 @@ X-Automation-Api-Key: <AUTOMATION_TOOL_API_KEY>
 ```
 
 Never configure `AUTOMATION_ADMIN_API_KEY` in Open WebUI or Hermes.
+
+For this host, the repeatable configuration helper is:
+
+```bash
+python scripts/configure_openwebui_tool_server.py
+docker restart open-webui
+```
+
+The helper stores only the model-facing `AUTOMATION_TOOL_API_KEY` in Open WebUI's tool-server config, attaches the tool server to the `webui`/Yggdrasil model, and filters exposed operations to the low-privilege automation API allowlist.
 
 ## Workspace Tools Warning
 
