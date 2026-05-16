@@ -30,3 +30,23 @@ class AutomationApiClient:
         response = httpx.post(f"{self.base_url}/tasks/{task_id}/run", headers=self.headers, timeout=10)
         response.raise_for_status()
         return response.json()
+
+    def complete_run(self, run_id: str, status: str, log: dict) -> dict:
+        response = httpx.patch(
+            f"{self.base_url}/runs/{run_id}",
+            headers=self.headers,
+            json={"status": status, "log": log, "completed": True},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def send_discord(self, target: str, content: str, dry_run: bool) -> dict:
+        response = httpx.post(
+            f"{self.base_url}/notifications/discord/send",
+            headers=self.headers,
+            json={"target": target, "content": content, "dry_run": dry_run},
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()

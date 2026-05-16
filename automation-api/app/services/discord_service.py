@@ -29,7 +29,7 @@ class DiscordService:
 
         webhook = self.webhooks.get(target)
         if webhook:
-            response = httpx.post(webhook, json={"content": content}, timeout=10)
+            response = httpx.post(webhook, json={"content": content[:2000]}, timeout=10)
             response.raise_for_status()
             return {"sent": True, "dry_run": False, "target": target, "transport": "webhook", "status_code": response.status_code}
 

@@ -3,9 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.audit import audit_event
 from app.auth import ApiRole, require_roles
 from app.database import get_session
-from app.models import RunModel
+from app.models import RunModel, utcnow
+from app.schemas import RunUpdate
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -39,4 +41,23 @@ def get_run(
     run = session.get(RunModel, run_id)
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
+    return run_to_dict(run)
+
+
+@router.patch("/{run_id}")
+def update_run(
+    run_id: str,
+    payload: RunUpdate,
+    role: ApiRole = Depends(require_roles(ApiRole.ADMIN, ApiRole.WORKER)),
+    session: Session = Depends(get_session),
+) -> dict:
+    run = session.get(RunModel, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
+    run.status = payload.status
+    run.log = redact_secrets(payload.log)
+    if payload.completed:
+        run.completed_at = utcnow()
+    audit_event(session, role, "run.update", "run", run.id, {"task_id": run.task_id, "status": run.status})
+    session.commit()
     return run_to_dict(run)

@@ -11,13 +11,53 @@ def test_topic_digest_requires_sources_when_required():
 
 
 def test_topic_digest_returns_bounded_items():
+    feed = """<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>Open WebUI security release</title>
+        <link>https://example.com/open-webui</link>
+        <description>Docker deployment hardening update.</description>
+        <pubDate>Sat, 16 May 2026 08:00:00 +0000</pubDate>
+      </item>
+      <item>
+        <title>Sponsored unrelated post</title>
+        <link>https://example.com/ad</link>
+        <description>sponsored</description>
+      </item>
+    </channel></rss>
+    """
+
+    def fetcher(url: str, timeout: int) -> str:
+        assert url == "https://example.com/feed.xml"
+        assert timeout == 120
+        return feed
+
     result = run_topic_digest(
         {
             "name": "Digest",
             "sources": [{"type": "rss", "url": "https://example.com/feed.xml"}],
+            "filters": {"include": ["Open WebUI", "Docker"], "exclude": ["sponsored"]},
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True, "timeout_seconds": 120},
+        },
+        rss_fetcher=fetcher,
+    )
+    assert result["status"] == "dry_run"
+    assert result["source_count"] == 1
+    assert len(result["items"]) == 1
+    assert result["items"][0]["title"] == "Open WebUI security release"
+    assert "Review the dry-run output" in result["message"]
+
+
+def test_topic_digest_web_query_item_is_data_only():
+    result = run_topic_digest(
+        {
+            "name": "Digest",
+            "sources": [{"type": "web_query", "query": "Open WebUI Ollama security"}],
+            "filters": {"include": ["Open WebUI"], "exclude": []},
             "policy": {"require_sources": True, "max_items": 10},
             "runtime": {"dry_run": True},
         }
     )
-    assert result["status"] == "dry_run"
-    assert result["source_count"] == 1
+    assert result["items"][0]["type"] == "web_query"
+    assert result["items"][0]["title"] == "Web query configured"

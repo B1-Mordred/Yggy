@@ -188,3 +188,9 @@ class RunLogCreate(BaseModel):
     task_id: str
     status: str
     log: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunUpdate(BaseModel):
+    status: str
+    log: dict[str, Any] = Field(default_factory=dict)
+    completed: bool = True
