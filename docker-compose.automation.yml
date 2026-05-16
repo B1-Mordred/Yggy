@@ -1,6 +1,8 @@
 services:
   automation-api:
-    build: ./automation-api
+    build:
+      context: ./automation-api
+      network: host
     container_name: automation-api
     env_file:
       - path: .env
@@ -24,10 +26,17 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
 
   automation-worker:
-    build: ./automation-worker
+    build:
+      context: ./automation-worker
+      network: host
     container_name: automation-worker
     env_file:
       - path: .env
@@ -36,7 +45,8 @@ services:
       - automation_net
       - notify_net
     depends_on:
-      - automation-api
+      automation-api:
+        condition: service_healthy
     read_only: true
     tmpfs:
       - /tmp
@@ -61,8 +71,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    cap_drop:
-      - ALL
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped

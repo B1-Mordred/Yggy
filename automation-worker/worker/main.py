@@ -28,7 +28,10 @@ def run_once() -> None:
 def main() -> None:
     interval = int(os.getenv("WORKER_POLL_SECONDS", "60"))
     while True:
-        run_once()
+        try:
+            run_once()
+        except Exception as exc:
+            print({"status": "worker_error", "error": exc.__class__.__name__, "message": str(exc)}, flush=True)
         time.sleep(interval)
 
 
