@@ -22,13 +22,21 @@ class DiscordService:
             "approvals": settings.discord_channel_approvals or fallback_channel,
         }
 
+    @staticmethod
+    def usable_webhook(value: str | None) -> bool:
+        if not value or "replace-with" in value:
+            return False
+        return value.startswith("https://discord.com/api/webhooks/") or value.startswith(
+            "https://discordapp.com/api/webhooks/"
+        )
+
     def send(self, target: str, content: str, dry_run: bool | None = None) -> dict:
         effective_dry_run = self.dry_run if dry_run is None else dry_run
         if effective_dry_run:
             return {"sent": False, "dry_run": True, "target": target, "content_preview": content[:200]}
 
         webhook = self.webhooks.get(target)
-        if webhook:
+        if self.usable_webhook(webhook):
             response = httpx.post(webhook, json={"content": content[:2000]}, timeout=10)
             response.raise_for_status()
             return {"sent": True, "dry_run": False, "target": target, "transport": "webhook", "status_code": response.status_code}

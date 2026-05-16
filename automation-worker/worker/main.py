@@ -15,28 +15,45 @@ def result_message(config: dict, result: dict) -> str:
     return f"{config.get('name', config.get('id', 'Automation task'))}: {result}"
 
 
-def process_task(client: AutomationApiClient, task: dict) -> dict:
+def execute_task(client: AutomationApiClient, task: dict, run_id: str | None = None, run_status: str | None = None) -> dict:
     config = task.get("config", task)
     task_id = config["id"]
-    run = client.queue_run(task_id)
-    run_id = run["run_id"]
     dry_run = bool(config.get("runtime", {}).get("dry_run", True))
+    if run_id is None:
+        run = client.queue_run(task_id)
+        run_id = run["run_id"]
+        run_status = run.get("status")
+    if run_status == "queued_dry_run":
+        dry_run = True
+
+    effective_config = dict(config)
+    effective_runtime = dict(effective_config.get("runtime", {}))
+    effective_runtime["dry_run"] = dry_run
+    effective_config["runtime"] = effective_runtime
+
+    if not bool(task.get("enabled", config.get("enabled", False))) and not dry_run:
+        completed = client.complete_run(
+            run_id,
+            "skipped_disabled",
+            {"task_id": task_id, "reason": "task disabled before live execution"},
+        )
+        return {"task_id": task_id, "run_id": run_id, "status": completed["status"], "result": {"status": "skipped"}}
 
     try:
-        task_type = config.get("type")
+        task_type = effective_config.get("type")
         if task_type == "topic_digest":
-            result = run_topic_digest(config)
+            result = run_topic_digest(effective_config)
         elif task_type == "server_health":
-            result = run_server_health(config)
+            result = run_server_health(effective_config)
         else:
             result = {"status": "skipped", "reason": f"unsupported task type: {task_type}"}
 
         notification = None
-        output = config.get("output", {})
+        output = effective_config.get("output", {})
         if output.get("channel") == "discord" and result.get("status") != "skipped":
             notification = client.send_discord(
                 target=output["target"],
-                content=result_message(config, result),
+                content=result_message(effective_config, result),
                 dry_run=dry_run,
             )
 
@@ -56,10 +73,32 @@ def process_task(client: AutomationApiClient, task: dict) -> dict:
         raise
 
 
+def process_task(client: AutomationApiClient, task: dict) -> dict:
+    return execute_task(client, task)
+
+
+def process_queued_runs(client: AutomationApiClient, tasks: list[dict] | None = None) -> set[str]:
+    queued_statuses = {"queued", "queued_dry_run"}
+    task_index = {task.get("id"): task for task in tasks or []}
+    processed_task_ids: set[str] = set()
+    for run in client.list_runs():
+        if run.get("completed_at") or run.get("status") not in queued_statuses:
+            continue
+        task_id = run["task_id"]
+        task = task_index.get(task_id) or client.get_task(task_id)
+        result = execute_task(client, task, run_id=run["id"], run_status=run.get("status"))
+        processed_task_ids.add(result["task_id"])
+        print(result, flush=True)
+    return processed_task_ids
+
+
 def run_once() -> None:
     client = AutomationApiClient.from_env()
     tasks = client.list_tasks()
+    queued_task_ids = process_queued_runs(client, tasks)
     for task in due_tasks(tasks):
+        if task.get("id") in queued_task_ids:
+            continue
         result = process_task(client, task)
         print(result, flush=True)
 

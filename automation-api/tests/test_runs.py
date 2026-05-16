@@ -46,3 +46,15 @@ def test_worker_can_complete_run_with_redacted_log(client):
     assert body["status"] == "completed"
     assert body["completed_at"] is not None
     assert body["log"]["discord_token"] == "[REDACTED]"
+
+
+def test_worker_can_list_queued_runs(client):
+    run_id = str(uuid.uuid4())
+    with Session(get_engine()) as session:
+        session.add(RunModel(id=run_id, task_id="worker_task", status="queued", log={"message": "queued"}))
+        session.commit()
+
+    response = client.get("/runs", headers=WORKER_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == run_id

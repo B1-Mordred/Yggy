@@ -33,6 +33,12 @@ AUTOMATION_API_BASE_URL = os.environ.get('AUTOMATION_API_BASE_URL', 'http://127.
 AUTOMATION_TOOL_API_KEY = os.environ.get('AUTOMATION_TOOL_API_KEY', '').strip()
 PROPOSAL_RE = re.compile(r'\b(\d{14}_[A-Za-z0-9._-]+)\b')
 AUTOMATION_TASK_ALIASES = {
+    'daily brief': 'daily_local_ai_security_briefing',
+    'daily briefing': 'daily_local_ai_security_briefing',
+    'daily security brief': 'daily_local_ai_security_briefing',
+    'daily security briefing': 'daily_local_ai_security_briefing',
+    'local ai brief': 'daily_local_ai_security_briefing',
+    'local ai briefing': 'daily_local_ai_security_briefing',
     'daily local ai security briefing': 'daily_local_ai_security_briefing',
     'daily local ai/security briefing': 'daily_local_ai_security_briefing',
     'local ai security briefing': 'daily_local_ai_security_briefing',
@@ -475,7 +481,7 @@ def build_dispatch(user_request: str, prior_text: str) -> tuple[dict[str, Any] |
 
     return None, (
         'I could not map that to an approved Yggdrasil action. '
-        'Try asking for a brief configuration change, schedule change, delivery toggle, manual brief run, pending proposal list, or proposal approval/cancel.'
+        'Try asking to list, show, draft, request approval for, pause, or run approved automation tasks.'
     )
 
 
@@ -674,7 +680,19 @@ def format_draft_response(status_code: int, body: Any, draft: dict[str, Any]) ->
 def handle_automation_request(user_text: str) -> str | None:
     lowered = user_text.lower()
     automation_words = ('automation', 'automations', 'task', 'tasks', 'control plane')
-    project_words = ('local ai security briefing', 'daily local ai security briefing', 'open webui', 'ollama', 'yggdrasil')
+    project_words = (
+        'daily brief',
+        'daily briefing',
+        'daily security brief',
+        'daily security briefing',
+        'local ai brief',
+        'local ai briefing',
+        'local ai security briefing',
+        'daily local ai security briefing',
+        'open webui',
+        'ollama',
+        'yggdrasil',
+    )
     if not any(word in lowered for word in automation_words + project_words):
         return None
 
@@ -721,7 +739,7 @@ def handle_automation_request(user_text: str) -> str | None:
             return format_task(body)
         return f'Automation API returned status `{status_code}` for task `{task_id}`:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 
-    if re.search(r'\b(run|execute|dry run)\b', lowered):
+    if re.search(r'\b(run|execute|dry run|send|deliver|post|generate)\b', lowered):
         task_id = automation_task_id_from_text(user_text)
         if not task_id:
             return 'Which automation task should I run? Give me the task id.'
@@ -741,7 +759,7 @@ def handle_automation_request(user_text: str) -> str | None:
 
     return (
         'This Yggdrasil endpoint is now dedicated to the personal automation control plane. '
-        'Ask me to list, show, draft, request approval for, pause, or dry-run automation tasks.'
+        'Ask me to list, show, draft, request approval for, pause, or run approved automation tasks.'
     )
 
 
@@ -865,7 +883,7 @@ def route_chat(messages: list[dict[str, Any]]) -> str:
     return (
         'This Yggdrasil endpoint is dedicated exclusively to the personal automation control plane. '
         'I no longer route Open WebUI requests to the older Hermes brief or management domains. '
-        'Ask me to list, show, draft, request approval for, pause, or dry-run automation tasks.'
+        'Ask me to list, show, draft, request approval for, pause, or run approved automation tasks.'
     )
 
 
