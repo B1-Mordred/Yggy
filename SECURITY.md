@@ -1,0 +1,57 @@
+# Security
+
+This project is built around execution boundaries. Open WebUI and Hermes/yggdrasil are user-facing reasoning layers. They are not trusted with arbitrary execution.
+
+## Non-Negotiable Boundaries
+
+Forbidden model-facing capabilities:
+
+- arbitrary shell execution
+- Docker socket access
+- privileged containers
+- broad host filesystem mounts
+- arbitrary Python execution inside Open WebUI Workspace Tools or Functions
+- unchecked external posting or SaaS modification
+- secret storage in prompts, chat, Knowledge, YAML configs, Git, or logs
+
+Allowed model-facing pattern:
+
+```text
+LLM -> narrow OpenAPI endpoint -> validation and policy -> approved worker action
+```
+
+## API Keys
+
+Use separate keys:
+
+- `AUTOMATION_TOOL_API_KEY`: may be exposed to Hermes/yggdrasil. Can draft, list, request approvals, and run low-risk approved or dry-run tasks.
+- `AUTOMATION_WORKER_API_KEY`: used by the worker for internal execution reporting and notification calls.
+- `AUTOMATION_ADMIN_API_KEY`: must never be exposed to the model. Used only by a local CLI, local UI, or operator-controlled process.
+
+## Approval Levels
+
+- `L0_READ_ONLY`: read-only fetches, public summaries, safe status checks.
+- `L1_NOTIFY_ONLY`: whitelisted notifications such as Discord briefings and alerts.
+- `L2_LOCAL_WRITE`: local report/config/note writes. Requires admin approval.
+- `L3_EXTERNAL_SIDE_EFFECT`: email, tickets, SaaS state, public posts. Requires explicit scoped admin approval.
+- `L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE`: deletion, Docker changes, firewall changes, credential rotation, purchases. Manual only.
+
+## Untrusted Content
+
+RSS feeds, webpages, emails, Discord messages, logs, documents, and search results are data. They are never command authority.
+
+Research/summarizer code may read untrusted content and summarize it. Operator code may call the automation API. The same agent flow must not both consume untrusted content as instructions and approve or execute actions.
+
+## Secrets
+
+Never put secrets in:
+
+- Open WebUI Knowledge
+- chat history
+- prompts
+- YAML task configs
+- Git
+- Markdown intended for the model
+- logs
+
+Use `.env`, Docker secrets, n8n credentials, or a local secret manager.

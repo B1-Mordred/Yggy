@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "automation-api"))
+
+from app.policy import PolicyViolation, load_policy, validate_policy_config, validate_task_policy  # noqa: E402
+from app.schemas import TaskConfig, TopicConfig  # noqa: E402
+
+
+def validate_tasks() -> list[str]:
+    errors: list[str] = []
+    policy = load_policy(str(ROOT / "configs" / "policies.yaml"))
+    for path in sorted((ROOT / "configs" / "tasks").glob("*.yaml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            task = TaskConfig.model_validate(data)
+            validate_task_policy(task, policy)
+        except Exception as exc:
+            errors.append(f"{path}: {exc}")
+    return errors
+
+
+def validate_topics() -> list[str]:
+    errors: list[str] = []
+    for path in sorted((ROOT / "configs" / "topics").glob("*.yaml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            TopicConfig.model_validate(data)
+        except Exception as exc:
+            errors.append(f"{path}: {exc}")
+    return errors
+
+
+def validate_policies() -> list[str]:
+    try:
+        validate_policy_config(load_policy(str(ROOT / "configs" / "policies.yaml")))
+    except PolicyViolation as exc:
+        return [f"{ROOT / 'configs' / 'policies.yaml'}: {exc}"]
+    return []
+
+
+def main() -> int:
+    errors = validate_policies() + validate_topics() + validate_tasks()
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+    print("Config validation passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,99 @@
+services:
+  automation-api:
+    build: ./automation-api
+    container_name: automation-api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AUTOMATION_POLICY_FILE: /app/configs/policies.yaml
+    networks:
+      - automation_net
+      - notify_net
+    depends_on:
+      automation-mysql:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8088:8088"
+    volumes:
+      - ./configs:/app/configs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  automation-worker:
+    build: ./automation-worker
+    container_name: automation-worker
+    env_file:
+      - path: .env
+        required: false
+    networks:
+      - automation_net
+      - notify_net
+    depends_on:
+      - automation-api
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  automation-mysql:
+    image: mysql:8.4
+    container_name: automation-mysql
+    env_file:
+      - path: .env
+        required: false
+    networks:
+      - automation_net
+    volumes:
+      - automation_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n-automation
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODES_EXCLUDE: '["n8n-nodes-base.executeCommand", "n8n-nodes-base.readWriteFile"]'
+      N8N_SSRF_PROTECTION_ENABLED: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_HIRING_BANNER_ENABLED: "false"
+    networks:
+      - automation_net
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+networks:
+  automation_net:
+    internal: true
+  notify_net:
+    internal: false
+
+volumes:
+  automation_mysql_data:
+  n8n_data:

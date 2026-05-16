@@ -1,0 +1,47 @@
+id: daily_local_ai_security_briefing
+name: Daily Local AI Security Briefing
+type: topic_digest
+enabled: false
+owner: local_user
+created_by: yggdrasil
+
+trigger:
+  kind: schedule
+  cron: "0 8 * * 1-5"
+  timezone: Europe/Berlin
+
+sources:
+  - type: rss
+    url: https://example.com/feed.xml
+  - type: web_query
+    query: "Open WebUI Ollama Hermes Agent Docker n8n security"
+
+filters:
+  include:
+    - Open WebUI
+    - Ollama
+    - Hermes
+    - Docker
+    - n8n
+  exclude:
+    - sponsored
+    - rumor
+
+output:
+  channel: discord
+  target: briefings
+  format: "5 bullets, impact, source links, recommended action"
+
+policy:
+  approval_level: L1_NOTIFY_ONLY
+  max_items: 10
+  require_sources: true
+  allow_external_side_effects: false
+  allow_shell: false
+  allow_docker_socket: false
+  allow_filesystem_write: false
+
+runtime:
+  dry_run: true
+  timeout_seconds: 120
+  retry_count: 1

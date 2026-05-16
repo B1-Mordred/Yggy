@@ -1,0 +1,18 @@
+{
+  "name": "Daily Briefing Webhook Stub",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "stub-webhook",
+      "name": "Authenticated Webhook Placeholder",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [300, 300]
+    }
+  ],
+  "connections": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,37 @@
+id: morning_server_health_check
+name: Morning Server Health Check
+type: server_health
+enabled: false
+owner: local_user
+created_by: yggdrasil
+
+trigger:
+  kind: schedule
+  cron: "30 8 * * *"
+  timezone: Europe/Berlin
+
+checks:
+  - type: http_health
+    name: open_webui
+    url: http://open-webui:8080/health
+  - type: http_health
+    name: automation_api
+    url: http://automation-api:8088/health
+
+output:
+  channel: discord
+  target: alerts
+  format: "anomalies only"
+
+policy:
+  approval_level: L1_NOTIFY_ONLY
+  require_sources: false
+  allow_external_side_effects: false
+  allow_shell: false
+  allow_docker_socket: false
+  allow_filesystem_write: false
+
+runtime:
+  dry_run: true
+  timeout_seconds: 60
+  retry_count: 1
