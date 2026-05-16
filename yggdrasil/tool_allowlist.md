@@ -2,6 +2,8 @@
 
 Expose only the automation API OpenAPI server to yggdrasil.
 
+This Yggdrasil profile is dedicated exclusively to the personal automation control plane. Do not expose older Hermes brief-management, profile-management, host-management, terminal, Docker, filesystem, or proposal-queue tools through this profile.
+
 Allowed:
 
 - `GET /health`

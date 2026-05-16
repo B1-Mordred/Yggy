@@ -29,6 +29,8 @@ docker restart open-webui
 
 The helper stores only the model-facing `AUTOMATION_TOOL_API_KEY` in Open WebUI's tool-server config, attaches the tool server to the `webui`/Yggdrasil model, and filters exposed operations to the low-privilege automation API allowlist.
 
+The installed Yggdrasil action endpoint is intentionally scoped to this project only. Open WebUI-facing Yggdrasil requests should not be routed to older Hermes brief-management, profile-management, host-management, or proposal-queue domains.
+
 ## Workspace Tools Warning
 
 Do not implement this system by giving Open WebUI Workspace Tools or Functions broad Python execution. Treat broad Python tools as shell-level trust. Use the automation API as the policy boundary instead.
