@@ -20,6 +20,10 @@ Bragi exposes an OpenAI-compatible API:
 GET  /health
 POST /diagnostics/route
 POST /context/query
+POST /memory/query
+POST /memory/propose
+POST /memory/commit
+POST /memory/forget
 GET  /v1/models
 POST /v1/chat/completions
 ```
@@ -52,6 +56,23 @@ what health checks do you know?
 show recent run history
 ```
 
+Bragi also has controlled, user-scoped memory. Persistent memory is explicit,
+non-secret, inspectable, and forgettable. Bragi does not silently store chat
+history. A memory write starts as a pending proposal and is saved only after the
+user replies `remember`.
+
+Examples:
+
+```text
+Remember that I prefer short Discord alerts unless something failed.
+remember
+what do you remember about me?
+forget Discord alerts
+```
+
+Memory is conversation context only. It is not approval state, task state,
+credential state, or execution authority.
+
 Configure Open WebUI as a separate model/provider for Bragi. Do not attach
 Workspace Python tools, shell tools, Docker tools, filesystem write tools, admin
 keys, approval nonces, webhook URLs, passwords, or tokens to Bragi.
@@ -75,8 +96,10 @@ BRAGI_CHAT_TEMPERATURE=0.55
 BRAGI_CHAT_TIMEOUT=30
 BRAGI_CHAT_NUM_CTX=4096
 BRAGI_CHAT_MAX_TOKENS=512
+BRAGI_DEFAULT_USER_ID=local_user
 BRAGI_CONFIG_ROOT=/app/configs
 BRAGI_MEMORY_FILE=/app/configs/bragi/memory.yaml
+BRAGI_MEMORY_DATABASE_URL=mysql+pymysql://automation:...@automation-mysql:3306/automation
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
 

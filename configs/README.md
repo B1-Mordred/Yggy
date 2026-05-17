@@ -9,6 +9,13 @@ mounted read-only and may contain only non-secret preferences, style notes,
 service aliases, and operator preferences. It is not execution state and must
 never contain credentials, webhook URLs, approval nonces, or admin decisions.
 
+Persistent Bragi memory is stored in Bragi-owned database tables and is managed
+through Bragi's `/memory/*` endpoints. It is user-scoped, explicit,
+non-secret, inspectable, and forgettable. The identity registry in
+`configs/identities.yaml` maps stable local user IDs to channel subject
+references for Open WebUI, Discord, and future adapters. Use `_ref` fields for
+deployment-specific identifiers and keep credentials out of this registry.
+
 Reusable task templates live in `configs/task_templates/`. They render disabled,
 dry-run task YAML through `scripts/render_task_template.py` and must still pass
 the normal task schema and policy checks. See `docs/TASK_TEMPLATES.md`.

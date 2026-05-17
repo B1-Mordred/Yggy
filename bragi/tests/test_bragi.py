@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bragi"))
 
 from bragi import main as bragi  # noqa: E402
+from bragi import memory_store  # noqa: E402
 
 
 def gateway_response_for(payload: dict) -> dict:
@@ -579,3 +580,136 @@ def test_context_query_endpoint_requires_bragi_key(monkeypatch):
     assert unauthorized.status_code == 401
     assert authorized.status_code == 200
     assert authorized.json()["data"]["pending_reviews"][0]["id"] == "daily_ai_stack_health"
+
+
+def reset_memory(tmp_path):
+    memory_store.reset_memory_store_for_tests(f"sqlite+pysqlite:///{tmp_path / 'bragi_memory.db'}")
+
+
+def test_memory_propose_commit_query_is_user_scoped(tmp_path):
+    reset_memory(tmp_path)
+
+    pending = memory_store.propose_memory(
+        user_id="local_user",
+        category="notification_style",
+        key="discord_alert_detail",
+        value="short unless a failure occurred",
+    )
+    assert pending["status"] == "pending"
+    assert memory_store.query_memory(user_id="local_user") == []
+
+    active = memory_store.commit_memory(memory_id=pending["id"], user_id="local_user")
+
+    assert active["status"] == "active"
+    assert memory_store.query_memory(user_id="local_user")[0]["key"] == "discord_alert_detail"
+    assert memory_store.query_memory(user_id="other_user") == []
+
+
+def test_memory_rejects_secret_like_values(tmp_path):
+    reset_memory(tmp_path)
+
+    try:
+        memory_store.propose_memory(
+            user_id="local_user",
+            category="note",
+            key="bad_secret",
+            value="my token is xoxb_this-should-not-be-stored-1234567890",
+        )
+    except memory_store.MemoryValidationError as exc:
+        assert "secret-like" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("secret-like memory was accepted")
+
+
+def test_memory_endpoints_require_bragi_key_and_do_not_store_secrets(tmp_path, monkeypatch):
+    reset_memory(tmp_path)
+    monkeypatch.setattr(bragi, "API_KEY", "test-bragi-key")
+    client = TestClient(bragi.app)
+
+    unauthorized = client.post(
+        "/memory/propose",
+        json={"category": "preference", "key": "message_style", "value": "short"},
+    )
+    rejected_secret = client.post(
+        "/memory/propose",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"category": "note", "key": "api_key", "value": "sk_not_for_memory_1234567890"},
+    )
+    proposed = client.post(
+        "/memory/propose",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"category": "preference", "key": "message_style", "value": "short technical replies"},
+    )
+    memory_id = proposed.json()["memory"]["id"]
+    committed = client.post(
+        "/memory/commit",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"memory_id": memory_id},
+    )
+    queried = client.post(
+        "/memory/query",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"user_id": "local_user"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert rejected_secret.status_code == 422
+    assert proposed.status_code == 200
+    assert proposed.json()["status"] == "needs_confirmation"
+    assert committed.status_code == 200
+    assert committed.json()["status"] == "saved"
+    assert queried.json()["records"][0]["key"] == "message_style"
+
+
+def test_memory_chat_proposal_and_commit_do_not_call_execution_paths(tmp_path, monkeypatch):
+    reset_memory(tmp_path)
+    monkeypatch.setattr(bragi, "api_request", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("api called")))
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("yggdrasil called")))
+
+    proposal = bragi.route_chat([{"role": "user", "content": "Remember that I prefer short Discord alerts unless something failed."}])
+    commit = bragi.route_chat(
+        [
+            {"role": "assistant", "content": proposal},
+            {"role": "user", "content": "remember"},
+        ]
+    )
+    query = bragi.route_chat([{"role": "user", "content": "what do you remember about me?"}])
+
+    assert "Pending memory proposal" in proposal
+    assert "Saved as non-secret Bragi memory" in commit
+    assert "short Discord alerts" in query
+
+
+def test_memory_chat_rejects_secret_without_storing(tmp_path):
+    reset_memory(tmp_path)
+
+    answer = bragi.route_chat([{"role": "user", "content": "Remember that my API key is sk_not_for_memory_1234567890"}])
+
+    assert "will not store" in answer
+    assert memory_store.query_memory(user_id="local_user", include_pending=True) == []
+
+
+def test_memory_forget_marks_matching_records_forgotten(tmp_path):
+    reset_memory(tmp_path)
+    pending = memory_store.propose_memory(
+        user_id="local_user",
+        category="preference",
+        key="message_style",
+        value="short replies",
+    )
+    memory_store.commit_memory(memory_id=pending["id"], user_id="local_user")
+
+    answer = bragi.route_chat([{"role": "user", "content": "forget message style"}])
+
+    assert "Forgot 1 Bragi memory" in answer
+    assert memory_store.query_memory(user_id="local_user") == []
+
+
+def test_memory_diagnostics_identifies_proposal_and_forget():
+    proposal = bragi.diagnose_route([{"role": "user", "content": "Remember that I prefer concise summaries."}])
+    forget = bragi.diagnose_route([{"role": "user", "content": "forget concise summaries"}])
+
+    assert proposal["mode"] == "memory_proposal"
+    assert proposal["route"] == "bragi_memory_propose"
+    assert forget["mode"] == "memory_forget"
+    assert forget["route"] == "bragi_memory_forget"

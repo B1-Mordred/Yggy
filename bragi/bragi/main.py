@@ -17,9 +17,21 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from .memory_store import (
+    ALLOWED_MEMORY_CATEGORIES,
+    MemoryValidationError,
+    commit_memory,
+    forget_memory,
+    memory_store_status,
+    propose_memory,
+    query_memory,
+    safe_identifier,
+)
+
 MODEL_ID = os.getenv("BRAGI_MODEL_ID", "bragi")
 DISPLAY_NAME = "Bragi"
 API_KEY = os.getenv("BRAGI_API_KEY", "").strip()
+DEFAULT_USER_ID = os.getenv("BRAGI_DEFAULT_USER_ID", "local_user").strip() or "local_user"
 AUTOMATION_API_BASE_URL = os.getenv("AUTOMATION_API_BASE_URL", "http://automation-api:8088").rstrip("/")
 AUTOMATION_TOOL_API_KEY = os.getenv("AUTOMATION_TOOL_API_KEY", "").strip()
 YGGDRASIL_BASE_URL = os.getenv("YGGDRASIL_BASE_URL", "http://host.docker.internal:8642").rstrip("/")
@@ -107,8 +119,40 @@ class RouteDiagnosticsRequest(BaseModel):
 
 class ContextQueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=12000)
+    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
     category: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=10, ge=1, le=50)
+
+
+class MemoryQueryRequest(BaseModel):
+    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
+    category: str | None = Field(default=None, max_length=64)
+    include_pending: bool = False
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class MemoryProposeRequest(BaseModel):
+    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
+    scope: str = Field(default="user", max_length=32)
+    category: str = Field(min_length=1, max_length=64)
+    key: str = Field(min_length=1, max_length=128)
+    value: Any
+    source: str = Field(default="explicit_user_instruction", max_length=128)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class MemoryCommitRequest(BaseModel):
+    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
+    memory_id: str = Field(min_length=1, max_length=64)
+
+
+class MemoryForgetRequest(BaseModel):
+    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
+    memory_id: str | None = Field(default=None, max_length=64)
+    category: str | None = Field(default=None, max_length=64)
+    key: str | None = Field(default=None, max_length=128)
+    search: str | None = Field(default=None, max_length=500)
+    limit: int = Field(default=50, ge=1, le=100)
 
 
 def utcnow() -> datetime:
@@ -209,10 +253,8 @@ def load_memory() -> dict[str, Any]:
     return data
 
 
-def memory_context() -> str:
+def static_memory_payload() -> dict[str, Any]:
     memory = load_memory()
-    if not memory:
-        return ""
     allowed = {
         "preferred_language",
         "message_style",
@@ -224,29 +266,39 @@ def memory_context() -> str:
         "automation_preferences",
         "notes",
     }
-    filtered = {key: value for key, value in memory.items() if key in allowed}
-    if not filtered:
+    return {key: value for key, value in memory.items() if key in allowed}
+
+
+def persistent_memory_payload(user_id: str = DEFAULT_USER_ID, *, include_pending: bool = False, limit: int = 50) -> list[dict[str, Any]]:
+    try:
+        return [
+            context_redact(record)
+            for record in query_memory(user_id=user_id, include_pending=include_pending, limit=limit)
+        ]
+    except Exception as exc:
+        print(f"bragi persistent memory load failed: {exc}", file=sys.stderr)
+        return []
+
+
+def memory_context(user_id: str = DEFAULT_USER_ID) -> str:
+    payload = {
+        "static": static_memory_payload(),
+        "records": persistent_memory_payload(user_id=user_id, include_pending=False, limit=20),
+    }
+    if not payload["static"] and not payload["records"]:
         return ""
-    rendered = yaml.safe_dump(filtered, sort_keys=True, allow_unicode=False)
+    rendered = yaml.safe_dump(payload, sort_keys=True, allow_unicode=False)
     return rendered[:3000]
 
 
-def memory_summary() -> dict[str, Any]:
-    memory = load_memory()
-    if not memory:
-        return {}
-    allowed = {
-        "preferred_language",
-        "message_style",
-        "default_timezone",
-        "default_schedule",
-        "default_output_target",
-        "default_dry_run",
-        "service_aliases",
-        "automation_preferences",
-        "notes",
-    }
-    return context_redact({key: value for key, value in memory.items() if key in allowed})
+def memory_summary(user_id: str = DEFAULT_USER_ID) -> dict[str, Any]:
+    return context_redact(
+        {
+            "user_id": user_id,
+            "static": static_memory_payload(),
+            "records": persistent_memory_payload(user_id=user_id, include_pending=False, limit=50),
+        }
+    )
 
 
 def config_path(relative: str) -> Path:
@@ -403,13 +455,17 @@ def context_categories_for_text(text: str, requested_category: str | None = None
     return categories
 
 
-def build_context(query: str, *, category: str | None = None, limit: int = 10) -> dict[str, Any]:
+def build_context(query: str, *, user_id: str = DEFAULT_USER_ID, category: str | None = None, limit: int = 10) -> dict[str, Any]:
     categories = context_categories_for_text(query, category)
     if not categories:
         categories = ["tasks", "capabilities"]
     limit = max(1, min(limit, 50))
     data: dict[str, Any] = {}
     errors: dict[str, str] = {}
+    try:
+        clean_user_id = safe_identifier(user_id, field_name="user_id")
+    except MemoryValidationError:
+        clean_user_id = DEFAULT_USER_ID
 
     def capture(name: str, producer) -> None:
         try:
@@ -440,12 +496,13 @@ def build_context(query: str, *, category: str | None = None, limit: int = 10) -
     if "recent_runs" in categories:
         capture("recent_runs", lambda: [safe_run_summary(run) for run in context_api_get(f"/runs?limit={limit}")])
     if "memory" in categories:
-        capture("memory", memory_summary)
+        capture("memory", lambda: memory_summary(clean_user_id))
 
     return {
         "service": "bragi",
         "context_version": 1,
         "read_only": True,
+        "user_id": clean_user_id,
         "query_preview": redact_diagnostic_text(query)[:240],
         "categories": categories,
         "data": context_redact(data),
@@ -585,6 +642,159 @@ def format_context_answer(context: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def memory_proposal_text(text: str) -> str | None:
+    match = re.match(r"^\s*remember(?:\s+that)?\s+(.+?)\s*$", text, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    value = match.group(1).strip(" .")
+    if not value or value.lower() in {"this", "it"}:
+        return None
+    return value[:1000]
+
+
+def memory_forget_text(text: str) -> str | None:
+    match = re.match(r"^\s*forget\s+(.+?)\s*$", text, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    value = match.group(1).strip(" .")
+    return value or None
+
+
+def is_memory_commit_confirmation(text: str) -> bool:
+    compact = re.sub(r"\s+", " ", text.strip().lower()).strip(" .!")
+    return compact in {"remember", "save it", "save this", "commit memory", "yes remember"}
+
+
+def memory_category_key_for_text(value: str) -> tuple[str, str]:
+    lowered = value.lower()
+    if "alert" in lowered or "notification" in lowered or "discord" in lowered:
+        return "notification_style", "discord_notification_style"
+    if "timezone" in lowered or "time zone" in lowered:
+        return "default", "default_timezone"
+    if "briefing target" in lowered or "brief target" in lowered or "default target" in lowered:
+        return "default", "default_output_target"
+    if "call" in lowered and re.search(r"\b(server|service|machine|box|host)\b", lowered):
+        return "alias", slug(value[:80], "service_alias")
+    if "prefer" in lowered or "like" in lowered:
+        return "preference", slug(value[:80], "preference")
+    if "interested in" in lowered or "care about" in lowered or "watch" in lowered:
+        return "project_interest", slug(value[:80], "project_interest")
+    return "note", slug(value[:80], "note")
+
+
+def format_memory_record(record: dict[str, Any]) -> str:
+    value = record.get("value")
+    value_text = yaml.safe_dump(value, sort_keys=True, allow_unicode=False).strip() if not isinstance(value, str) else value
+    return (
+        f"- `{record.get('category')}.{record.get('key')}` = {value_text} "
+        f"(status `{record.get('status')}`, source `{record.get('source')}`)"
+    )
+
+
+def format_memory_proposal(record: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "I can remember this as non-secret user context:",
+            "",
+            f"- User: `{record.get('user_id')}`",
+            f"- Category: `{record.get('category')}`",
+            f"- Key: `{record.get('key')}`",
+            f"- Value: {record.get('value')}",
+            "",
+            "Reply `remember` to save it. This will not approve, enable, or run any automation.",
+            "",
+            "Pending memory proposal:",
+            f"```json\n{json.dumps({'memory_action': 'propose', 'memory_id': record.get('id'), 'user_id': record.get('user_id')}, indent=2, sort_keys=True)}\n```",
+        ]
+    )
+
+
+def pending_memory_from_prior(text: str) -> dict[str, Any] | None:
+    matches = list(re.finditer(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL))
+    for match in reversed(matches):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("memory_action") == "propose" and payload.get("memory_id"):
+            return payload
+    return None
+
+
+def handle_memory_proposal(user_text: str, *, user_id: str = DEFAULT_USER_ID) -> str | None:
+    value = memory_proposal_text(user_text)
+    if value is None:
+        return None
+    category, key = memory_category_key_for_text(value)
+    try:
+        record = propose_memory(user_id=user_id, category=category, key=key, value=value)
+    except MemoryValidationError as exc:
+        return (
+            f"I will not store that in memory: {exc}. "
+            "Bragi memory is only for non-secret preferences, aliases, routines, and notes. "
+            "Put credentials in `.env`, Docker secrets, n8n credentials, or a local secret manager."
+        )
+    except Exception as exc:
+        return f"I could not create a memory proposal because the memory store returned `{exc.__class__.__name__}`."
+    return format_memory_proposal(record)
+
+
+def handle_memory_commit(prior: str) -> str | None:
+    pending = pending_memory_from_prior(prior)
+    if not pending:
+        return None
+    try:
+        record = commit_memory(memory_id=str(pending["memory_id"]), user_id=str(pending.get("user_id") or DEFAULT_USER_ID))
+    except MemoryValidationError as exc:
+        return f"I could not save that memory: {exc}."
+    except Exception as exc:
+        return f"I could not save that memory because the memory store returned `{exc.__class__.__name__}`."
+    return (
+        "Saved as non-secret Bragi memory.\n\n"
+        f"{format_memory_record(record)}\n\n"
+        "This is conversation context only. Yggy policy still controls approvals, task state, and execution."
+    )
+
+
+def handle_memory_forget(user_text: str, *, user_id: str = DEFAULT_USER_ID) -> str | None:
+    search = memory_forget_text(user_text)
+    if search is None:
+        return None
+    if search.lower() in {"everything", "everything about me", "all memory", "all"}:
+        search = None
+    try:
+        result = forget_memory(user_id=user_id, search=search)
+    except MemoryValidationError as exc:
+        return f"I could not forget that memory: {exc}."
+    except Exception as exc:
+        return f"I could not update memory because the memory store returned `{exc.__class__.__name__}`."
+    records = result.get("records") if isinstance(result, dict) else []
+    if not records:
+        return "I did not find matching active Bragi memory to forget."
+    lines = [f"Forgot {len(records)} Bragi memory record(s):"]
+    lines.extend(format_memory_record(record) for record in records[:10])
+    lines.append("")
+    lines.append("This only changes Bragi memory. It does not change Yggy tasks, approvals, credentials, or run history.")
+    return "\n".join(lines)
+
+
+def format_memory_query_answer(user_id: str = DEFAULT_USER_ID) -> str:
+    records = persistent_memory_payload(user_id=user_id, include_pending=False, limit=50)
+    static = static_memory_payload()
+    lines = ["Here is the non-secret Bragi memory I can use as conversation context:"]
+    if static:
+        lines.extend(["", "Static operator-curated memory:", f"```yaml\n{yaml.safe_dump(context_redact(static), sort_keys=True, allow_unicode=False).strip()}\n```"])
+    if records:
+        lines.extend(["", "User-scoped memory:"])
+        lines.extend(format_memory_record(record) for record in records)
+    if not static and not records:
+        lines.append("")
+        lines.append("- No active non-secret memory is stored for this user.")
+    lines.append("")
+    lines.append("No secrets, approval nonces, or credentials should be stored here.")
+    return "\n".join(lines)
+
+
 def openwebui_auxiliary_answer(user_text: str) -> str | None:
     lowered = user_text.lower()
     if "### task:" not in lowered:
@@ -656,6 +866,47 @@ def diagnose_route(messages: list[dict[str, Any]]) -> dict[str, Any]:
         return diagnostic
 
     prior = prior_text(messages)
+    if is_memory_commit_confirmation(user_text):
+        pending = pending_memory_from_prior(prior)
+        diagnostic.update(
+            {
+                "mode": "memory_commit",
+                "route": "bragi_memory_commit" if pending else "none",
+                "reason": "Memory confirmation with pending memory proposal." if pending else "Memory confirmation without a pending memory proposal.",
+                "pending_memory_found": bool(pending),
+            }
+        )
+        return diagnostic
+    if memory_proposal_text(user_text) is not None:
+        category, key = memory_category_key_for_text(memory_proposal_text(user_text) or "")
+        diagnostic.update(
+            {
+                "mode": "memory_proposal",
+                "route": "bragi_memory_propose",
+                "reason": "Explicit remember request creates a pending non-secret memory proposal.",
+                "memory_candidate": {"user_id": DEFAULT_USER_ID, "category": category, "key": key},
+            }
+        )
+        return diagnostic
+    if memory_forget_text(user_text) is not None:
+        diagnostic.update(
+            {
+                "mode": "memory_forget",
+                "route": "bragi_memory_forget",
+                "reason": "Explicit forget request marks matching Bragi memory as forgotten.",
+            }
+        )
+        return diagnostic
+    if re.search(r"\bwhat do you remember\b|\bwhat.*memory\b|\bshow.*memory\b", user_text, re.IGNORECASE):
+        diagnostic.update(
+            {
+                "mode": "memory_query",
+                "route": "bragi_memory_query",
+                "reason": "Question asks to inspect non-secret Bragi memory.",
+                "context_categories": ["memory"],
+            }
+        )
+        return diagnostic
     if is_confirmation(user_text):
         pending = pending_intent_from_prior(prior)
         diagnostic.update(
@@ -746,6 +997,9 @@ def format_route_diagnostic(diagnostic: dict[str, Any]) -> str:
     categories = diagnostic.get("context_categories")
     if isinstance(categories, list) and categories:
         lines.append(f"- Context categories: {', '.join(f'`{item}`' for item in categories)}")
+    memory_candidate = diagnostic.get("memory_candidate")
+    if isinstance(memory_candidate, dict):
+        lines.extend(["", "Memory candidate:", f"```json\n{json.dumps(memory_candidate, indent=2, sort_keys=True)}\n```"])
     operation = diagnostic.get("operation")
     if isinstance(operation, dict):
         lines.extend(["", "Canonical operation:", f"```json\n{json.dumps(operation, indent=2, sort_keys=True)}\n```"])
@@ -1229,6 +1483,20 @@ def route_chat(messages: list[dict[str, Any]]) -> str:
         return format_route_diagnostic(diagnose_route(diagnostic_messages))
 
     prior = prior_text(messages)
+    if is_memory_commit_confirmation(user_text):
+        committed = handle_memory_commit(prior)
+        if committed is not None:
+            return committed
+        return "I do not have a pending Bragi memory proposal to save."
+    memory_proposal = handle_memory_proposal(user_text)
+    if memory_proposal is not None:
+        return memory_proposal
+    memory_forget = handle_memory_forget(user_text)
+    if memory_forget is not None:
+        return memory_forget
+    if re.search(r"\bwhat do you remember\b|\bwhat.*memory\b|\bshow.*memory\b", user_text, re.IGNORECASE):
+        return format_memory_query_answer(DEFAULT_USER_ID)
+
     if is_confirmation(user_text):
         pending = pending_intent_from_prior(prior)
         if not pending:
@@ -1281,6 +1549,7 @@ def health() -> dict[str, Any]:
         "chat_max_tokens": CHAT_MAX_TOKENS,
         "memory_file": MEMORY_FILE,
         "memory_loaded": bool(load_memory()),
+        "memory_store": memory_store_status(),
     }
 
 
@@ -1301,7 +1570,82 @@ def route_diagnostics(payload: RouteDiagnosticsRequest, authorization: str | Non
 def context_query(payload: ContextQueryRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     if not authorized(authorization):
         raise HTTPException(status_code=401, detail="unauthorized")
-    return build_context(payload.query, category=payload.category, limit=payload.limit)
+    return build_context(payload.query, user_id=payload.user_id, category=payload.category, limit=payload.limit)
+
+
+@app.post("/memory/query")
+def memory_query(payload: MemoryQueryRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        records = query_memory(
+            user_id=payload.user_id,
+            category=payload.category,
+            include_pending=payload.include_pending,
+            limit=payload.limit,
+        )
+    except MemoryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "service": "bragi",
+        "read_only": True,
+        "user_id": payload.user_id,
+        "records": context_redact(records),
+        "redaction": {"secrets": "redacted", "approval_nonces": "omitted"},
+    }
+
+
+@app.post("/memory/propose")
+def memory_propose(payload: MemoryProposeRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        record = propose_memory(
+            user_id=payload.user_id,
+            scope=payload.scope,
+            category=payload.category,
+            key=payload.key,
+            value=payload.value,
+            source=payload.source,
+            confidence=payload.confidence,
+        )
+    except MemoryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "status": "needs_confirmation",
+        "secret_scan": "passed",
+        "memory": context_redact(record),
+        "summary": f"Remember {record['category']}.{record['key']} for user {record['user_id']}.",
+    }
+
+
+@app.post("/memory/commit")
+def memory_commit(payload: MemoryCommitRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        record = commit_memory(memory_id=payload.memory_id, user_id=payload.user_id)
+    except MemoryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "saved", "memory": context_redact(record)}
+
+
+@app.post("/memory/forget")
+def memory_forget(payload: MemoryForgetRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        result = forget_memory(
+            user_id=payload.user_id,
+            memory_id=payload.memory_id,
+            category=payload.category,
+            key=payload.key,
+            search=payload.search,
+            limit=payload.limit,
+        )
+    except MemoryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "forgotten", **context_redact(result)}
 
 
 @app.get("/v1/models")

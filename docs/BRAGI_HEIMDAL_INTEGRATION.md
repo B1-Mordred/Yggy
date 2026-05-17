@@ -200,7 +200,7 @@ authoritative there.
 
 ## Non-Secret Memory
 
-Bragi can read:
+Bragi has two memory sources. Static operator-curated memory lives in:
 
 ```text
 configs/bragi/memory.yaml
@@ -228,6 +228,64 @@ Forbidden examples:
 - private keys
 
 If the memory file contains secret-like keys or values, Bragi ignores it.
+
+Persistent Bragi memory lives in Bragi-owned database tables:
+
+```text
+bragi_memory_records
+bragi_memory_events
+```
+
+The Docker deployment should point `BRAGI_MEMORY_DATABASE_URL` at the same MySQL
+server used by Yggy, but these tables remain Bragi-owned and are not automation
+task state.
+
+Memory endpoints:
+
+```text
+POST /memory/query
+POST /memory/propose
+POST /memory/commit
+POST /memory/forget
+```
+
+Rules:
+
+- memory writes require an explicit user instruction such as `Remember that ...`
+- Bragi creates a pending memory proposal first
+- the user must reply `remember` before the proposal becomes active
+- memory records are scoped by `user_id`
+- memory may hold preferences, aliases, routines, service aliases,
+  notification style, project interests, defaults, and notes
+- memory must not hold API keys, passwords, tokens, webhook URLs, approval
+  nonces, cookies, private keys, credentials, live approval decisions, or raw
+  private message archives
+- memory can be inspected with `what do you remember about me?`
+- memory can be forgotten with `forget ...`
+- memory is conversation context only and is never approval, execution,
+  credential, or task-state authority
+
+Examples:
+
+```text
+Remember that I prefer short Discord alerts unless something failed.
+remember
+what do you remember about me?
+forget Discord alerts
+```
+
+If a user asks Bragi to remember secret-like material, Bragi refuses and points
+the user to `.env`, Docker secrets, n8n credentials, or a local secret manager.
+
+The identity registry lives at:
+
+```text
+configs/identities.yaml
+```
+
+It defines stable local user IDs and channel subject references for future
+channel adapters. Deployment-specific subject values should be referenced by
+environment variable name, not committed as secrets.
 
 ## Open WebUI
 

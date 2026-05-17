@@ -95,6 +95,43 @@ def validate_capabilities() -> list[str]:
     return []
 
 
+def validate_identities() -> list[str]:
+    path = ROOT / "configs" / "identities.yaml"
+    if not path.exists():
+        return [f"{path}: missing identity registry"]
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        return [f"{path}: {exc}"]
+    errors: list[str] = []
+    if data.get("version") != 1:
+        errors.append(f"{path}: version must be 1")
+    users = data.get("users")
+    if not isinstance(users, list) or not users:
+        errors.append(f"{path}: users must be a non-empty list")
+        return errors
+    seen = set()
+    for index, user in enumerate(users):
+        if not isinstance(user, dict):
+            errors.append(f"{path}: users[{index}] must be an object")
+            continue
+        user_id = str(user.get("id") or "")
+        if not user_id:
+            errors.append(f"{path}: users[{index}].id is required")
+        elif user_id in seen:
+            errors.append(f"{path}: duplicate user id {user_id}")
+        seen.add(user_id)
+        for channel_index, channel in enumerate(user.get("channels") or []):
+            if not isinstance(channel, dict):
+                errors.append(f"{path}: users[{index}].channels[{channel_index}] must be an object")
+                continue
+            if not channel.get("type"):
+                errors.append(f"{path}: users[{index}].channels[{channel_index}].type is required")
+            if not channel.get("subject_ref"):
+                errors.append(f"{path}: users[{index}].channels[{channel_index}].subject_ref is required")
+    return errors
+
+
 def main() -> int:
     errors = (
         validate_policies()
@@ -103,6 +140,7 @@ def main() -> int:
         + validate_metrics()
         + validate_task_templates()
         + validate_capabilities()
+        + validate_identities()
     )
     if errors:
         for error in errors:
