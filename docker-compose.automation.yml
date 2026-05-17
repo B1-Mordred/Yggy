@@ -148,6 +148,40 @@ services:
       retries: 12
     restart: unless-stopped
 
+  channel-bridge:
+    build:
+      context: ./channel-bridge
+      network: host
+    container_name: yggy-channel-bridge
+    environment:
+      CHANNEL_BRIDGE_CONFIG_ROOT: /app/configs
+      CHANNEL_BRIDGE_BRAGI_BASE_URL: http://bragi:8650
+      CHANNEL_BRIDGE_BRAGI_API_KEY: ${BRAGI_API_KEY:-}
+      CHANNEL_BRIDGE_DISCORD_ENABLED: ${CHANNEL_BRIDGE_DISCORD_ENABLED:-true}
+      CHANNEL_BRIDGE_DISCORD_HISTORY_LIMIT: ${CHANNEL_BRIDGE_DISCORD_HISTORY_LIMIT:-8}
+      CHANNEL_BRIDGE_DISCORD_REPLY_LIMIT: ${CHANNEL_BRIDGE_DISCORD_REPLY_LIMIT:-1900}
+      CHANNEL_BRIDGE_DISCORD_NICKNAME: ${CHANNEL_BRIDGE_DISCORD_NICKNAME:-Bragi}
+      CHANNEL_BRIDGE_HTTP_TIMEOUT: ${CHANNEL_BRIDGE_HTTP_TIMEOUT:-30}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_HOME_CHANNEL: ${DISCORD_HOME_CHANNEL:-}
+      DISCORD_ALLOWED_USER_IDS: ${DISCORD_ALLOWED_USER_IDS:-}
+    networks:
+      - automation_net
+      - notify_net
+    depends_on:
+      bragi:
+        condition: service_healthy
+    volumes:
+      - ./configs:/app/configs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   automation-mysql:
     image: mysql:8.4
     container_name: automation-mysql

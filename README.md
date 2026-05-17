@@ -41,7 +41,7 @@ cp .env.example .env
 # edit .env manually; do not commit it
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]" -e "bragi[test]"
+python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]" -e "bragi[test]" -e "channel-bridge[test]"
 python scripts/validate_configs.py
 docker compose -f docker-compose.automation.yml config >/dev/null
 ```
@@ -49,7 +49,7 @@ docker compose -f docker-compose.automation.yml config >/dev/null
 Run tests locally:
 
 ```bash
-pytest automation-api/tests automation-worker/tests metrics-exporter/tests bragi/tests yggdrasil/tests
+pytest automation-api/tests automation-worker/tests metrics-exporter/tests bragi/tests yggdrasil/tests channel-bridge/tests
 python scripts/validate_configs.py
 ```
 
@@ -61,6 +61,16 @@ docker compose -f docker-compose.automation.yml up -d --build automation-api met
 curl http://127.0.0.1:8088/health
 curl http://127.0.0.1:8650/health
 ```
+
+To make Discord a first-class Bragi channel, configure `DISCORD_BOT_TOKEN`,
+`DISCORD_HOME_CHANNEL`, and optionally `DISCORD_ALLOWED_USER_IDS`, then start:
+
+```bash
+docker compose -f docker-compose.automation.yml up -d --build channel-bridge
+```
+
+Run only one Discord responder for the same bot token. Stop the legacy Hermes
+Discord gateway before using `channel-bridge` in production.
 
 The API port is published on localhost by default. For trusted LAN access to the operations dashboard, set `AUTOMATION_API_LAN_PUBLISHED_HOST` in `.env` to the host's LAN address and include the LAN override:
 
@@ -128,6 +138,8 @@ For Discord notifications about pending approvals, see
 - No Docker socket exposed to the API, worker, Hermes, or Open WebUI tools.
 - Separate tool, worker, and admin API keys.
 - Bragi is the natural concierge; Yggdrasil stays deterministic.
+- The channel bridge is a transport adapter for Discord and future channels; it
+  owns channel credentials and calls Bragi's narrow channel endpoints.
 - Bragi handles ordinary chat through a local no-tool model fallback; normal
   conversation is not treated as a Yggdrasil routing failure.
 - Bragi reads only non-secret, read-only memory context from

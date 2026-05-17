@@ -10,12 +10,11 @@ tools, admin keys, approval nonces, webhook URLs, or secrets.
 See `docs/BRAGI_HEIMDAL_INTEGRATION.md` for the Bragi -> Heimdal -> Yggdrasil
 boundary model.
 
-Discord should use Bragi through the narrow channel adapter, not through the
-strict Yggdrasil profile:
+Discord should use Bragi through the first-class channel bridge and Bragi's
+narrow channel adapter, not through the strict Yggdrasil profile:
 
 ```text
-POST http://bragi:8650/channels/discord/message
-Authorization: Bearer <BRAGI_API_KEY>
+Discord -> channel-bridge -> POST http://bragi:8650/channels/discord/message
 ```
 
 The Discord bridge should send channel ID, author ID, message content, optional
@@ -24,7 +23,9 @@ Do not give Bragi the Discord bot token, webhook URLs, admin API key, approval
 nonces, shell tools, Docker tools, or filesystem write tools.
 
 If the existing Discord gateway can only speak to an OpenAI-compatible model,
-configure the Discord Hermes profile as a thin Bragi client instead of a
+that profile can be used as a temporary compatibility bridge. The preferred
+production path is the repository-owned `channel-bridge` service. For the
+temporary Hermes profile, configure it as a thin Bragi client instead of a
 general-purpose agent:
 
 ```yaml

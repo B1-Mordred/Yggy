@@ -355,6 +355,26 @@ Discord can be used for natural conversation, context questions, memory
 proposals, task reads, and configured low-risk L1 runs. It cannot approve
 tasks, expose nonces, handle admin secrets, or bypass the Yggy automation API.
 
+The preferred runtime transport is the repository-owned `channel-bridge`
+service:
+
+```text
+Discord
+  -> channel-bridge
+      -> Bragi /channels/discord/message
+          -> Heimdal/Yggdrasil/Yggy as needed
+```
+
+`channel-bridge` owns the Discord bot token and posts Bragi's replies back to
+Discord with mentions disabled. It reads `configs/channels.yaml`, enforces the
+configured channel and optional author allowlist before contacting Bragi, passes
+only bounded recent history for confirmation continuity, and does not receive
+the Yggy admin key, worker key, database URL, Discord webhooks, approval nonces,
+or Docker access.
+
+Do not run the legacy Hermes Discord gateway and `channel-bridge` against the
+same bot token at the same time, or both can answer the same message.
+
 ## Open WebUI
 
 Use Bragi as a separate OpenAI-compatible model/provider. Keep the existing
