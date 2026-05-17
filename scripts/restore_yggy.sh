@@ -16,8 +16,8 @@ Usage:
   scripts/restore_yggy.sh --backup-dir backups/yggy-YYYYmmdd-HHMMSSZ
   scripts/restore_yggy.sh --backup-dir backups/yggy-YYYYmmdd-HHMMSSZ --apply
 
-This script never restores .env or secrets. Stop automation-api and automation-worker
-before applying a database restore.
+This script never restores .env or secrets. Stop automation-api, automation-worker,
+and metrics-exporter before applying a database restore.
 EOF
 }
 
@@ -90,9 +90,9 @@ if [[ "${APPLY}" != "true" ]]; then
   cat <<EOF
 
 Dry-run only. To apply:
-  docker compose -f docker-compose.automation.yml -f docker-compose.https.yml stop automation-worker automation-api
+  docker compose -f docker-compose.automation.yml -f docker-compose.https.yml stop automation-worker metrics-exporter automation-api
   scripts/restore_yggy.sh --backup-dir "${BACKUP_DIR}" --apply
-  docker compose -f docker-compose.automation.yml -f docker-compose.https.yml up -d automation-api automation-worker
+  docker compose -f docker-compose.automation.yml -f docker-compose.https.yml up -d automation-api metrics-exporter automation-worker
 EOF
   exit 0
 fi
