@@ -159,6 +159,12 @@ config. The dashboard can approve or reject pending approvals when the operator
 enters the approval nonce. It does not expose secrets, does not expose nonce
 hashes, and is not included in the OpenAPI tool schema.
 
+Task ids in the dashboard are clickable. The task-detail panel is backed by the
+hidden `/ops/tasks/{task_id}` endpoint and shows a bounded, redacted projection
+of the task config, recent approval history, recent runs, and server-computed
+action eligibility for dry-run, live-run, pause, and resume. Approval history in
+this panel excludes nonce hashes and any operator secrets.
+
 Recent run ids in the dashboard are clickable. The run-detail panel is backed by
 the hidden `/ops/runs/{run_id}` endpoint and shows a bounded, redacted projection
 of the run: topic digest message and items, n8n normalizer response, notification

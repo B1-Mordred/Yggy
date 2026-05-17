@@ -22,6 +22,8 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "Yggy Operations" in allowed.text
     assert "data-view-target=\"audit\"" in allowed.text
     assert "data-view=\"tasks\"" in allowed.text
+    assert "task-detail" in allowed.text
+    assert "data-task-detail-id" in allowed.text
     assert "task-filter-text" in allowed.text
     assert "run-filter-status" in allowed.text
     assert "audit-filter-action" in allowed.text
@@ -206,6 +208,107 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
     assert body["notification"]["discord_token"] == "[REDACTED]"
     assert "hidden-secret" not in response.text
     assert "api_token" not in response.text
+
+
+def test_ops_task_detail_redacts_config_and_lists_history_runs_and_actions(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task_id = "ops_task_detail"
+    run_id = str(uuid.uuid4())
+    config = sample_task(task_id, enabled=True, runtime={"dry_run": False})
+    config["api_token"] = "hidden-secret"
+    config["nested"] = {"authorization": "Bearer hidden-secret"}
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task_id,
+                name="Ops Task Detail",
+                type=config["type"],
+                enabled=True,
+                owner=config["owner"],
+                created_by=config["created_by"],
+                approval_level=config["policy"]["approval_level"],
+                status="enabled",
+                config=config,
+            )
+        )
+        session.flush()
+        session.add_all(
+            [
+                ApprovalModel(
+                    id="approval-task-detail",
+                    task_id=task_id,
+                    approval_level=config["policy"]["approval_level"],
+                    requested_by="yggdrasil",
+                    status="approved",
+                    summary="Approved task detail test",
+                    risk=config["policy"]["approval_level"],
+                    nonce_hash="nonce-hash-secret",
+                    created_at=utcnow(),
+                    decided_at=utcnow(),
+                ),
+                RunModel(
+                    id=run_id,
+                    task_id=task_id,
+                    status="completed",
+                    log={"result": {"status": "ready"}, "api_token": "hidden-secret"},
+                    created_at=utcnow(),
+                    completed_at=utcnow(),
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get(f"/ops/tasks/{task_id}", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task"]["id"] == task_id
+    assert body["config"]["api_token"] == "[REDACTED]"
+    assert body["config"]["nested"]["authorization"] == "[REDACTED]"
+    assert body["approvals"][0]["id"] == "approval-task-detail"
+    assert body["approvals"][0]["status"] == "approved"
+    assert "nonce_hash" not in body["approvals"][0]
+    assert body["recent_runs"][0]["id"] == run_id
+    assert body["allowed_actions"]["dry_run"]["allowed"] is True
+    assert body["allowed_actions"]["live_run"]["allowed"] is True
+    assert body["allowed_actions"]["pause"]["allowed"] is True
+    assert body["allowed_actions"]["resume"]["allowed"] is False
+    assert "hidden-secret" not in response.text
+    assert "nonce-hash-secret" not in response.text
+
+
+def test_ops_task_detail_reports_l2_actions_blocked(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    config = sample_task("ops_task_detail_l2", "L2_LOCAL_WRITE", enabled=True)
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=config["id"],
+                name=config["name"],
+                type=config["type"],
+                enabled=True,
+                owner=config["owner"],
+                created_by=config["created_by"],
+                approval_level=config["policy"]["approval_level"],
+                status="enabled",
+                config=config,
+            )
+        )
+        session.commit()
+
+    response = client.get("/ops/tasks/ops_task_detail_l2", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 200
+    actions = response.json()["allowed_actions"]
+    assert actions["dry_run"]["allowed"] is True
+    assert actions["live_run"]["allowed"] is False
+    assert "L2+" in actions["live_run"]["reason"]
+    assert actions["pause"]["allowed"] is False
+    assert "pause L2+" in actions["pause"]["reason"]
+    assert actions["resume"]["allowed"] is False
+    assert "resume L2+" in actions["resume"]["reason"]
 
 
 def test_ops_audit_events_are_redacted_and_limited(client, monkeypatch):
@@ -854,6 +957,7 @@ def test_ops_routes_are_not_in_openapi(client):
     assert "/ops/status" not in paths
     assert "/ops/audit" not in paths
     assert "/ops/runs/{run_id}" not in paths
+    assert "/ops/tasks/{task_id}" not in paths
     assert "/ops/tasks/{task_id}/run" not in paths
     assert "/ops/tasks/{task_id}/pause" not in paths
     assert "/ops/tasks/{task_id}/resume" not in paths

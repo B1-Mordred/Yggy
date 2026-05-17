@@ -201,6 +201,38 @@ def ops_run_detail(
     return _run_detail(run, task)
 
 
+@router.get("/ops/tasks/{task_id}", include_in_schema=False)
+def ops_task_detail(
+    task_id: str,
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+) -> dict:
+    task = session.get(TaskModel, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    recent_runs = (
+        session.query(RunModel)
+        .filter(RunModel.task_id == task.id)
+        .order_by(RunModel.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    approvals = (
+        session.query(ApprovalModel)
+        .filter(ApprovalModel.task_id == task.id)
+        .order_by(ApprovalModel.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    return _task_detail(
+        session=session,
+        task=task,
+        latest_run=recent_runs[0] if recent_runs else None,
+        recent_runs=recent_runs,
+        approvals=approvals,
+    )
+
+
 @router.get("/ops/audit", include_in_schema=False)
 def ops_audit_events(
     _: None = Depends(require_ops_access),
@@ -413,6 +445,76 @@ def _task_summary(task: TaskModel, latest_run: RunModel | None) -> dict:
     }
 
 
+def _task_detail(
+    *,
+    session: Session,
+    task: TaskModel,
+    latest_run: RunModel | None,
+    recent_runs: list[RunModel],
+    approvals: list[ApprovalModel],
+) -> dict:
+    return {
+        "task": _task_summary(task, latest_run),
+        "config": _redacted_task_config(task),
+        "approvals": [_approval_history_summary(approval) for approval in approvals],
+        "recent_runs": [_run_summary(run) for run in recent_runs],
+        "allowed_actions": _task_action_eligibility(session, task),
+    }
+
+
+def _redacted_task_config(task: TaskModel) -> Any:
+    config = task.config if isinstance(task.config, dict) else {}
+    return _bounded_value(
+        redact_secrets(config),
+        max_depth=MAX_RUN_DETAIL_DEPTH,
+        max_keys=MAX_RUN_DETAIL_KEYS,
+        text_limit=MAX_RUN_DETAIL_TEXT,
+        field_text_limit=MAX_RUN_DETAIL_FIELD_TEXT,
+    )
+
+
+def _task_action_eligibility(session: Session, task: TaskModel) -> dict:
+    level = ApprovalLevel(task.approval_level)
+    dry_run = _allowed_action(True, "available")
+    if level == ApprovalLevel.L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE:
+        dry_run = _allowed_action(False, "L4 tasks are manual only")
+
+    if level == ApprovalLevel.L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE:
+        live_run = _allowed_action(False, "L4 tasks are manual only")
+    elif not task.enabled:
+        live_run = _allowed_action(False, "task must be enabled for live run")
+    elif approval_at_least(level, ApprovalLevel.L2_LOCAL_WRITE):
+        live_run = _allowed_action(False, "admin API required for live L2+ task")
+    else:
+        live_run = _allowed_action(True, "available")
+
+    if approval_at_least(level, ApprovalLevel.L2_LOCAL_WRITE):
+        pause = _allowed_action(False, "admin API required to pause L2+ task")
+    elif not task.enabled:
+        pause = _allowed_action(False, "task is already paused or disabled")
+    else:
+        pause = _allowed_action(True, "available")
+
+    if approval_at_least(level, ApprovalLevel.L2_LOCAL_WRITE):
+        resume = _allowed_action(False, "admin API required to resume L2+ task")
+    elif task.enabled:
+        resume = _allowed_action(False, "task is already enabled")
+    elif task.status == "rejected":
+        resume = _allowed_action(False, "rejected task requires a new approval")
+    elif task.status == "pending_approval":
+        resume = _allowed_action(False, "task is still pending approval")
+    elif level == ApprovalLevel.L1_NOTIFY_ONLY and not _has_approved_task_approval(session, task):
+        resume = _allowed_action(False, "approved L1 task required to resume")
+    else:
+        resume = _allowed_action(True, "available")
+
+    return {"dry_run": dry_run, "live_run": live_run, "pause": pause, "resume": resume}
+
+
+def _allowed_action(allowed: bool, reason: str) -> dict:
+    return {"allowed": allowed, "reason": reason}
+
+
 def _has_approved_task_approval(session: Session, task: TaskModel) -> bool:
     return (
         session.query(ApprovalModel)
@@ -606,6 +708,20 @@ def _run_detail_secret_key(key: str) -> bool:
     if lower_key in RUN_DETAIL_NON_SECRET_KEYS:
         return False
     return any(marker in lower_key for marker in RUN_DETAIL_SECRET_KEY_MARKERS)
+
+
+def _approval_history_summary(approval: ApprovalModel) -> dict:
+    return {
+        "id": approval.id,
+        "task_id": approval.task_id,
+        "approval_level": approval.approval_level,
+        "requested_by": approval.requested_by,
+        "risk": approval.risk,
+        "status": approval.status,
+        "created_at": approval.created_at,
+        "decided_at": approval.decided_at,
+        "summary": _truncate_text(approval.summary, 500),
+    }
 
 
 def _approval_summary(approval: ApprovalModel, task: TaskModel | None = None) -> dict:
@@ -951,6 +1067,10 @@ DASHBOARD_HTML = f"""<!doctype html>
         <div class="table-wrap"><table id="tasks"></table></div>
         <div class="meta" id="task-action-status"></div>
       </section>
+      <section class="section panel" id="task-detail">
+        <h2>Task Detail</h2>
+        <div class="empty">Select a task to inspect its redacted config, approval history, recent runs, and allowed actions.</div>
+      </section>
     </section>
     <section class="view" data-view="runs">
       <section class="section">
@@ -1093,7 +1213,14 @@ DASHBOARD_HTML = f"""<!doctype html>
       select.value = types.includes(selected) ? selected : '';
     }}
     let selectedRunId = null;
+    let selectedTaskId = null;
+    const taskButton = task => `<button type="button" class="link-button" data-task-detail-id="${{esc(task.id)}}" title="${{esc(task.id)}}">${{esc(task.id)}}</button>`;
     const runButton = run => `<button type="button" class="link-button" data-run-id="${{esc(run.id)}}" title="${{esc(run.id)}}">${{esc(shortId(run.id))}}</button>`;
+    function wireTaskDetailLinks() {{
+      document.querySelectorAll('[data-task-detail-id]').forEach(button => {{
+        button.addEventListener('click', () => loadTaskDetail(button.dataset.taskDetailId));
+      }});
+    }}
     function wireRunLinks() {{
       document.querySelectorAll('[data-run-id]').forEach(button => {{
         button.addEventListener('click', () => loadRunDetail(button.dataset.runId));
@@ -1209,7 +1336,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       const filtered = tasks.filter(taskMatchesFilters);
       byId('task-filter-summary').textContent = `Showing ${{filtered.length}} of ${{tasks.length}} tasks.`;
       renderTable('tasks', ['Task', 'Type', 'State', 'Trigger', 'Output', 'Latest Run', 'Actions'], filtered.map(task => [
-        `<code>${{esc(task.id)}}</code><br><span class="meta">${{esc(task.name)}}</span>`,
+        `${{taskButton(task)}}<br><span class="meta">${{esc(task.name)}}</span>`,
         `<span class="pill">${{esc(task.type)}}</span><br><span class="meta">${{esc(task.approval_level)}}</span>`,
         `${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}}<br><span class="meta">status ${{esc(task.status)}}; dry run ${{task.dry_run}}</span>`,
         `<code>${{esc(task.trigger.cron)}}</code><br><span class="meta">${{esc(task.trigger.timezone)}}</span>`,
@@ -1217,9 +1344,91 @@ DASHBOARD_HTML = f"""<!doctype html>
         task.latest_run ? `${{runButton(task.latest_run)}} ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
         `${{taskRunButtons(task)}}${{taskStateButtons(task)}}`,
       ]), 'No tasks match the current filters.');
+      wireTaskDetailLinks();
       wireRunLinks();
       wireTaskRunButtons();
       wireTaskStateButtons();
+    }}
+    function actionLine(label, action) {{
+      const item = action || {{}};
+      return `<div>${{statusLabel(item.allowed === true, label)}}<br><span class="meta">${{esc(item.reason || 'n/a')}}</span></div>`;
+    }}
+    function approvalHistory(approvals) {{
+      return approvals && approvals.length ? approvals.map(approval => `
+        <div>
+          <code>${{esc(approval.id)}}</code> ${{statusLabel(approval.status)}} <span class="pill">${{esc(approval.approval_level)}}</span><br>
+          <span class="meta">requested by ${{esc(approval.requested_by)}} at ${{esc(approval.created_at)}}${{approval.decided_at ? `; decided ${{esc(approval.decided_at)}}` : ''}}</span><br>
+          <span>${{esc(approval.summary)}}</span>
+        </div>
+      `).join('<hr>') : '<div class="empty">No approval history recorded for this task.</div>';
+    }}
+    function taskRecentRuns(runs) {{
+      return runs && runs.length ? runs.map(run => `
+        <div>
+          ${{runButton(run)}} ${{statusLabel(run.status)}}<br>
+          <span class="meta">created ${{esc(run.created_at)}}; completed ${{esc(run.completed_at)}}; notification ${{esc(run.notification?.sent)}}</span>
+        </div>
+      `).join('<hr>') : '<div class="empty">No runs recorded for this task.</div>';
+    }}
+    function renderTaskDetail(data) {{
+      const task = data.task || {{}};
+      const actions = data.allowed_actions || {{}};
+      const approvals = data.approvals || [];
+      const runs = data.recent_runs || [];
+      byId('task-detail').innerHTML = `
+        <h2>Task Detail</h2>
+        <div class="meta">
+          <code>${{esc(task.id)}}</code> - ${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}} -
+          status ${{esc(task.status)}} - approval ${{esc(task.approval_level)}} - updated ${{esc(task.updated_at)}}
+        </div>
+        <div class="detail-grid section">
+          <div class="detail-block">
+            <h3>Allowed Actions</h3>
+            <div class="approval">
+              ${{actionLine('dry run', actions.dry_run)}}
+              ${{actionLine('live run', actions.live_run)}}
+              ${{actionLine('pause', actions.pause)}}
+              ${{actionLine('resume', actions.resume)}}
+            </div>
+          </div>
+          <div class="detail-block">
+            <h3>Task Summary</h3>
+            <div><strong>${{esc(task.name)}}</strong></div>
+            <div class="meta">type ${{esc(task.type)}}; dry run ${{esc(task.dry_run)}}</div>
+            <div class="meta">cron <code>${{esc(task.trigger?.cron)}}</code> in ${{esc(task.trigger?.timezone)}}</div>
+            <div class="meta">output ${{esc(task.output?.channel)}} / ${{esc(task.output?.target)}}</div>
+          </div>
+          <div class="detail-block">
+            <h3>Approval History</h3>
+            ${{approvalHistory(approvals)}}
+          </div>
+          <div class="detail-block">
+            <h3>Recent Runs</h3>
+            ${{taskRecentRuns(runs)}}
+          </div>
+          <div class="detail-block wide">
+            <h3>Redacted Config</h3>
+            ${{jsonBlock(data.config)}}
+          </div>
+        </div>
+      `;
+      wireRunLinks();
+    }}
+    async function loadTaskDetail(taskId) {{
+      selectedTaskId = taskId;
+      showView('tasks');
+      const panel = byId('task-detail');
+      panel.innerHTML = '<h2>Task Detail</h2><div class="empty">Loading task detail...</div>';
+      try {{
+        const response = await fetch(`/ops/tasks/${{encodeURIComponent(taskId)}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        renderTaskDetail(await response.json());
+      }} catch (error) {{
+        panel.innerHTML = `<h2>Task Detail</h2><div class="bad">Unable to load task detail: ${{esc(error.message)}}</div>`;
+      }}
     }}
     function runMatchesFilters(run) {{
       const query = fieldValue('run-filter-text');
@@ -1410,6 +1619,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       syncTaskTypeOptions(data.tasks || []);
       renderTasks();
       renderRuns();
+      if (selectedTaskId && activeView === 'tasks') loadTaskDetail(selectedTaskId);
       if (selectedRunId && activeView === 'runs') loadRunDetail(selectedRunId);
       renderApprovals(data.pending_approvals);
       const latestRetention = data.retention.latest;
