@@ -6,13 +6,12 @@ from sqlalchemy.orm import Session
 from app.audit import audit_event
 from app.auth import ApiRole, require_roles
 from app.database import get_session
-from app.models import RunModel, utcnow
+from app.models import RunModel, TaskModel, utcnow
 from app.schemas import RunUpdate
+from app.services.run_state_service import CLAIMABLE_RUN_STATUSES, claim_log
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(prefix="/runs", tags=["runs"])
-
-CLAIMABLE_RUN_STATUSES = {"queued", "queued_dry_run"}
 
 
 def run_to_dict(run: RunModel) -> dict:
@@ -69,11 +68,13 @@ def claim_run(
 
     dry_run = run.status == "queued_dry_run"
     run.status = "running_dry_run" if dry_run else "running"
-    run.log = redact_secrets({"message": "run claimed", "dry_run": dry_run, "task_id": run.task_id})
+    task = session.get(TaskModel, run.task_id)
+    run.log = claim_log(task, run, dry_run=dry_run)
     audit_event(session, role, "run.claim", "run", run.id, {"task_id": run.task_id, "dry_run": dry_run})
     session.commit()
     payload = run_to_dict(run)
     payload["dry_run"] = dry_run
+    payload["lease"] = run.log.get("lease") if isinstance(run.log, dict) else None
     return payload
 
 

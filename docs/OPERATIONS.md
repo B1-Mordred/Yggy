@@ -110,6 +110,30 @@ queued_dry_run -> running_dry_run -> completed_dry_run
 
 The API will not create a second active run for the same task while a queued or running run exists. Live runs are also deduplicated for `AUTOMATION_RUN_DEDUPE_SECONDS` after completion, defaulting to 300 seconds, to avoid accidental repeated Discord sends. Only the admin key may force a new live run during that cooldown, and force does not bypass an already active run.
 
+Each task can also define explicit run safety limits under `policy`:
+
+```yaml
+max_runs_per_hour: 3
+max_runs_per_day: 10
+min_seconds_between_runs: 300
+```
+
+These limits apply to manual and scheduled queues before a run row is created.
+Denied attempts are written to the audit log as `task.run.denied`. The response
+uses `status: rate_limited`, includes the reason and retry-after estimate, and
+does not call the worker, Discord, n8n, or source fetchers.
+
+When the worker claims a queued run, the API records a lease in the run log. The
+worker periodically calls `/maintenance/stale-runs` with the worker key. Expired
+`running` or `running_dry_run` leases are marked `failed_stale` or
+`failed_stale_dry_run`, audited as `run.stale_recovered`, and no longer block a
+new run for that task. The default lease is:
+
+```text
+AUTOMATION_RUN_LEASE_SECONDS=1800
+AUTOMATION_STALE_RUN_RECOVERY_INTERVAL_SECONDS=300
+```
+
 ## Retention Cleanup
 
 The worker periodically calls the API retention endpoint with the worker key. The model-facing tool key cannot run cleanup.

@@ -127,6 +127,9 @@ class PolicyConfig(BaseModel):
     approval_level: ApprovalLevel
     max_items: int = Field(default=10, ge=1, le=100)
     require_sources: bool = True
+    max_runs_per_hour: int | None = Field(default=12, ge=1, le=1000)
+    max_runs_per_day: int | None = Field(default=50, ge=1, le=10000)
+    min_seconds_between_runs: int = Field(default=0, ge=0, le=86400)
     allow_external_side_effects: bool = False
     allow_shell: bool = False
     allow_docker_socket: bool = False
@@ -398,3 +401,10 @@ class RetentionRequest(BaseModel):
     run_retention_days: int | None = Field(default=None, ge=1, le=3650)
     audit_retention_days: int | None = Field(default=None, ge=1, le=3650)
     temp_task_retention_hours: int | None = Field(default=None, ge=0, le=87600)
+
+
+class StaleRunRecoveryRequest(BaseModel):
+    dry_run: bool = False
+    task_id: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_\-]{2,127}$")
+    stale_after_seconds: int | None = Field(default=None, ge=60, le=86400)
+    limit: int = Field(default=100, ge=1, le=500)

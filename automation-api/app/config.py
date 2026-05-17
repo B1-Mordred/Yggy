@@ -23,6 +23,7 @@ class Settings:
     discord_channel_alerts: str = ""
     discord_channel_approvals: str = ""
     run_dedupe_seconds: int = 300
+    run_lease_seconds: int = 1800
     run_retention_days: int = 30
     audit_retention_days: int = 90
     temp_task_retention_hours: int = 24
@@ -58,6 +59,7 @@ def get_settings() -> Settings:
         discord_channel_alerts=os.getenv("DISCORD_CHANNEL_ALERTS", ""),
         discord_channel_approvals=os.getenv("DISCORD_CHANNEL_APPROVALS", ""),
         run_dedupe_seconds=int(os.getenv("AUTOMATION_RUN_DEDUPE_SECONDS", "300")),
+        run_lease_seconds=int(os.getenv("AUTOMATION_RUN_LEASE_SECONDS", "1800")),
         run_retention_days=int(os.getenv("AUTOMATION_RUN_RETENTION_DAYS", "30")),
         audit_retention_days=int(os.getenv("AUTOMATION_AUDIT_RETENTION_DAYS", "90")),
         temp_task_retention_hours=int(os.getenv("AUTOMATION_TEMP_TASK_RETENTION_HOURS", "24")),

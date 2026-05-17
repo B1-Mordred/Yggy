@@ -44,6 +44,9 @@ policy:
   approval_level: L1_NOTIFY_ONLY
   max_items: 10
   require_sources: true
+  max_runs_per_hour: 3
+  max_runs_per_day: 10
+  min_seconds_between_runs: 300
   allow_external_side_effects: false
   allow_shell: false
   allow_docker_socket: false

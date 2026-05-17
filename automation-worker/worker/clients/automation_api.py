@@ -56,6 +56,11 @@ class AutomationApiClient:
         response.raise_for_status()
         return response.json()
 
+    def recover_stale_runs(self) -> dict:
+        response = httpx.post(f"{self.base_url}/maintenance/stale-runs", headers=self.headers, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
     def queue_run(self, task_id: str) -> dict:
         response = httpx.post(f"{self.base_url}/tasks/{task_id}/run", headers=self.headers, timeout=10)
         response.raise_for_status()

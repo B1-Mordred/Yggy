@@ -12,6 +12,7 @@ from worker.handlers.topic_digest import run_topic_digest
 from worker.scheduler import due_tasks
 
 _LAST_RETENTION_RUN_AT: float | None = None
+_LAST_STALE_RUN_RECOVERY_AT: float | None = None
 MAX_TOPIC_N8N_ITEMS = 10
 MAX_TOPIC_N8N_SOURCES = 10
 MAX_TOPIC_N8N_ERRORS = 10
@@ -366,9 +367,27 @@ def maybe_run_retention(client: AutomationApiClient, now: float | None = None) -
     return client.run_retention()
 
 
+def maybe_recover_stale_runs(client: AutomationApiClient, now: float | None = None) -> dict | None:
+    global _LAST_STALE_RUN_RECOVERY_AT
+    interval = int(os.getenv("AUTOMATION_STALE_RUN_RECOVERY_INTERVAL_SECONDS", "300"))
+    if interval <= 0:
+        return None
+    current = time.monotonic() if now is None else now
+    if _LAST_STALE_RUN_RECOVERY_AT is not None and current - _LAST_STALE_RUN_RECOVERY_AT < interval:
+        return None
+    _LAST_STALE_RUN_RECOVERY_AT = current
+    return client.recover_stale_runs()
+
+
 def run_once() -> None:
     client = AutomationApiClient.from_env()
     client.send_heartbeat(detail={"event": "poll"})
+    try:
+        recovered = maybe_recover_stale_runs(client)
+        if recovered is not None:
+            print({"status": "stale_run_recovery", "recovered": recovered.get("recovered_count")}, flush=True)
+    except Exception as exc:
+        print({"status": "stale_run_recovery_error", "error": exc.__class__.__name__, "message": str(exc)}, flush=True)
     try:
         retention = maybe_run_retention(client)
         if retention is not None:

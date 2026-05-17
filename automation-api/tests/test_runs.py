@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
 from app.database import get_engine
-from app.models import RunModel
+from app.models import AuditEventModel, RunModel, utcnow
 from conftest import TOOL_HEADERS, WORKER_HEADERS
 
 
@@ -92,6 +93,7 @@ def test_worker_claims_queued_run_once(client):
     assert first.status_code == 200
     assert first.json()["status"] == "running"
     assert first.json()["dry_run"] is False
+    assert first.json()["lease"]["expires_at"]
     assert second.status_code == 409
 
 
@@ -106,3 +108,39 @@ def test_worker_claim_preserves_dry_run_status(client):
     assert response.status_code == 200
     assert response.json()["status"] == "running_dry_run"
     assert response.json()["dry_run"] is True
+
+
+def test_worker_can_recover_stale_running_run(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_RUN_LEASE_SECONDS", "600")
+    run_id = str(uuid.uuid4())
+    with Session(get_engine()) as session:
+        session.add(
+            RunModel(
+                id=run_id,
+                task_id="worker_task",
+                status="running",
+                log={"message": "claimed by dead worker"},
+                created_at=utcnow() - timedelta(hours=2),
+            )
+        )
+        session.commit()
+
+    response = client.post("/maintenance/stale-runs", headers=WORKER_HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["recovered_count"] == 1
+    assert body["recovered"][0]["run_id"] == run_id
+    with Session(get_engine()) as session:
+        run = session.get(RunModel, run_id)
+        assert run.status == "failed_stale"
+        assert run.completed_at is not None
+        assert run.log["stale_recovery"]["previous_status"] == "running"
+        event = session.query(AuditEventModel).filter(AuditEventModel.action == "run.stale_recovered").one()
+        assert event.resource_id == run_id
+
+
+def test_tool_key_cannot_recover_stale_runs(client):
+    response = client.post("/maintenance/stale-runs", headers=TOOL_HEADERS)
+
+    assert response.status_code == 403

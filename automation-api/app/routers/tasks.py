@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
+from math import ceil
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -14,13 +15,11 @@ from app.models import RunModel, TaskModel, utcnow
 from app.policy import PolicyViolation, load_policy, validate_task_policy
 from app.schemas import ApprovalLevel, TaskConfig, TaskRunRequest, approval_at_least
 from app.services.approval_service import create_approval_request, needs_initial_approval
+from app.services.run_state_service import ACTIVE_RUN_STATUSES, COMPLETED_RUN_STATUSES, recover_stale_runs
 from app.services.task_version_service import link_latest_task_config_version_to_approval, record_task_config_version
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
-
-ACTIVE_RUN_STATUSES = {"queued", "queued_dry_run", "running", "running_dry_run"}
-COMPLETED_RUN_STATUSES = {"completed"}
 
 
 def task_to_dict(task: TaskModel) -> dict:
@@ -262,21 +261,69 @@ def queue_task_run(
     force: bool = False,
     actor_role: ApiRole | str,
 ) -> dict:
+    task = _locked_task(session, task.id)
+    recover_stale_runs(session, actor_role=actor_role, task_id=task.id, dry_run=False, limit=25)
+
     active_run = _latest_active_run(session, task.id)
     if active_run:
+        audit_event(
+            session,
+            actor_role,
+            "task.run.denied",
+            "task",
+            task.id,
+            {"reason": "active_run_exists", "run_id": active_run.id, "status": active_run.status, "dry_run": dry_run},
+        )
+        session.commit()
         return {
             "run_id": active_run.id,
             "status": active_run.status,
+            "queued": False,
             "deduplicated": True,
             "reason": "active_run_exists",
             "message": "run not queued because this task already has an active run",
         }
 
+    rate_limit = _rate_limit_denial(session, task, dry_run=dry_run)
+    if rate_limit:
+        audit_event(
+            session,
+            actor_role,
+            "task.run.denied",
+            "task",
+            task.id,
+            {"reason": rate_limit["reason"], "dry_run": dry_run, **rate_limit},
+        )
+        session.commit()
+        return {
+            "run_id": None,
+            "status": "rate_limited",
+            "queued": False,
+            "deduplicated": True,
+            **rate_limit,
+            "message": "run not queued because this task exceeded its configured run safety limits",
+        }
+
     recent_run = _latest_recent_completed_live_run(session, task.id) if not dry_run and not force else None
     if recent_run:
+        audit_event(
+            session,
+            actor_role,
+            "task.run.denied",
+            "task",
+            task.id,
+            {
+                "reason": "recent_completed_run",
+                "run_id": recent_run.id,
+                "dedupe_seconds": get_settings().run_dedupe_seconds,
+                "dry_run": dry_run,
+            },
+        )
+        session.commit()
         return {
             "run_id": recent_run.id,
             "status": "duplicate_recent",
+            "queued": False,
             "deduplicated": True,
             "reason": "recent_completed_run",
             "duplicate_of": recent_run.id,
@@ -293,7 +340,11 @@ def queue_task_run(
     session.add(run)
     audit_event(session, actor_role, "task.run", "task", task.id, {"run_id": run.id, "dry_run": dry_run})
     session.commit()
-    return {"run_id": run.id, "status": run.status, "deduplicated": False}
+    return {"run_id": run.id, "status": run.status, "queued": True, "deduplicated": False}
+
+
+def _locked_task(session: Session, task_id: str) -> TaskModel:
+    return session.query(TaskModel).filter(TaskModel.id == task_id).with_for_update().one()
 
 
 def _latest_active_run(session: Session, task_id: str) -> RunModel | None:
@@ -305,6 +356,98 @@ def _latest_active_run(session: Session, task_id: str) -> RunModel | None:
         .order_by(RunModel.created_at.desc())
         .first()
     )
+
+
+def _rate_limit_denial(session: Session, task: TaskModel, *, dry_run: bool) -> dict | None:
+    policy = _effective_task_policy(task)
+    now = utcnow()
+
+    if policy.min_seconds_between_runs > 0:
+        latest_run = _latest_accepted_run(session, task.id)
+        if latest_run:
+            elapsed = max(0, (now - _aware_datetime(latest_run.created_at)).total_seconds())
+            if elapsed < policy.min_seconds_between_runs:
+                retry_after = ceil(policy.min_seconds_between_runs - elapsed)
+                return {
+                    "reason": "min_seconds_between_runs",
+                    "limit": policy.min_seconds_between_runs,
+                    "retry_after_seconds": retry_after,
+                    "latest_run_id": latest_run.id,
+                    "latest_run_created_at": latest_run.created_at.isoformat() if latest_run.created_at else None,
+                    "dry_run": dry_run,
+                }
+
+    max_runs_per_hour = policy.max_runs_per_hour
+    if max_runs_per_hour is not None:
+        hourly_cutoff = now - timedelta(hours=1)
+        hourly_count = _run_count_since(session, task.id, hourly_cutoff)
+        if hourly_count >= max_runs_per_hour:
+            return {
+                "reason": "max_runs_per_hour",
+                "limit": max_runs_per_hour,
+                "window_seconds": 3600,
+                "current_count": hourly_count,
+                "retry_after_seconds": _retry_after_for_window(session, task.id, hourly_cutoff, 3600, now),
+                "dry_run": dry_run,
+            }
+
+    max_runs_per_day = policy.max_runs_per_day
+    if max_runs_per_day is not None:
+        daily_cutoff = now - timedelta(days=1)
+        daily_count = _run_count_since(session, task.id, daily_cutoff)
+        if daily_count >= max_runs_per_day:
+            return {
+                "reason": "max_runs_per_day",
+                "limit": max_runs_per_day,
+                "window_seconds": 86400,
+                "current_count": daily_count,
+                "retry_after_seconds": _retry_after_for_window(session, task.id, daily_cutoff, 86400, now),
+                "dry_run": dry_run,
+            }
+
+    return None
+
+
+def _effective_task_policy(task: TaskModel):
+    return TaskConfig.model_validate(task.config).policy
+
+
+def _latest_accepted_run(session: Session, task_id: str) -> RunModel | None:
+    return (
+        session.query(RunModel)
+        .filter(RunModel.task_id == task_id)
+        .order_by(RunModel.created_at.desc())
+        .first()
+    )
+
+
+def _run_count_since(session: Session, task_id: str, cutoff) -> int:
+    return (
+        session.query(RunModel)
+        .filter(RunModel.task_id == task_id)
+        .filter(RunModel.created_at >= cutoff)
+        .count()
+    )
+
+
+def _retry_after_for_window(session: Session, task_id: str, cutoff, window_seconds: int, now) -> int:
+    oldest_counted = (
+        session.query(RunModel)
+        .filter(RunModel.task_id == task_id)
+        .filter(RunModel.created_at >= cutoff)
+        .order_by(RunModel.created_at.asc())
+        .first()
+    )
+    if not oldest_counted:
+        return 0
+    retry_at = _aware_datetime(oldest_counted.created_at) + timedelta(seconds=window_seconds)
+    return max(0, ceil((retry_at - now).total_seconds()))
+
+
+def _aware_datetime(value):
+    if value.tzinfo is None:
+        return value.replace(tzinfo=utcnow().tzinfo)
+    return value
 
 
 def _latest_recent_completed_live_run(session: Session, task_id: str) -> RunModel | None:

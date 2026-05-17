@@ -588,6 +588,9 @@ def local_ai_security_briefing_draft(text: str) -> dict[str, Any]:
             'approval_level': 'L1_NOTIFY_ONLY',
             'max_items': 10,
             'require_sources': True,
+            'max_runs_per_hour': 3,
+            'max_runs_per_day': 10,
+            'min_seconds_between_runs': 300,
             'allow_external_side_effects': False,
             'allow_shell': False,
             'allow_docker_socket': False,
@@ -977,11 +980,14 @@ def handle_automation_request(user_text: str) -> str | None:
         status_code, body = automation_request('POST', f'/tasks/{task_id}/run')
         if status_code in {200, 202}:
             if isinstance(body, dict) and body.get('deduplicated'):
-                return (
-                    f"Run not queued for task `{task_id}` because `{body.get('reason', body.get('status', 'deduplicated'))}`.\n\n"
-                    f"Existing run: `{body.get('run_id')}`\n\n"
-                    f"```json\n{json.dumps(body, indent=2)}\n```"
-                )
+                lines = [
+                    f"Run not queued for task `{task_id}` because `{body.get('reason', body.get('status', 'deduplicated'))}`.",
+                ]
+                if body.get('run_id'):
+                    lines.append(f"Existing run: `{body.get('run_id')}`")
+                if body.get('retry_after_seconds') is not None:
+                    lines.append(f"Retry after: `{body.get('retry_after_seconds')}s`")
+                return '\n\n'.join(lines) + f"\n\n```json\n{json.dumps(body, indent=2)}\n```"
             return f"Run queued for task `{task_id}`.\n\n```json\n{json.dumps(body, indent=2)}\n```"
         return f'Automation API returned status `{status_code}` while queueing the run:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from worker.main import maybe_run_retention, notification_decision, process_queued_runs, process_task
+from worker.main import maybe_recover_stale_runs, maybe_run_retention, notification_decision, process_queued_runs, process_task
 
 
 class FakeClient:
@@ -11,6 +11,7 @@ class FakeClient:
         self.completed_calls: list[dict] = []
         self.claim_calls: list[str] = []
         self.retention_calls = 0
+        self.stale_recovery_calls = 0
         self.runs: list[dict] = []
         self.tasks: dict[str, dict] = {}
 
@@ -41,6 +42,10 @@ class FakeClient:
     def run_retention(self) -> dict:
         self.retention_calls += 1
         return {"deleted": {"runs": 0, "audit_events": 0, "temporary_tasks": 0, "temporary_task_approvals": 0}}
+
+    def recover_stale_runs(self) -> dict:
+        self.stale_recovery_calls += 1
+        return {"recovered_count": 0}
 
     def send_discord(self, target: str, content: str, dry_run: bool) -> dict:
         self.discord_calls.append({"target": target, "content": content, "dry_run": dry_run})
@@ -538,3 +543,23 @@ def test_retention_can_be_disabled(monkeypatch):
 
     assert maybe_run_retention(client, now=100.0) is None
     assert client.retention_calls == 0
+
+
+def test_stale_run_recovery_runs_once_per_interval(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setenv("AUTOMATION_STALE_RUN_RECOVERY_INTERVAL_SECONDS", "60")
+    monkeypatch.setattr("worker.main._LAST_STALE_RUN_RECOVERY_AT", None)
+
+    assert maybe_recover_stale_runs(client, now=100.0) is not None
+    assert maybe_recover_stale_runs(client, now=120.0) is None
+    assert maybe_recover_stale_runs(client, now=161.0) is not None
+    assert client.stale_recovery_calls == 2
+
+
+def test_stale_run_recovery_can_be_disabled(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setenv("AUTOMATION_STALE_RUN_RECOVERY_INTERVAL_SECONDS", "0")
+    monkeypatch.setattr("worker.main._LAST_STALE_RUN_RECOVERY_AT", None)
+
+    assert maybe_recover_stale_runs(client, now=100.0) is None
+    assert client.stale_recovery_calls == 0

@@ -42,6 +42,39 @@ def test_send_daily_brief_now_queues_automation_run(monkeypatch):
     assert "daily_local_ai_security_briefing" in answer
 
 
+def test_send_daily_brief_now_reports_rate_limit(monkeypatch):
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        return 202, {
+            "run_id": None,
+            "status": "rate_limited",
+            "queued": False,
+            "deduplicated": True,
+            "reason": "min_seconds_between_runs",
+            "retry_after_seconds": 240,
+        }
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    answer = yggdrasil_action_api.route_chat(
+        [{"role": "user", "content": "send daily brief now"}],
+    )
+
+    assert "Run not queued" in answer
+    assert "min_seconds_between_runs" in answer
+    assert "Retry after: `240s`" in answer
+    assert "Existing run" not in answer
+
+
+def test_local_ai_security_draft_includes_run_safety_limits():
+    draft = yggdrasil_action_api.local_ai_security_briefing_draft(
+        "draft a weekday 08:00 local AI security briefing"
+    )
+
+    assert draft["policy"]["max_runs_per_hour"] == 3
+    assert draft["policy"]["max_runs_per_day"] == 10
+    assert draft["policy"]["min_seconds_between_runs"] == 300
+
+
 def test_show_latest_daily_brief_run(monkeypatch):
     calls: list[tuple[str, str]] = []
 

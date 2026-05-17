@@ -39,6 +39,9 @@ policy:
   approval_level: L1_NOTIFY_ONLY
   max_items: 10
   require_sources: true
+  max_runs_per_hour: 3
+  max_runs_per_day: 10
+  min_seconds_between_runs: 300
   allow_external_side_effects: false
   allow_shell: false
   allow_docker_socket: false
@@ -70,6 +73,8 @@ The API rejects tasks when:
 - cron is invalid
 - timezone is invalid
 - `policy.approval_level` is missing
+- `policy.max_runs_per_hour`, `policy.max_runs_per_day`, or
+  `policy.min_seconds_between_runs` is outside the allowed range
 - `allow_shell` is true
 - `allow_docker_socket` is true
 - secret-looking values appear in plain text
@@ -115,6 +120,21 @@ handler completes or fails:
 
 Every run log includes a `notification_decision` object with the classification
 and suppression reason.
+
+## Run Safety Limits
+
+Task policies can bound how often a task may be queued:
+
+- `max_runs_per_hour`: maximum accepted queued/running/completed runs for this
+  task in the trailing hour. Set to `null` to disable the hourly cap.
+- `max_runs_per_day`: maximum accepted runs for this task in the trailing day.
+  Set to `null` to disable the daily cap.
+- `min_seconds_between_runs`: minimum time between accepted run queue attempts.
+  Set to `0` to disable the minimum spacing rule.
+
+The API enforces these limits before creating a run. A denied run attempt creates
+an audit event with action `task.run.denied`; it does not create a run row and it
+does not call the worker, Discord, n8n, or source fetchers.
 
 ## n8n Webhook Tasks
 

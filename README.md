@@ -97,6 +97,8 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
 - n8n webhook tasks must use approved `webhook_id` entries and internal paths.
 - Task notifications are governed by declarative per-task preferences for
   success, failure, empty results, quiet hours, and repeated-failure collapse.
+- Task execution is bounded by per-task run limits, active-run locks, worker
+  leases, and stale-run recovery before new runs are queued.
 - Secrets stay in `.env`, Docker secrets, n8n credentials, or a local secret manager.
 - Task YAML, Open WebUI Knowledge, prompts, chat history, and logs must not contain secrets.
 
