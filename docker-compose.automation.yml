@@ -111,6 +111,7 @@ services:
       BRAGI_CHAT_TIMEOUT: ${BRAGI_CHAT_TIMEOUT:-30}
       BRAGI_CHAT_NUM_CTX: ${BRAGI_CHAT_NUM_CTX:-4096}
       BRAGI_CHAT_MAX_TOKENS: ${BRAGI_CHAT_MAX_TOKENS:-512}
+      BRAGI_MEMORY_FILE: ${BRAGI_MEMORY_FILE:-/app/configs/bragi/memory.yaml}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       AUTOMATION_TOOL_API_KEY: ${AUTOMATION_TOOL_API_KEY:-}
       AUTOMATION_API_BASE_URL: http://automation-api:8088
@@ -126,6 +127,8 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:${BRAGI_PORT:-8650}:8650"
+    volumes:
+      - ./configs:/app/configs:ro
     read_only: true
     tmpfs:
       - /tmp

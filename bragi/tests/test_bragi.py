@@ -26,6 +26,10 @@ def gateway_response_for(payload: dict) -> dict:
             "message": "This looks useful, but no printer or toner capability is registered yet.",
         }
     missing = []
+    if payload["capability_id"] == "topic_digest.v1" and not payload["slots"].get("source_ids"):
+        missing.append("source_ids")
+    if payload["capability_id"] == "server_health.v1" and not payload["slots"].get("check_ids"):
+        missing.append("check_ids")
     if payload["capability_id"] == "n8n_webhook.v1" and not payload["slots"].get("webhook_id"):
         missing.append("webhook_id")
     if not payload.get("user_confirmation_obtained"):
@@ -197,6 +201,129 @@ def test_direct_brief_draft_still_routes_to_gateway(monkeypatch):
     assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
     assert calls[0][2]["capability_id"] == "topic_digest.v1"
     assert "Reply `confirm`" in answer
+
+
+def test_discussion_summary_does_not_draft_digest(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        raise AssertionError("discussion should not call Heimdal")
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "general_chat_answer", lambda messages: "Let us discuss Docker security.")
+
+    answer = bragi.route_chat([{"role": "user", "content": "summarize Docker security risks for me"}])
+
+    assert answer == "Let us discuss Docker security."
+    assert calls == []
+
+
+def test_vague_topic_digest_asks_for_missing_sources(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "draft a weekday 08:00 topic digest about German politics"}])
+
+    assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
+    assert calls[0][2]["capability_id"] == "topic_digest.v1"
+    assert calls[0][2]["slots"]["source_ids"] == []
+    assert "`source_ids`" in answer
+    assert "Canonical intent awaiting details" in answer
+
+
+def test_missing_slot_followup_merges_details(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    pending = bragi.topic_digest_intent("draft a weekday 08:00 topic digest about Docker")
+    pending["slots"]["source_ids"] = []
+    prior = "Canonical intent awaiting details:\n```json\n" + json.dumps(pending) + "\n```"
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat(
+        [
+            {"role": "assistant", "content": prior},
+            {"role": "user", "content": "use docker_blog and send it to briefings"},
+        ]
+    )
+
+    assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
+    assert calls[0][2]["slots"]["source_ids"] == ["docker_blog"]
+    assert "Reply `confirm`" in answer
+
+
+def test_run_request_uses_structured_yggdrasil_operation(monkeypatch):
+    calls = []
+
+    def fake_yggdrasil(payload):
+        calls.append(payload)
+        return {"status": "ok", "answer": "Run queued for task `daily_local_ai_security_briefing`."}
+
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", fake_yggdrasil)
+
+    answer = bragi.route_chat([{"role": "user", "content": "send daily brief now"}])
+
+    assert calls == [{"action": "run_task", "task_id": "daily_local_ai_security_briefing"}]
+    assert "Run queued" in answer
+
+
+def test_list_tasks_uses_structured_yggdrasil_operation(monkeypatch):
+    calls = []
+
+    def fake_yggdrasil(payload):
+        calls.append(payload)
+        return {"status": "ok", "answer": "Automation tasks:"}
+
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", fake_yggdrasil)
+
+    answer = bragi.route_chat([{"role": "user", "content": "list my automation tasks"}])
+
+    assert calls == [{"action": "list_tasks"}]
+    assert "Automation tasks" in answer
+
+
+def test_show_explicit_task_id_uses_structured_yggdrasil_operation(monkeypatch):
+    calls = []
+
+    def fake_yggdrasil(payload):
+        calls.append(payload)
+        return {"status": "ok", "answer": "Task `daily_local_ai_security_briefing`"}
+
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", fake_yggdrasil)
+
+    answer = bragi.route_chat([{"role": "user", "content": "show task daily_local_ai_security_briefing"}])
+
+    assert calls == [{"action": "show_task", "task_id": "daily_local_ai_security_briefing"}]
+    assert "daily_local_ai_security_briefing" in answer
+
+
+def test_memory_rejects_secret_like_material(tmp_path, monkeypatch):
+    path = tmp_path / "memory.yaml"
+    path.write_text("preferred_language: en\napi_key: nope\n", encoding="utf-8")
+    monkeypatch.setattr(bragi, "MEMORY_FILE", str(path))
+
+    assert bragi.load_memory() == {}
+
+
+def test_memory_context_loads_non_secret_preferences(tmp_path, monkeypatch):
+    path = tmp_path / "memory.yaml"
+    path.write_text("preferred_language: en\ndefault_timezone: Europe/Berlin\nignored: value\n", encoding="utf-8")
+    monkeypatch.setattr(bragi, "MEMORY_FILE", str(path))
+
+    context = bragi.memory_context()
+
+    assert "preferred_language" in context
+    assert "Europe/Berlin" in context
+    assert "ignored" not in context
 
 
 def test_simple_greeting_does_not_call_ollama(monkeypatch):

@@ -1103,11 +1103,71 @@ def format_draft_response(status_code: int, body: Any, draft: dict[str, Any], *,
     return f'Automation API rejected the draft with status `{status_code}`:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 
 
+def canonical_task_id(payload: dict[str, Any]) -> str | None:
+    task_id = str(payload.get('task_id') or '').strip()
+    if not task_id:
+        return None
+    if not re.fullmatch(r'[a-z][a-z0-9_]{2,127}', task_id):
+        raise ValueError('task_id must be slug-like')
+    return task_id
+
+
 def handle_canonical_action(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     action = str(payload.get('action') or '').strip()
     capability_id = str(payload.get('capability_id') or '').strip()
     template_id = str(payload.get('template_id') or '').strip()
     template_values = payload.get('template_values')
+    if action == 'list_tasks':
+        status_code, body = automation_request('GET', '/tasks')
+        answer = format_task_list(body) if status_code == 200 and isinstance(body, list) else (
+            f'Automation API returned status `{status_code}` while listing tasks:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+        )
+        return 200, {'status': 'ok' if status_code == 200 else 'automation_api_rejected', 'automation_api_status': status_code, 'automation_api_body': body, 'answer': answer}
+    if action == 'show_task':
+        try:
+            task_id = canonical_task_id(payload)
+        except ValueError as exc:
+            return 422, {'status': 'rejected', 'detail': str(exc)}
+        if not task_id:
+            return 422, {'status': 'rejected', 'detail': 'task_id is required'}
+        status_code, body = automation_request('GET', f'/tasks/{task_id}')
+        answer = format_task(body) if status_code == 200 and isinstance(body, dict) else (
+            f'Automation API returned status `{status_code}` for task `{task_id}`:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+        )
+        return 200, {'status': 'ok' if status_code == 200 else 'automation_api_rejected', 'task_id': task_id, 'automation_api_status': status_code, 'automation_api_body': body, 'answer': answer}
+    if action == 'run_task':
+        try:
+            task_id = canonical_task_id(payload)
+        except ValueError as exc:
+            return 422, {'status': 'rejected', 'detail': str(exc)}
+        if not task_id:
+            return 422, {'status': 'rejected', 'detail': 'task_id is required'}
+        status_code, body = automation_request('POST', f'/tasks/{task_id}/run')
+        if status_code in {200, 202} and isinstance(body, dict):
+            if body.get('deduplicated'):
+                lines = [f"Run not queued for task `{task_id}` because `{body.get('reason', body.get('status', 'deduplicated'))}`."]
+                if body.get('run_id'):
+                    lines.append(f"Existing run: `{body.get('run_id')}`")
+                if body.get('retry_after_seconds') is not None:
+                    lines.append(f"Retry after: `{body.get('retry_after_seconds')}s`")
+                answer = '\n\n'.join(lines) + f"\n\n```json\n{json.dumps(body, indent=2)}\n```"
+            else:
+                answer = f"Run queued for task `{task_id}`.\n\n```json\n{json.dumps(body, indent=2)}\n```"
+        else:
+            answer = f'Automation API returned status `{status_code}` while queueing the run:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+        return 200, {'status': 'ok' if status_code in {200, 202} else 'automation_api_rejected', 'task_id': task_id, 'automation_api_status': status_code, 'automation_api_body': body, 'answer': answer}
+    if action == 'pause_task':
+        try:
+            task_id = canonical_task_id(payload)
+        except ValueError as exc:
+            return 422, {'status': 'rejected', 'detail': str(exc)}
+        if not task_id:
+            return 422, {'status': 'rejected', 'detail': 'task_id is required'}
+        status_code, body = automation_request('POST', f'/tasks/{task_id}/pause')
+        answer = f"Task `{task_id}` is paused.\n\n{format_task(body)}" if status_code == 200 and isinstance(body, dict) else (
+            f'Automation API returned status `{status_code}` while pausing the task:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+        )
+        return 200, {'status': 'ok' if status_code == 200 else 'automation_api_rejected', 'task_id': task_id, 'automation_api_status': status_code, 'automation_api_body': body, 'answer': answer}
     if action != 'draft_task_from_template':
         return 422, {'status': 'rejected', 'detail': 'unsupported canonical action'}
     if template_id not in {'server_health', 'topic_digest', 'n8n_webhook'}:

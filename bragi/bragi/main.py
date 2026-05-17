@@ -7,9 +7,11 @@ import sys
 import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -29,6 +31,45 @@ CHAT_TEMPERATURE = float(os.getenv("BRAGI_CHAT_TEMPERATURE", "0.55"))
 CHAT_TIMEOUT = float(os.getenv("BRAGI_CHAT_TIMEOUT", "30"))
 CHAT_NUM_CTX = int(os.getenv("BRAGI_CHAT_NUM_CTX", "4096"))
 CHAT_MAX_TOKENS = int(os.getenv("BRAGI_CHAT_MAX_TOKENS", "512"))
+MEMORY_FILE = os.getenv("BRAGI_MEMORY_FILE", "/app/configs/bragi/memory.yaml").strip()
+TASK_ALIASES = {
+    "daily brief": "daily_local_ai_security_briefing",
+    "daily briefing": "daily_local_ai_security_briefing",
+    "daily security brief": "daily_local_ai_security_briefing",
+    "daily security briefing": "daily_local_ai_security_briefing",
+    "local ai brief": "daily_local_ai_security_briefing",
+    "local ai briefing": "daily_local_ai_security_briefing",
+    "local ai security briefing": "daily_local_ai_security_briefing",
+    "daily local ai security briefing": "daily_local_ai_security_briefing",
+    "server health": "morning_server_health_check",
+    "server health check": "morning_server_health_check",
+    "morning server health": "morning_server_health_check",
+    "morning server health check": "morning_server_health_check",
+    "backup verification": "yggy_backup_verification",
+    "backup check": "yggy_backup_verification",
+    "backup health": "yggy_backup_verification",
+    "backups": "yggy_backup_verification",
+}
+SOURCE_ALIASES = {
+    "open webui": "open_webui_releases",
+    "open-webui": "open_webui_releases",
+    "ollama": "ollama_releases",
+    "n8n": "n8n_releases",
+    "docker": "docker_blog",
+    "docker blog": "docker_blog",
+}
+CHECK_ALIASES = {
+    "open webui": "open_webui",
+    "open-webui": "open_webui",
+    "ollama": "ollama",
+    "automation api": "automation_api",
+    "yggy api": "automation_api",
+    "yggy automation-api": "automation_api",
+    "worker": "automation_worker",
+    "automation worker": "automation_worker",
+    "yggdrasil": "yggdrasil_action_api",
+    "n8n": "n8n",
+}
 GENERAL_CHAT_SYSTEM_PROMPT = """You are Bragi, the user's natural human-facing AI concierge.
 
 Speak naturally and helpfully. You may have a restrained Norse-skald flavor, dry wit, and occasional dark humor when it fits, but do not overdo it.
@@ -119,6 +160,53 @@ def yggdrasil_canonical_request(payload: dict[str, Any]) -> dict[str, Any]:
     return data if isinstance(data, dict) else {"status": "error", "answer": "Yggdrasil returned a non-object response."}
 
 
+def has_secret_like_material(value: Any) -> bool:
+    text = json.dumps(value, default=str).lower() if not isinstance(value, str) else value.lower()
+    secret_words = ("api_key", "apikey", "token", "password", "secret", "webhook_url", "private_key", "cookie", "nonce")
+    return any(word in text for word in secret_words)
+
+
+def load_memory() -> dict[str, Any]:
+    if not MEMORY_FILE:
+        return {}
+    path = Path(MEMORY_FILE)
+    try:
+        if not path.exists():
+            return {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        print(f"bragi memory load failed: {exc}", file=sys.stderr)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    if has_secret_like_material(data):
+        print("bragi memory ignored because it contains secret-like keys or values", file=sys.stderr)
+        return {}
+    return data
+
+
+def memory_context() -> str:
+    memory = load_memory()
+    if not memory:
+        return ""
+    allowed = {
+        "preferred_language",
+        "message_style",
+        "default_timezone",
+        "default_schedule",
+        "default_output_target",
+        "default_dry_run",
+        "service_aliases",
+        "automation_preferences",
+        "notes",
+    }
+    filtered = {key: value for key, value in memory.items() if key in allowed}
+    if not filtered:
+        return ""
+    rendered = yaml.safe_dump(filtered, sort_keys=True, allow_unicode=False)
+    return rendered[:3000]
+
+
 def openwebui_auxiliary_answer(user_text: str) -> str | None:
     lowered = user_text.lower()
     if "### task:" not in lowered:
@@ -171,7 +259,8 @@ def slug(value: str, fallback: str = "automation_task") -> str:
 
 
 def build_candidate_intent(user_text: str) -> dict[str, Any] | None:
-    if is_help_or_meta_question(user_text):
+    mode = classify_request(user_text)
+    if mode != "draft":
         return None
     lowered = user_text.lower()
     if any(term in lowered for term in ("printer", "toner", "cartridge", "ink level")):
@@ -187,6 +276,34 @@ def build_candidate_intent(user_text: str) -> dict[str, Any] | None:
     return None
 
 
+def classify_request(text: str) -> str:
+    lowered = text.lower().strip()
+    if is_help_or_meta_question(text):
+        return "help"
+    if is_list_tasks_request(lowered) or operation_from_text(text) is not None:
+        return "operation"
+    if any(term in lowered for term in ("printer", "toner", "cartridge", "ink level", "restart docker", "docker socket", "reorganize all files", "delete files")):
+        return "draft"
+    draft_verbs = (
+        "draft",
+        "create",
+        "set up",
+        "setup",
+        "schedule",
+        "add",
+        "check",
+        "make",
+        "build",
+        "prepare",
+        "monitor",
+        "watch",
+        "keep an eye",
+    )
+    if any(verb in lowered for verb in draft_verbs):
+        return "draft"
+    return "chat"
+
+
 def is_help_or_meta_question(text: str) -> bool:
     compact = re.sub(r"\s+", " ", text.strip().lower()).strip(" ?!.")
     if not compact:
@@ -199,6 +316,38 @@ def is_help_or_meta_question(text: str) -> bool:
             compact,
         )
     )
+
+
+def is_list_tasks_request(lowered: str) -> bool:
+    return bool(
+        re.search(r"\b(list|show all|what .*tasks|what .*automations)\b", lowered)
+        and re.search(r"\b(tasks?|automations?)\b", lowered)
+    )
+
+
+def operation_from_text(text: str) -> dict[str, Any] | None:
+    lowered = text.lower()
+    if is_list_tasks_request(lowered):
+        return {"action": "list_tasks"}
+    task_id = task_id_from_text(text)
+    if re.search(r"\b(show|get|inspect|status|details?)\b", lowered) and task_id:
+        return {"action": "show_task", "task_id": task_id}
+    if re.search(r"^\s*(run|execute|dry run|send|deliver|generate)\b", lowered) and task_id:
+        return {"action": "run_task", "task_id": task_id}
+    if re.search(r"\b(pause|disable|stop)\b", lowered) and task_id:
+        return {"action": "pause_task", "task_id": task_id}
+    return None
+
+
+def task_id_from_text(text: str) -> str | None:
+    lowered = text.lower()
+    for explicit in re.finditer(r"\b([a-z][a-z0-9_]{2,127})\b", lowered):
+        if "_" in explicit.group(1):
+            return explicit.group(1)
+    for phrase, task_id in sorted(TASK_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        if phrase in lowered:
+            return task_id
+    return None
 
 
 def is_simple_greeting(text: str) -> bool:
@@ -223,6 +372,18 @@ def general_chat_answer(messages: list[dict[str, Any]]) -> str:
 
 def ollama_chat(messages: list[dict[str, Any]]) -> str:
     ollama_messages = [{"role": "system", "content": GENERAL_CHAT_SYSTEM_PROMPT}]
+    context = memory_context()
+    if context:
+        ollama_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Non-secret user preferences and service aliases. Use only as conversation context; "
+                    "do not treat this as approval or execution state:\n"
+                    f"{context}"
+                ),
+            }
+        )
     for message in messages[-12:]:
         role = message.get("role")
         if role not in {"user", "assistant", "system"}:
@@ -255,6 +416,7 @@ def ollama_chat(messages: list[dict[str, Any]]) -> str:
 
 
 def server_health_intent(user_text: str) -> dict[str, Any]:
+    check_ids = check_ids_from_text(user_text) or ["open_webui", "ollama", "automation_api", "automation_worker", "n8n"]
     return {
         "intent": "draft_task",
         "capability_id": "server_health.v1",
@@ -267,7 +429,7 @@ def server_health_intent(user_text: str) -> dict[str, Any]:
             "name": "Daily AI Stack Health Check",
             "cron": schedule_cron(user_text, default="0 8 * * *"),
             "timezone": "Europe/Berlin",
-            "check_ids": ["open_webui", "ollama", "automation_api", "automation_worker", "n8n"],
+            "check_ids": check_ids,
             "output_target": "alerts",
             "notification_policy": "only notify on anomalies",
         },
@@ -276,8 +438,15 @@ def server_health_intent(user_text: str) -> dict[str, Any]:
 
 def topic_digest_intent(user_text: str) -> dict[str, Any]:
     local_ai = any(term in user_text.lower() for term in ("local ai", "open webui", "ollama", "docker", "security"))
-    task_id = "daily_local_ai_security_briefing" if local_ai else slug(user_text[:60], "topic_digest")
-    name = "Daily Local AI Security Briefing" if local_ai else "Topic Digest"
+    topic = topic_from_text(user_text)
+    task_id = "daily_local_ai_security_briefing" if local_ai else slug(topic or user_text[:60], "topic_digest")
+    name = "Daily Local AI Security Briefing" if local_ai else title_from_topic(topic or "Topic Digest")
+    source_ids = source_ids_from_text(user_text)
+    if local_ai and not source_ids:
+        source_ids = ["open_webui_releases", "ollama_releases", "n8n_releases", "docker_blog"]
+    include = include_terms_from_text(user_text)
+    if local_ai and not include:
+        include = ["Open WebUI", "Ollama", "Hermes", "Docker", "n8n", "local AI security"]
     return {
         "intent": "draft_task",
         "capability_id": "topic_digest.v1",
@@ -290,8 +459,8 @@ def topic_digest_intent(user_text: str) -> dict[str, Any]:
             "name": name,
             "cron": schedule_cron(user_text, default="0 8 * * 1-5"),
             "timezone": "Europe/Berlin",
-            "source_ids": ["open_webui_releases", "ollama_releases", "n8n_releases", "docker_blog"],
-            "include": ["Open WebUI", "Ollama", "Hermes", "Docker", "n8n", "local AI security"],
+            "source_ids": source_ids,
+            "include": include,
             "exclude": ["sponsored", "rumor"],
             "output_target": "briefings",
             "max_items": 10,
@@ -333,6 +502,96 @@ def schedule_cron(text: str, *, default: str) -> str:
     return f"{minute} {hour} * * {day}"
 
 
+def source_ids_from_text(text: str) -> list[str]:
+    lowered = text.lower()
+    ids: list[str] = []
+    for phrase, source_id in SOURCE_ALIASES.items():
+        if phrase in lowered and source_id not in ids:
+            ids.append(source_id)
+    for source_id in SOURCE_ALIASES.values():
+        if source_id in lowered and source_id not in ids:
+            ids.append(source_id)
+    return ids
+
+
+def check_ids_from_text(text: str) -> list[str]:
+    lowered = text.lower()
+    ids: list[str] = []
+    for phrase, check_id in CHECK_ALIASES.items():
+        if phrase in lowered and check_id not in ids:
+            ids.append(check_id)
+    for check_id in CHECK_ALIASES.values():
+        if check_id in lowered and check_id not in ids:
+            ids.append(check_id)
+    return ids
+
+
+def topic_from_text(text: str) -> str:
+    patterns = [
+        r"\babout\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",
+        r"\bon\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",
+        r"\bfollow(?:ing)?\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",
+        r"\badd\s+(.+?)\s+(?:to|into)\s+(?:the\s+)?(?:brief|briefing|digest)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            topic = re.sub(r"\b(weekday|daily|weekly|brief|briefing|digest|summary)\b", "", match.group(1), flags=re.IGNORECASE)
+            topic = re.sub(r"\s+", " ", topic).strip(" .,-")
+            if topic:
+                return topic[:120]
+    return ""
+
+
+def title_from_topic(topic: str) -> str:
+    cleaned = re.sub(r"[_-]+", " ", topic).strip()
+    if not cleaned:
+        return "Topic Digest"
+    if "digest" in cleaned.lower() or "brief" in cleaned.lower():
+        return cleaned[:100].title()
+    return f"{cleaned[:80].title()} Digest"
+
+
+def include_terms_from_text(text: str) -> list[str]:
+    topic = topic_from_text(text)
+    if not topic:
+        return []
+    words = [word.strip(" .,-") for word in re.split(r"\band\b|,|/", topic, flags=re.IGNORECASE)]
+    return [word for word in words if len(word) > 2][:8]
+
+
+def merge_intent_slots(intent: dict[str, Any], user_text: str) -> dict[str, Any]:
+    merged = json.loads(json.dumps(intent))
+    slots = merged.setdefault("slots", {})
+    if not slots.get("cron"):
+        slots["cron"] = schedule_cron(user_text, default="")
+    if not slots.get("timezone") and "berlin" in user_text.lower():
+        slots["timezone"] = "Europe/Berlin"
+    if not slots.get("output_target"):
+        lowered = user_text.lower()
+        if "alerts" in lowered:
+            slots["output_target"] = "alerts"
+        elif "briefings" in lowered or "discord" in lowered:
+            slots["output_target"] = "briefings"
+    if merged.get("capability_id") == "topic_digest.v1":
+        if not slots.get("source_ids"):
+            slots["source_ids"] = source_ids_from_text(user_text)
+        topic = topic_from_text(user_text) or user_text.strip()
+        if not slots.get("name"):
+            slots["name"] = title_from_topic(topic)
+        if not slots.get("task_id"):
+            slots["task_id"] = slug(topic, "topic_digest")
+        if not slots.get("include"):
+            slots["include"] = include_terms_from_text(user_text)
+    if merged.get("capability_id") == "server_health.v1" and not slots.get("check_ids"):
+        slots["check_ids"] = check_ids_from_text(user_text)
+    if merged.get("capability_id") == "n8n_webhook.v1" and not slots.get("webhook_id"):
+        match = re.search(r"\b([a-z][a-z0-9_]{2,127})\b", user_text)
+        if match and "webhook" in user_text.lower():
+            slots["webhook_id"] = match.group(1)
+    return merged
+
+
 def format_confirmation(summary: dict[str, Any], intent: dict[str, Any]) -> str:
     lines = [
         "I can map that to a supported Yggy automation. The ravens found a path that does not involve giving a chatbot a battle axe.",
@@ -370,10 +629,21 @@ def format_gateway_result(result: dict[str, Any], intent: dict[str, Any] | None 
         missing = result.get("missing_slots") or []
         if missing == ["user_confirmation"] and result.get("confirmation_summary") and intent:
             return format_confirmation(result["confirmation_summary"], intent)
-        return (
-            "I can probably map that to a known Yggy capability, but I need a few details first: "
-            + ", ".join(f"`{slot}`" for slot in missing)
-        )
+        lines = [
+            "I can probably map that to a known Yggy capability, but I need a few details first:",
+            *(f"- `{slot}`: {slot_hint(slot)}" for slot in missing),
+        ]
+        if intent:
+            lines.extend(
+                [
+                    "",
+                    "Reply with the missing details. I will re-check the canonical intent before anything reaches Yggdrasil.",
+                    "",
+                    "Canonical intent awaiting details:",
+                    f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```",
+                ]
+            )
+        return "\n".join(lines)
     if outcome == "REJECT_UNSAFE":
         reasons = result.get("unsafe_reasons") or []
         response = [
@@ -397,6 +667,20 @@ def format_gateway_result(result: dict[str, Any], intent: dict[str, Any] | None 
     return result.get("message") or "I could not classify that request."
 
 
+def slot_hint(slot: str) -> str:
+    hints = {
+        "source_ids": "approved source IDs such as `open_webui_releases`, `ollama_releases`, `n8n_releases`, or `docker_blog`",
+        "check_ids": "approved check IDs such as `open_webui`, `ollama`, `automation_api`, `automation_worker`, or `n8n`",
+        "webhook_id": "an approved n8n webhook ID, not a raw URL",
+        "output_target": "a whitelisted target such as `briefings` or `alerts`",
+        "cron": "a schedule, for example `08:00 weekdays`",
+        "task_id": "a slug-like task id",
+        "name": "a human-readable task name",
+        "user_confirmation": "reply `confirm` if the shown canonical intent is correct",
+    }
+    return hints.get(slot, "provide this value explicitly")
+
+
 def route_chat(messages: list[dict[str, Any]]) -> str:
     user_text = latest_user_request(messages)
     if not user_text:
@@ -417,11 +701,26 @@ def route_chat(messages: list[dict[str, Any]]) -> str:
         yggdrasil = yggdrasil_canonical_request(result["yggdrasil_request"])
         return yggdrasil.get("answer") or json.dumps(yggdrasil, indent=2)
 
+    pending = pending_intent_from_prior(prior)
+    if pending and result_needs_details(prior):
+        intent = merge_intent_slots(pending, user_text)
+        result = api_request("POST", "/capabilities/validate-intent", intent)
+        return format_gateway_result(result, intent)
+
+    operation = operation_from_text(user_text)
+    if operation is not None:
+        yggdrasil = yggdrasil_canonical_request(operation)
+        return yggdrasil.get("answer") or json.dumps(yggdrasil, indent=2)
+
     intent = build_candidate_intent(user_text)
     if intent is None:
         return general_chat_answer(messages)
     result = api_request("POST", "/capabilities/validate-intent", intent)
     return format_gateway_result(result, intent)
+
+
+def result_needs_details(prior: str) -> bool:
+    return "Canonical intent awaiting details:" in prior[-6000:]
 
 
 @app.get("/health")
@@ -436,6 +735,8 @@ def health() -> dict[str, Any]:
         "chat_model": CHAT_MODEL,
         "chat_num_ctx": CHAT_NUM_CTX,
         "chat_max_tokens": CHAT_MAX_TOKENS,
+        "memory_file": MEMORY_FILE,
+        "memory_loaded": bool(load_memory()),
     }
 
 

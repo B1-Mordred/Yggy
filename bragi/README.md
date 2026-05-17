@@ -45,5 +45,10 @@ BRAGI_CHAT_TEMPERATURE=0.55
 BRAGI_CHAT_TIMEOUT=30
 BRAGI_CHAT_NUM_CTX=4096
 BRAGI_CHAT_MAX_TOKENS=512
+BRAGI_MEMORY_FILE=/app/configs/bragi/memory.yaml
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
+
+`BRAGI_MEMORY_FILE` is read-only non-secret context. It can hold preferences,
+service aliases, and style notes, but never credentials, approval nonces, or
+execution state.

@@ -14,8 +14,8 @@ Human
 ## Roles
 
 - **Bragi** is conversational. It may clarify, explain, remember non-secret
-  preferences later, answer ordinary chat through a local no-tool model
-  fallback, and prepare canonical intents.
+  preferences from a read-only memory file, answer ordinary chat through a local
+  no-tool model fallback, and prepare canonical intents.
 - **Heimdal** is the strict gateway. It validates canonical intents against
   `configs/capabilities.yaml`.
 - **Yggdrasil** remains deterministic. It receives only canonical actions from
@@ -70,6 +70,20 @@ request, Bragi should answer it as normal chat. It should not tell the user that
 the request cannot be sent to Yggdrasil merely because there is no matching
 capability.
 
+Bragi uses an explicit request-mode split:
+
+- Help/meta questions stay conversational.
+- Discussion requests stay conversational, even if they mention briefs,
+  summaries, Docker, or local AI.
+- Direct draft requests become canonical `draft_task` intents and are validated
+  by Heimdal.
+- Direct list/show/run/pause requests become structured Yggdrasil canonical
+  operations such as `list_tasks`, `show_task`, `run_task`, and `pause_task`.
+
+If a draft request is missing required slots, Bragi returns a partial canonical
+intent and asks for the missing details. Follow-up replies are merged into that
+same intent and revalidated before anything reaches Yggdrasil.
+
 If a request maps to a registered capability but the Bragi service is not
 authorized to call Yggdrasil, Bragi should say that the understood automation
 request could not be forwarded because the service is not authorized. That is
@@ -84,7 +98,53 @@ POST /v1/yggdrasil/canonical-actions
 ```
 
 That endpoint accepts only structured `draft_task_from_template` requests for
-the milestone templates. It rejects raw natural language.
+the milestone templates and structured task operations. It rejects raw natural
+language.
+
+Supported canonical operations:
+
+```text
+draft_task_from_template
+list_tasks
+show_task
+run_task
+pause_task
+```
+
+Run and pause operations still go through the automation API, so task approval,
+dry-run state, rate limits, active-run locks, and role checks remain
+authoritative there.
+
+## Non-Secret Memory
+
+Bragi can read:
+
+```text
+configs/bragi/memory.yaml
+```
+
+This file is mounted read-only into the Bragi container. It is conversation
+context only, not execution state and not approval authority.
+
+Allowed examples:
+
+- preferred language
+- message style
+- default timezone
+- non-secret service aliases
+- automation preferences
+
+Forbidden examples:
+
+- API keys
+- tokens
+- passwords
+- webhook URLs
+- approval nonces
+- cookies
+- private keys
+
+If the memory file contains secret-like keys or values, Bragi ignores it.
 
 ## Open WebUI
 

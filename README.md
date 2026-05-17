@@ -130,6 +130,9 @@ For Discord notifications about pending approvals, see
 - Bragi is the natural concierge; Yggdrasil stays deterministic.
 - Bragi handles ordinary chat through a local no-tool model fallback; normal
   conversation is not treated as a Yggdrasil routing failure.
+- Bragi reads only non-secret, read-only memory context from
+  `configs/bragi/memory.yaml`; that context is never approval or execution
+  authority.
 - Heimdal capability validation accepts only registered canonical intents before
   anything reaches Yggdrasil.
 - L2+ approvals require an admin-controlled process.

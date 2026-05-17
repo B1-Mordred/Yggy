@@ -4,6 +4,11 @@ Configuration here is declarative and non-secret. Task YAML may reference creden
 
 Use `scripts/validate_configs.py` before enabling or deploying a task.
 
+Bragi conversational memory lives in `configs/bragi/memory.yaml`. It is
+mounted read-only and may contain only non-secret preferences, style notes,
+service aliases, and operator preferences. It is not execution state and must
+never contain credentials, webhook URLs, approval nonces, or admin decisions.
+
 Reusable task templates live in `configs/task_templates/`. They render disabled,
 dry-run task YAML through `scripts/render_task_template.py` and must still pass
 the normal task schema and policy checks. See `docs/TASK_TEMPLATES.md`.

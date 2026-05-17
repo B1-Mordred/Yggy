@@ -296,6 +296,58 @@ def test_canonical_action_rejects_raw_natural_language():
     assert "raw natural language" in body["detail"]
 
 
+def test_canonical_action_lists_tasks(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path))
+        return 200, [
+            {
+                "id": "daily_local_ai_security_briefing",
+                "name": "Daily Local AI Security Briefing",
+                "type": "topic_digest",
+                "enabled": True,
+                "status": "enabled",
+                "approval_level": "L1_NOTIFY_ONLY",
+            }
+        ]
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    status_code, body = yggdrasil_action_api.handle_canonical_action({"action": "list_tasks"})
+
+    assert status_code == 200
+    assert calls == [("GET", "/tasks")]
+    assert body["status"] == "ok"
+    assert "Automation tasks:" in body["answer"]
+
+
+def test_canonical_action_runs_task(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path))
+        return 202, {"run_id": "manual-run-1", "status": "queued"}
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    status_code, body = yggdrasil_action_api.handle_canonical_action(
+        {"action": "run_task", "task_id": "daily_local_ai_security_briefing"}
+    )
+
+    assert status_code == 200
+    assert calls == [("POST", "/tasks/daily_local_ai_security_briefing/run")]
+    assert body["status"] == "ok"
+    assert "Run queued" in body["answer"]
+
+
+def test_canonical_action_rejects_invalid_task_id():
+    status_code, body = yggdrasil_action_api.handle_canonical_action({"action": "run_task", "task_id": "../bad"})
+
+    assert status_code == 422
+    assert "task_id must be slug-like" in body["detail"]
+
+
 def test_schedule_change_creates_task_change_proposal(monkeypatch):
     calls: list[tuple[str, str, dict | None]] = []
     task_config = yggdrasil_action_api.local_ai_security_briefing_draft("draft weekday 08:00 brief")
