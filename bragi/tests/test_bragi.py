@@ -165,6 +165,40 @@ def test_general_chat_does_not_claim_capability_failure(monkeypatch):
     assert "yggdrasil" not in answer.lower()
 
 
+def test_how_to_brief_question_stays_in_general_chat(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        raise AssertionError("help questions should not call Heimdal")
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "general_chat_answer", lambda messages: "You can describe the topic you want to add.")
+
+    answer = bragi.route_chat([{"role": "user", "content": "how can i add a new subject to the brief?"}])
+
+    assert answer == "You can describe the topic you want to add."
+    assert calls == []
+
+
+def test_direct_brief_draft_still_routes_to_gateway(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat(
+        [{"role": "user", "content": "Draft a weekday 08:00 local AI security briefing to Discord, keep it disabled."}]
+    )
+
+    assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
+    assert calls[0][2]["capability_id"] == "topic_digest.v1"
+    assert "Reply `confirm`" in answer
+
+
 def test_simple_greeting_does_not_call_ollama(monkeypatch):
     monkeypatch.setattr(bragi, "ollama_chat", lambda messages: (_ for _ in ()).throw(AssertionError("called ollama")))
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -25,12 +26,16 @@ GENERAL_CHAT_ENABLED = os.getenv("BRAGI_GENERAL_CHAT_ENABLED", "true").strip().l
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
 CHAT_MODEL = os.getenv("BRAGI_CHAT_MODEL", os.getenv("LLM_SUMMARIZER_MODEL", "llama3.1:8b")).strip()
 CHAT_TEMPERATURE = float(os.getenv("BRAGI_CHAT_TEMPERATURE", "0.55"))
-CHAT_TIMEOUT = float(os.getenv("BRAGI_CHAT_TIMEOUT", "12"))
+CHAT_TIMEOUT = float(os.getenv("BRAGI_CHAT_TIMEOUT", "30"))
+CHAT_NUM_CTX = int(os.getenv("BRAGI_CHAT_NUM_CTX", "4096"))
+CHAT_MAX_TOKENS = int(os.getenv("BRAGI_CHAT_MAX_TOKENS", "512"))
 GENERAL_CHAT_SYSTEM_PROMPT = """You are Bragi, the user's natural human-facing AI concierge.
 
 Speak naturally and helpfully. You may have a restrained Norse-skald flavor, dry wit, and occasional dark humor when it fits, but do not overdo it.
 
 You have no tools in this general-chat fallback. Do not claim that you executed work, changed configurations, approved anything, contacted Yggdrasil, sent Discord messages, accessed files, or talked to external services. If the user asks for an automation, approval, or execution, explain the concept conversationally; the outer Bragi gateway will handle registered automation capabilities separately.
+
+System context for conversational help: the old Hermes brief-management route is retired. Briefs and digests now belong to Yggy `topic_digest` automations. If the user asks how to add or change a subject/topic, tell them conversationally to describe the desired topic, sources, filters, schedule, and Discord target; if they ask for an actual change, the outer gateway can route a supported request for confirmation and Yggy approval. Do not invent UI buttons, menus, or a "Briefs section" unless the user provided that context.
 
 Do not ask for or reveal secrets, tokens, passwords, cookies, private keys, approval nonces, or webhook URLs."""
 
@@ -166,6 +171,8 @@ def slug(value: str, fallback: str = "automation_task") -> str:
 
 
 def build_candidate_intent(user_text: str) -> dict[str, Any] | None:
+    if is_help_or_meta_question(user_text):
+        return None
     lowered = user_text.lower()
     if any(term in lowered for term in ("printer", "toner", "cartridge", "ink level")):
         return server_health_intent(user_text)
@@ -178,6 +185,20 @@ def build_candidate_intent(user_text: str) -> dict[str, Any] | None:
     if "n8n" in lowered or "webhook" in lowered:
         return n8n_intent(user_text)
     return None
+
+
+def is_help_or_meta_question(text: str) -> bool:
+    compact = re.sub(r"\s+", " ", text.strip().lower()).strip(" ?!.")
+    if not compact:
+        return False
+    if re.match(r"^(how|what|why|where|when|who)\b", compact):
+        return True
+    return bool(
+        re.match(
+            r"^(can|could|would) you (explain|tell me|show me how|walk me through|describe)\b",
+            compact,
+        )
+    )
 
 
 def is_simple_greeting(text: str) -> bool:
@@ -194,7 +215,8 @@ def general_chat_answer(messages: list[dict[str, Any]]) -> str:
     if GENERAL_CHAT_ENABLED and CHAT_MODEL:
         try:
             return ollama_chat(messages)
-        except Exception:
+        except Exception as exc:
+            print(f"bragi general chat fallback: {exc}", file=sys.stderr)
             pass
     return "I can talk through that. I do not have general-purpose tools in this chat path, but I can reason with you and help shape a safe automation if that is where the road leads."
 
@@ -215,7 +237,11 @@ def ollama_chat(messages: list[dict[str, Any]]) -> str:
         "model": CHAT_MODEL,
         "messages": ollama_messages,
         "stream": False,
-        "options": {"temperature": CHAT_TEMPERATURE},
+        "options": {
+            "temperature": CHAT_TEMPERATURE,
+            "num_ctx": CHAT_NUM_CTX,
+            "num_predict": CHAT_MAX_TOKENS,
+        },
     }
     with httpx.Client(timeout=CHAT_TIMEOUT) as client:
         response = client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
@@ -408,6 +434,8 @@ def health() -> dict[str, Any]:
         "yggdrasil_base_url": YGGDRASIL_BASE_URL,
         "general_chat_enabled": GENERAL_CHAT_ENABLED,
         "chat_model": CHAT_MODEL,
+        "chat_num_ctx": CHAT_NUM_CTX,
+        "chat_max_tokens": CHAT_MAX_TOKENS,
     }
 
 
