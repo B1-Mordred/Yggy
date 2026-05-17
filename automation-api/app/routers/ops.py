@@ -246,6 +246,8 @@ def ops_runs(
     session: Session = Depends(get_session),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=DEFAULT_OPS_PAGE_SIZE, ge=MIN_OPS_PAGE_SIZE, le=MAX_OPS_PAGE_SIZE),
+    sort_by: Literal["created_at", "completed_at", "task_id", "status", "id"] = Query(default="created_at"),
+    sort_dir: Literal["asc", "desc"] = Query(default="desc"),
     q: str | None = Query(default=None, min_length=1, max_length=128),
     task_id: str | None = Query(default=None, min_length=1, max_length=128),
     status_filter: str | None = Query(default=None, alias="status", min_length=1, max_length=64),
@@ -270,8 +272,16 @@ def ops_runs(
         )
 
     total = query.count()
+    sort_columns = {
+        "created_at": RunModel.created_at,
+        "completed_at": RunModel.completed_at,
+        "task_id": RunModel.task_id,
+        "status": RunModel.status,
+        "id": RunModel.id,
+    }
+    sort_expression = sort_columns[sort_by].asc() if sort_dir == "asc" else sort_columns[sort_by].desc()
     runs = (
-        query.order_by(RunModel.created_at.desc())
+        query.order_by(sort_expression, RunModel.created_at.desc(), RunModel.id.asc())
         .offset(_pagination_offset(page, page_size))
         .limit(page_size)
         .all()
@@ -285,6 +295,7 @@ def ops_runs(
             "task_id": task_id,
             "status": status_filter,
         },
+        "sort": {"by": sort_by, "dir": sort_dir},
         "pagination": _pagination(page, page_size, total, len(runs)),
         "runs": [_run_summary(run) for run in runs],
     }
@@ -328,6 +339,8 @@ def ops_audit_events(
     session: Session = Depends(get_session),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=DEFAULT_OPS_PAGE_SIZE, ge=MIN_OPS_PAGE_SIZE, le=MAX_OPS_PAGE_SIZE),
+    sort_by: Literal["created_at", "actor_role", "action", "resource_type", "resource_id", "id"] = Query(default="created_at"),
+    sort_dir: Literal["asc", "desc"] = Query(default="desc"),
     actor_role: str | None = Query(default=None, min_length=1, max_length=64),
     action: str | None = Query(default=None, min_length=1, max_length=128),
     resource_type: str | None = Query(default=None, min_length=1, max_length=64),
@@ -353,8 +366,17 @@ def ops_audit_events(
             )
         )
     total = query.count()
+    sort_columns = {
+        "created_at": AuditEventModel.created_at,
+        "actor_role": AuditEventModel.actor_role,
+        "action": AuditEventModel.action,
+        "resource_type": AuditEventModel.resource_type,
+        "resource_id": AuditEventModel.resource_id,
+        "id": AuditEventModel.id,
+    }
+    sort_expression = sort_columns[sort_by].asc() if sort_dir == "asc" else sort_columns[sort_by].desc()
     events = (
-        query.order_by(AuditEventModel.created_at.desc())
+        query.order_by(sort_expression, AuditEventModel.created_at.desc(), AuditEventModel.id.asc())
         .offset(_pagination_offset(page, page_size))
         .limit(page_size)
         .all()
@@ -371,6 +393,7 @@ def ops_audit_events(
             "resource_id": resource_id,
             "q": q,
         },
+        "sort": {"by": sort_by, "dir": sort_dir},
         "pagination": _pagination(page, page_size, total, len(events)),
         "events": [_audit_event_detail(event) for event in events],
     }
@@ -1350,6 +1373,17 @@ DASHBOARD_HTML = f"""<!doctype html>
     table {{ width: 100%; border-collapse: collapse; border: 0; min-width: 760px; }}
     th, td {{ padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }}
     th {{ color: var(--muted); font-size: 12px; font-weight: 650; }}
+    th .sort-button {{
+      color: var(--muted);
+      font: inherit;
+      font-weight: 650;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }}
+    th .sort-button:hover {{ color: var(--accent); border: 0; }}
     tr:last-child td {{ border-bottom: 0; }}
     code {{
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1650,6 +1684,49 @@ DASHBOARD_HTML = f"""<!doctype html>
       approvals: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.approvals'), DEFAULT_PAGE_SIZE)}},
       audit: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.audit'), DEFAULT_PAGE_SIZE)}},
     }};
+    const allowedSorts = {{
+      tasks: ['id', 'type', 'status', 'trigger', 'output', 'latest_run_completed'],
+      runs: ['id', 'task_id', 'status', 'created_at', 'completed_at'],
+      audit: ['created_at', 'actor_role', 'action', 'resource_type', 'resource_id'],
+    }};
+    function storedSort(view, fallbackBy, fallbackDir) {{
+      const by = storedValue(`sortBy.${{view}}`);
+      const dir = storedValue(`sortDir.${{view}}`);
+      return {{
+        by: allowedSorts[view].includes(by) ? by : fallbackBy,
+        dir: dir === 'asc' || dir === 'desc' ? dir : fallbackDir,
+      }};
+    }}
+    const sortState = {{
+      tasks: storedSort('tasks', 'id', 'asc'),
+      runs: storedSort('runs', 'created_at', 'desc'),
+      audit: storedSort('audit', 'created_at', 'desc'),
+    }};
+    function sortIndicator(view, key) {{
+      if (sortState[view].by !== key) return '';
+      return sortState[view].dir === 'asc' ? ' ↑' : ' ↓';
+    }}
+    function sortHeader(view, label, key) {{
+      return `<button type="button" class="sort-button" data-sort-view="${{esc(view)}}" data-sort-key="${{esc(key)}}" aria-label="Sort ${{esc(view)}} by ${{esc(label)}}">${{esc(label)}}${{sortIndicator(view, key)}}</button>`;
+    }}
+    function updateSort(view, key, onChange) {{
+      if (!allowedSorts[view].includes(key)) return;
+      if (sortState[view].by === key) {{
+        sortState[view].dir = sortState[view].dir === 'asc' ? 'desc' : 'asc';
+      }} else {{
+        sortState[view].by = key;
+        sortState[view].dir = key.endsWith('_at') || key === 'latest_run_completed' ? 'desc' : 'asc';
+      }}
+      storeValue(`sortBy.${{view}}`, sortState[view].by);
+      storeValue(`sortDir.${{view}}`, sortState[view].dir);
+      resetPage(view);
+      onChange();
+    }}
+    function wireSortHeaders(containerId, view, onChange) {{
+      byId(containerId).querySelectorAll('[data-sort-key]').forEach(button => {{
+        button.addEventListener('click', () => updateSort(view, button.dataset.sortKey, onChange));
+      }});
+    }}
     function pageSize(view) {{
       const input = byId(`${{view.slice(0, -1)}}-page-size`) || byId(`${{view}}-page-size`);
       const size = boundedNumber(input?.value, pageState[view].pageSize);
@@ -1738,6 +1815,33 @@ DASHBOARD_HTML = f"""<!doctype html>
       if (!query) return true;
       const haystack = values.map(value => lower(value)).join(' ');
       return haystack.includes(query.toLowerCase());
+    }}
+    function comparable(value) {{
+      if (value === null || value === undefined) return '';
+      return String(value).toLowerCase();
+    }}
+    function compareValues(left, right, dir) {{
+      const a = comparable(left);
+      const b = comparable(right);
+      if (a < b) return dir === 'asc' ? -1 : 1;
+      if (a > b) return dir === 'asc' ? 1 : -1;
+      return 0;
+    }}
+    function taskSortValue(task, key) {{
+      if (key === 'id') return task.id;
+      if (key === 'type') return task.type;
+      if (key === 'status') return `${{task.status}} ${{task.enabled ? 'enabled' : 'disabled'}}`;
+      if (key === 'trigger') return `${{task.trigger?.timezone || ''}} ${{task.trigger?.cron || ''}}`;
+      if (key === 'output') return `${{task.output?.channel || ''}} ${{task.output?.target || ''}}`;
+      if (key === 'latest_run_completed') return task.latest_run?.completed_at || task.latest_run?.created_at || '';
+      return task.id;
+    }}
+    function sortTasks(tasks) {{
+      const sort = sortState.tasks;
+      return [...tasks].sort((left, right) => {{
+        const primary = compareValues(taskSortValue(left, sort.by), taskSortValue(right, sort.by), sort.dir);
+        return primary || compareValues(left.id, right.id, 'asc');
+      }});
     }}
     function syncTaskTypeOptions(tasks) {{
       const select = byId('task-filter-type');
@@ -1902,7 +2006,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     function renderTasks() {{
       if (!lastStatusData) return;
       const tasks = lastStatusData.tasks || [];
-      const filtered = tasks.filter(taskMatchesFilters);
+      const filtered = sortTasks(tasks.filter(taskMatchesFilters));
       const state = pageState.tasks;
       const size = pageSize('tasks');
       const totalPages = Math.max(1, Math.ceil(filtered.length / size));
@@ -1910,7 +2014,15 @@ DASHBOARD_HTML = f"""<!doctype html>
       const start = (state.page - 1) * size;
       const pageRows = filtered.slice(start, start + size);
       byId('task-filter-summary').textContent = `Showing ${{pageRows.length}} of ${{filtered.length}} matching tasks; ${{tasks.length}} total.`;
-      renderTable('tasks', ['Task', 'Type', 'State', 'Trigger', 'Output', 'Latest Run', 'Actions'], pageRows.map(task => [
+      renderTable('tasks', [
+        sortHeader('tasks', 'Task', 'id'),
+        sortHeader('tasks', 'Type', 'type'),
+        sortHeader('tasks', 'State', 'status'),
+        sortHeader('tasks', 'Trigger', 'trigger'),
+        sortHeader('tasks', 'Output', 'output'),
+        sortHeader('tasks', 'Latest Run', 'latest_run_completed'),
+        'Actions',
+      ], pageRows.map(task => [
         `${{taskButton(task)}}<br><span class="meta">${{esc(task.name)}}</span>`,
         `<span class="pill">${{esc(task.type)}}</span><br><span class="meta">${{esc(task.approval_level)}}</span>`,
         `${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}}<br><span class="meta">status ${{esc(task.status)}}; dry run ${{task.dry_run}}</span>`,
@@ -1920,6 +2032,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         `${{taskRunButtons(task)}}${{taskStateButtons(task)}}`,
       ]), 'No tasks match the current filters.');
       renderPager('task-pagination', 'tasks', filtered.length, pageRows.length, renderTasks);
+      wireSortHeaders('tasks', 'tasks', renderTasks);
       wireTaskDetailLinks();
       wireRunLinks();
       wireTaskRunButtons();
@@ -2059,6 +2172,8 @@ DASHBOARD_HTML = f"""<!doctype html>
         const params = new URLSearchParams({{
           page: String(pageState.runs.page),
           page_size: String(pageSize('runs')),
+          sort_by: sortState.runs.by,
+          sort_dir: sortState.runs.dir,
         }});
         Object.entries(runFilterValues()).forEach(([key, value]) => {{
           if (value) params.set(key, value);
@@ -2081,15 +2196,25 @@ DASHBOARD_HTML = f"""<!doctype html>
     function renderRuns(runs, pagination) {{
       const total = pagination?.total ?? runs.length;
       byId('run-filter-summary').textContent = `Showing ${{runs.length}} of ${{total}} matching runs.`;
-      renderTable('runs', ['Run', 'Task', 'Status', 'Result', 'Notification', 'Completed'], runs.map(run => [
+      renderTable('runs', [
+        sortHeader('runs', 'Run', 'id'),
+        sortHeader('runs', 'Task', 'task_id'),
+        sortHeader('runs', 'Status', 'status'),
+        'Result',
+        'Notification',
+        sortHeader('runs', 'Created', 'created_at'),
+        sortHeader('runs', 'Completed', 'completed_at'),
+      ], runs.map(run => [
         runButton(run),
         `<code>${{esc(run.task_id)}}</code>`,
         statusLabel(run.status),
         `${{esc(run.result_status)}}${{run.failed_count !== null && run.failed_count !== undefined ? `<br><span class="meta">failed checks ${{esc(run.failed_count)}}</span>` : ''}}`,
         `${{run.notification.sent === true ? 'sent' : run.notification.sent === false ? 'not sent' : 'n/a'}}<br><span class="meta">${{esc(run.notification.target || run.notification.transport)}}</span>`,
+        esc(run.created_at),
         esc(run.completed_at),
       ]), 'No runs match the current filters.');
       renderPager('run-pagination', 'runs', total, runs.length, loadRuns);
+      wireSortHeaders('runs', 'runs', loadRuns);
       wireRunLinks();
     }}
     function digestItems(items) {{
@@ -2329,6 +2454,8 @@ DASHBOARD_HTML = f"""<!doctype html>
         const params = new URLSearchParams({{
           page: String(pageState.audit.page),
           page_size: String(pageSize('audit')),
+          sort_by: sortState.audit.by,
+          sort_dir: sortState.audit.dir,
         }});
         const auditFilters = {{
           q: fieldValue('audit-filter-q'),
@@ -2348,14 +2475,23 @@ DASHBOARD_HTML = f"""<!doctype html>
           return loadAudit();
         }}
         generated.textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}; showing ${{data.events.length}} of ${{data.pagination.total}} matching events.`;
-        renderTable('audit', ['Time', 'Actor', 'Action', 'Resource', 'Detail'], data.events.map(event => [
+        renderTable('audit', [
+          sortHeader('audit', 'Time', 'created_at'),
+          sortHeader('audit', 'Actor', 'actor_role'),
+          sortHeader('audit', 'Action', 'action'),
+          sortHeader('audit', 'Resource', 'resource_type'),
+          sortHeader('audit', 'Resource ID', 'resource_id'),
+          'Detail',
+        ], data.events.map(event => [
           esc(event.created_at),
           `<span class="pill">${{esc(event.actor_role)}}</span>`,
           `<code>${{esc(event.action)}}</code>`,
-          `${{esc(event.resource_type)}}<br><code>${{esc(event.resource_id)}}</code>`,
+          esc(event.resource_type),
+          `<code>${{esc(event.resource_id)}}</code>`,
           jsonBlock(event.detail),
         ]));
         renderPager('audit-pagination', 'audit', data.pagination.total, data.pagination.returned, loadAudit);
+        wireSortHeaders('audit', 'audit', loadAudit);
       }} catch (error) {{
         generated.textContent = `Unable to load audit events: ${{error.message}}`;
       }}

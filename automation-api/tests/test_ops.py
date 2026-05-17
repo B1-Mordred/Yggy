@@ -42,6 +42,10 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "audit-page-size" in allowed.text
     assert "task-pagination" in allowed.text
     assert "run-pagination" in allowed.text
+    assert "data-sort-view" in allowed.text
+    assert "sortHeader('tasks', 'Task', 'id')" in allowed.text
+    assert "sortHeader('runs', 'Created', 'created_at')" in allowed.text
+    assert "sortHeader('audit', 'Action', 'action')" in allowed.text
 
 
 def test_admin_key_can_access_ops_status_without_dashboard_password(client):
@@ -396,6 +400,45 @@ def test_ops_audit_rejects_page_size_below_minimum(client, monkeypatch):
     assert response.status_code == 422
 
 
+def test_ops_audit_events_can_be_sorted(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    with Session(get_engine()) as session:
+        session.add_all(
+            [
+                AuditEventModel(
+                    actor_role="worker",
+                    action="run.update",
+                    resource_type="run",
+                    resource_id="run-sort-test",
+                    detail={},
+                    created_at=utcnow(),
+                ),
+                AuditEventModel(
+                    actor_role="admin",
+                    action="approval.approve",
+                    resource_type="approval",
+                    resource_id="approval-sort-test",
+                    detail={},
+                    created_at=utcnow(),
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get(
+        "/ops/audit?page=1&page_size=5&sort_by=action&sort_dir=asc",
+        auth=("operator", "test-dashboard-password"),
+    )
+    invalid = client.get("/ops/audit?sort_by=detail", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sort"] == {"by": "action", "dir": "asc"}
+    assert [event["action"] for event in body["events"]] == ["approval.approve", "run.update"]
+    assert invalid.status_code == 422
+
+
 def test_ops_runs_are_filtered_and_paginated(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
@@ -425,6 +468,11 @@ def test_ops_runs_are_filtered_and_paginated(client, monkeypatch):
         auth=("operator", "test-dashboard-password"),
     )
     too_small = client.get("/ops/runs?page_size=4", auth=("operator", "test-dashboard-password"))
+    sorted_asc = client.get(
+        "/ops/runs?page=1&page_size=5&sort_by=created_at&sort_dir=asc",
+        auth=("operator", "test-dashboard-password"),
+    )
+    invalid_sort = client.get("/ops/runs?sort_by=log", auth=("operator", "test-dashboard-password"))
 
     assert first_page.status_code == 200
     first_body = first_page.json()
@@ -435,6 +483,14 @@ def test_ops_runs_are_filtered_and_paginated(client, monkeypatch):
     assert second_page.status_code == 200
     assert second_page.json()["pagination"]["returned"] == 1
     assert too_small.status_code == 422
+    assert sorted_asc.status_code == 200
+    assert sorted_asc.json()["sort"] == {"by": "created_at", "dir": "asc"}
+    assert [run["id"] for run in sorted_asc.json()["runs"][:3]] == [
+        "run-pagination-0",
+        "run-pagination-1",
+        "run-pagination-2",
+    ]
+    assert invalid_sort.status_code == 422
 
 
 def test_ops_audit_events_can_be_filtered(client, monkeypatch):
