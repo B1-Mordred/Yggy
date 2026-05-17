@@ -87,3 +87,23 @@ def test_n8n_webhook_live_posts_to_internal_base_url(monkeypatch):
     assert calls[0]["headers"]["X-Yggy-Webhook-Token"] == "test-shared-secret"
     assert calls[0]["headers"]["X-Yggy-Run-Id"] == "run-1"
     assert calls[0]["json"]["payload"] == {"purpose": "daily_briefing_stub"}
+
+
+def test_n8n_webhook_live_can_use_bounded_payload_override(monkeypatch):
+    calls = []
+    monkeypatch.setenv("N8N_WEBHOOK_SHARED_SECRET", "test-shared-secret")
+    monkeypatch.setenv("N8N_WEBHOOK_BASE_URL", "http://n8n:5678")
+
+    def fake_post(url, json, headers, timeout):
+        calls.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+        return FakeResponse(200, {"ok": True})
+
+    result = run_n8n_webhook(
+        n8n_config(dry_run=False),
+        run_id="run-1",
+        payload_override={"purpose": "dynamic", "items": [{"title": "Item"}]},
+        http_post=fake_post,
+    )
+
+    assert result["status"] == "ready"
+    assert calls[0]["json"]["payload"] == {"purpose": "dynamic", "items": [{"title": "Item"}]}

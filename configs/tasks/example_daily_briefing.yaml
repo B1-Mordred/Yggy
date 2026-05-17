@@ -65,3 +65,11 @@ notifications:
     timezone: Europe/Berlin
   collapse_repeated_failures: true
   failure_collapse_window_minutes: 360
+
+n8n:
+  webhook_id: daily_briefing_stub
+  path: /webhook/yggy-daily-briefing
+  method: POST
+  payload:
+    purpose: daily_briefing_payload_normalizer
+    delivery_target: briefings

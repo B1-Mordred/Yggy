@@ -120,6 +120,85 @@ def test_process_queued_run_uses_existing_run_and_sends_live(monkeypatch):
     assert client.completed_calls[0]["status"] == "completed"
 
 
+def test_process_topic_digest_optionally_normalizes_with_n8n_before_discord(monkeypatch):
+    client = FakeClient()
+    n8n_calls = []
+
+    def fake_digest(config: dict) -> dict:
+        return {
+            "status": "ready",
+            "title": "Daily Local AI Security Briefing",
+            "message": "live digest body",
+            "items": [
+                {
+                    "title": "Open WebUI security release",
+                    "summary": "Docker hardening update.",
+                    "link": "https://example.com/open-webui",
+                    "published": "2026-05-17",
+                    "type": "rss",
+                }
+            ],
+            "errors": [],
+            "summary_mode": "deterministic",
+        }
+
+    def fake_n8n(config: dict, run_id: str, payload_override: dict) -> dict:
+        n8n_calls.append({"config": config, "run_id": run_id, "payload": payload_override})
+        return {
+            "status": "ready",
+            "notify": False,
+            "webhook_id": "daily_briefing_stub",
+            "response": {"action": "normalize_digest_payload", "normalized": {"item_count": 1}},
+        }
+
+    monkeypatch.setattr("worker.main.run_topic_digest", fake_digest)
+    monkeypatch.setattr("worker.main.run_n8n_webhook", fake_n8n)
+
+    task = {
+        "id": "daily_local_ai_security_briefing",
+        "enabled": True,
+        "config": {
+            "id": "daily_local_ai_security_briefing",
+            "name": "Daily Local AI Security Briefing",
+            "type": "topic_digest",
+            "runtime": {"dry_run": False},
+            "output": {"channel": "discord", "target": "briefings"},
+            "notifications": {"on_empty_result": True},
+            "n8n": {
+                "webhook_id": "daily_briefing_stub",
+                "path": "/webhook/yggy-daily-briefing",
+                "method": "POST",
+                "payload": {
+                    "purpose": "daily_briefing_payload_normalizer",
+                    "delivery_target": "briefings",
+                },
+            },
+        },
+    }
+    client.tasks = {task["id"]: task}
+    client.runs = [
+        {
+            "id": "manual-run-1",
+            "task_id": "daily_local_ai_security_briefing",
+            "status": "queued",
+            "completed_at": None,
+        }
+    ]
+
+    processed = process_queued_runs(client)
+
+    assert processed == {"daily_local_ai_security_briefing"}
+    assert n8n_calls[0]["run_id"] == "manual-run-1"
+    assert n8n_calls[0]["payload"]["purpose"] == "daily_briefing_payload_normalizer"
+    assert n8n_calls[0]["payload"]["delivery_target"] == "briefings"
+    assert n8n_calls[0]["payload"]["title"] == "Daily Local AI Security Briefing"
+    assert n8n_calls[0]["payload"]["summary"] == "live digest body"
+    assert n8n_calls[0]["payload"]["items"][0]["url"] == "https://example.com/open-webui"
+    assert n8n_calls[0]["payload"]["sources"] == ["https://example.com/open-webui"]
+    assert client.discord_calls == [{"target": "briefings", "content": "live digest body", "dry_run": False}]
+    assert client.completed_calls[0]["log"]["result"]["n8n"]["response"]["action"] == "normalize_digest_payload"
+
+
 def test_queued_dry_run_preserves_dry_run_even_if_task_is_live(monkeypatch):
     client = FakeClient()
     task = {

@@ -18,6 +18,7 @@ def run_n8n_webhook(
     task_config: dict,
     *,
     run_id: str,
+    payload_override: dict[str, Any] | None = None,
     http_post: Callable[..., httpx.Response] = httpx.post,
 ) -> dict:
     n8n_config = task_config.get("n8n") or {}
@@ -33,7 +34,7 @@ def run_n8n_webhook(
         "run_id": run_id,
         "webhook_id": webhook_id,
         "dry_run": dry_run,
-        "payload": n8n_config.get("payload") or {},
+        "payload": payload_override if payload_override is not None else n8n_config.get("payload") or {},
     }
 
     if dry_run:

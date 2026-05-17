@@ -67,10 +67,11 @@ repeated_failure_collapsed
 
 ## n8n Webhook Backend
 
-n8n webhooks are approved execution backends. The automation API validates
-`n8n_webhook` task configs against `configs/n8n/webhooks.yaml`, and the worker
+n8n webhooks are approved execution backends. The automation API validates any
+task with an `n8n:` block against `configs/n8n/webhooks.yaml`, and the worker
 calls only those internal paths. Live dispatch requires
-`N8N_WEBHOOK_SHARED_SECRET`; dry-run dispatch does not call n8n.
+`N8N_WEBHOOK_SHARED_SECRET`; dry-run dispatch records the intended payload shape
+but does not call n8n.
 
 The n8n workflow should also authenticate the inbound webhook before running any
 workflow body. The starter workflow uses n8n Webhook Header Auth with a
@@ -79,6 +80,12 @@ credential named `Yggy Webhook Header Auth`; that credential stores the
 The current starter workflow performs only an internal payload normalization and
 returns a bounded JSON response to the worker. The worker records that response
 with secret-like keys redacted.
+
+For `topic_digest` tasks, n8n normalization is an optional post-processing step:
+the worker builds a bounded payload from the already-created digest, sends it to
+the approved n8n normalizer, stores the normalized response in the run log, and
+then applies Yggy's normal notification policy. Discord delivery remains owned by
+Yggy, not n8n.
 
 Example dry-run task:
 

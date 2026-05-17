@@ -20,6 +20,12 @@ the shared secret from `N8N_WEBHOOK_SHARED_SECRET` in the
 `X-Yggy-Webhook-Token` header. The secret must stay in `.env` or another local
 secret store, not task YAML or Open WebUI Knowledge.
 
+`n8n_webhook` tasks dispatch the configured payload directly. `topic_digest`
+tasks may also include an `n8n:` block; for those, the worker builds a bounded
+payload from the digest result, sends it to the approved normalizer, records the
+n8n response in the run log, and then lets Yggy decide whether to send Discord.
+n8n does not own Discord delivery.
+
 The starter task is:
 
 ```text

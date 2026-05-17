@@ -131,7 +131,7 @@ def validate_task_policy(task: TaskConfig, policy: dict[str, Any] | None = None)
 
     n8n_policy = active_policy.get("n8n_policy", {})
     n8n_required_task_types = set(n8n_policy.get("require_approved_webhooks_for_task_types", []))
-    if task.type in n8n_required_task_types:
+    if task.n8n is not None or task.type in n8n_required_task_types:
         errors.extend(validate_task_n8n_webhook(task, active_policy))
 
     secret_paths = find_secret_paths(task.model_dump(mode="json"))

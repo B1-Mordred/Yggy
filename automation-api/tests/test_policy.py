@@ -127,3 +127,33 @@ def test_n8n_webhook_path_must_match_registry(client):
     response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
     assert response.status_code == 422
     assert "does not match the configured webhook path" in response.text
+
+
+def test_topic_digest_optional_n8n_webhook_is_validated(client):
+    task = sample_task(
+        "topic_with_n8n",
+        n8n={
+            "webhook_id": "daily_briefing_stub",
+            "path": "/webhook/yggy-daily-briefing",
+            "method": "POST",
+            "payload": {"purpose": "daily_briefing_payload_normalizer"},
+        },
+    )
+    response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
+    assert response.status_code == 201
+    assert response.json()["task"]["config"]["n8n"]["webhook_id"] == "daily_briefing_stub"
+
+
+def test_topic_digest_optional_n8n_webhook_rejects_unapproved_path(client):
+    task = sample_task(
+        "topic_bad_n8n_path",
+        n8n={
+            "webhook_id": "daily_briefing_stub",
+            "path": "/webhook/not-approved",
+            "method": "POST",
+            "payload": {"purpose": "daily_briefing_payload_normalizer"},
+        },
+    )
+    response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
+    assert response.status_code == 422
+    assert "does not match the configured webhook path" in response.text

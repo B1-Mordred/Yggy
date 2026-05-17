@@ -12,12 +12,71 @@ from worker.handlers.topic_digest import run_topic_digest
 from worker.scheduler import due_tasks
 
 _LAST_RETENTION_RUN_AT: float | None = None
+MAX_TOPIC_N8N_ITEMS = 10
+MAX_TOPIC_N8N_SOURCES = 10
+MAX_TOPIC_N8N_ERRORS = 10
+MAX_TOPIC_N8N_TEXT_LENGTH = 2000
 
 
 def result_message(config: dict, result: dict) -> str:
     if result.get("message"):
         return str(result["message"])
     return f"{config.get('name', config.get('id', 'Automation task'))}: {result}"
+
+
+def truncate_text(value: object, limit: int = MAX_TOPIC_N8N_TEXT_LENGTH) -> str:
+    text = str(value or "")
+    if len(text) > limit:
+        return f"{text[:limit]}...<truncated>"
+    return text
+
+
+def topic_digest_n8n_payload(config: dict, result: dict) -> dict:
+    configured_payload = dict((config.get("n8n") or {}).get("payload") or {})
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    errors = result.get("errors") if isinstance(result.get("errors"), list) else []
+    normalized_items = []
+    sources = []
+    for item in items[:MAX_TOPIC_N8N_ITEMS]:
+        if not isinstance(item, dict):
+            continue
+        source = item.get("link") or item.get("source") or ""
+        if source and len(sources) < MAX_TOPIC_N8N_SOURCES:
+            sources.append(source)
+        normalized_items.append(
+            {
+                "title": truncate_text(item.get("title"), 300),
+                "summary": truncate_text(item.get("summary"), 800),
+                "url": truncate_text(source, 1000),
+                "published": truncate_text(item.get("published"), 200),
+                "type": truncate_text(item.get("type"), 100),
+            }
+        )
+
+    payload = {
+        **configured_payload,
+        "title": truncate_text(result.get("title") or config.get("name") or config.get("id"), 300),
+        "summary": truncate_text(result.get("message") or "", 2000),
+        "items": normalized_items,
+        "sources": sources,
+        "errors": [
+            {
+                "source": truncate_text(error.get("source"), 1000),
+                "error": truncate_text(error.get("error"), 200),
+            }
+            for error in errors[:MAX_TOPIC_N8N_ERRORS]
+            if isinstance(error, dict)
+        ],
+        "summary_mode": truncate_text(result.get("summary_mode"), 100),
+    }
+    return payload
+
+
+def maybe_run_topic_digest_n8n(config: dict, result: dict, *, run_id: str) -> dict:
+    if not config.get("n8n"):
+        return result
+    n8n_result = run_n8n_webhook(config, run_id=run_id, payload_override=topic_digest_n8n_payload(config, result))
+    return {**result, "n8n": n8n_result}
 
 
 def failure_message(config: dict, error: Exception) -> str:
@@ -216,6 +275,7 @@ def execute_task(
         task_type = effective_config.get("type")
         if task_type == "topic_digest":
             result = run_topic_digest(effective_config)
+            result = maybe_run_topic_digest_n8n(effective_config, result, run_id=run_id)
         elif task_type == "server_health":
             result = run_server_health(effective_config)
         elif task_type == "n8n_webhook":

@@ -118,9 +118,10 @@ and suppression reason.
 
 ## n8n Webhook Tasks
 
-n8n is an execution backend, not the policy authority. `n8n_webhook` tasks are
-approved by the automation API like any other task. The task config may reference
-only an approved webhook ID and internal webhook path:
+n8n is an execution backend, not the policy authority. Any task with an `n8n:`
+block is validated by the automation API against the approved webhook registry.
+The task config may reference only an approved webhook ID and internal webhook
+path.
 
 ```yaml
 type: n8n_webhook
@@ -144,6 +145,28 @@ n8n:
     sources:
       - https://example.com/feed.xml
 ```
+
+For `topic_digest` tasks, the `n8n.payload` block should contain only stable
+static metadata such as `purpose` and `delivery_target`. The worker builds the
+dynamic digest fields from the approved digest result:
+
+```yaml
+type: topic_digest
+output:
+  channel: discord
+  target: briefings
+  format: "5 bullets, impact, source links, recommended action"
+n8n:
+  webhook_id: daily_briefing_stub
+  path: /webhook/yggy-daily-briefing
+  method: POST
+  payload:
+    purpose: daily_briefing_payload_normalizer
+    delivery_target: briefings
+```
+
+The n8n response is recorded in the run log before Yggy applies its normal
+notification policy. Discord delivery remains owned by Yggy.
 
 The shared webhook secret is read from `N8N_WEBHOOK_SHARED_SECRET` by the
 worker. n8n should validate the same header through its credential store, for
