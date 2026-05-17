@@ -1944,6 +1944,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="channel.discord.blocked">channel.discord.blocked</option>
             <option value="channel.discord.rejected">channel.discord.rejected</option>
             <option value="channel.discord.failed">channel.discord.failed</option>
+            <option value="research.query">research.query</option>
             <option value="approval.approve">approval.approve</option>
             <option value="approval.reject">approval.reject</option>
             <option value="approval.request">approval.request</option>
@@ -1973,6 +1974,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="topic">topic</option>
             <option value="maintenance">maintenance</option>
             <option value="channel_event">channel_event</option>
+            <option value="research">research</option>
           </select>
           <label class="page-size" for="audit-page-size">Per page
             <input id="audit-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Audit events per page">

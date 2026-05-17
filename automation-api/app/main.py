@@ -13,6 +13,7 @@ from app.routers import (
     maintenance,
     notifications,
     ops,
+    research,
     runs,
     task_change_proposals,
     task_templates,
@@ -37,6 +38,8 @@ app = FastAPI(
 app.include_router(health.router)
 app.include_router(capabilities.router)
 app.include_router(channels.router)
+app.include_router(research.sources_router)
+app.include_router(research.research_router)
 app.include_router(tasks.router)
 app.include_router(task_templates.router)
 app.include_router(task_change_proposals.router)

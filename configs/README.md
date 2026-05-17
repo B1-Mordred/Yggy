@@ -38,6 +38,11 @@ Each approved source carries a trust level, categories, enabled flag, and
 optional per-source item cap. The worker records that metadata in each digest run
 and refuses to fetch disabled or unapproved sources at execution time.
 
+The same source registry powers the read-only research gateway. Bragi may ask
+Yggy to fetch or read cached public items from enabled `rss` and `http` source
+IDs, but it does not receive arbitrary browsing access. Research responses are
+sanitized, cached, and labeled as untrusted external data.
+
 Any task with an `n8n:` block must use webhook IDs from `configs/n8n/webhooks.yaml`.
 Task YAML may include the approved path and bounded static payload metadata, but
 never webhook secrets or n8n credentials. For topic digests, the worker builds

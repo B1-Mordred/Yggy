@@ -612,3 +612,27 @@ class ChannelEventCreate(BaseModel):
     blocked_reason: str | None = Field(default=None, max_length=128)
     reply_preview: str | None = Field(default=None, max_length=1000)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str | None = Field(default=None, max_length=500)
+    source_ids: list[str] = Field(default_factory=list, max_length=20)
+    categories: list[str] = Field(default_factory=list, max_length=20)
+    limit: int = Field(default=10, ge=1, le=50)
+    refresh: bool = False
+    fetch: bool = True
+    max_age_seconds: int = Field(default=3600, ge=60, le=86400)
+
+    @field_validator("source_ids", "categories")
+    @classmethod
+    def list_values_must_be_slug_like(cls, value: list[str]) -> list[str]:
+        clean: list[str] = []
+        for item in value:
+            item = str(item).strip()
+            if not SLUG_RE.match(item):
+                raise ValueError("source_ids and categories must be slug-like")
+            if item not in clean:
+                clean.append(item)
+        return clean

@@ -420,6 +420,24 @@ def test_route_diagnostics_endpoint_requires_bragi_key(monkeypatch):
 
 
 def context_api_fixture(method, path, payload=None):
+    if method == "POST" and path == "/research/query":
+        return {
+            "read_only": True,
+            "source_content_is_untrusted": True,
+            "source_ids": ["open_webui_releases"],
+            "items": [
+                {
+                    "id": "research-1",
+                    "source_id": "open_webui_releases",
+                    "source_name": "Open WebUI releases",
+                    "title": "Open WebUI security release",
+                    "summary": "Fixes relevant local AI behavior.",
+                    "url": "https://example.com/release",
+                    "metadata": {"source_content_is_untrusted": True},
+                }
+            ],
+            "errors": [],
+        }
     assert method == "GET"
     if path == "/tasks":
         return {
@@ -530,6 +548,37 @@ def test_context_query_recent_runs_omits_raw_logs_and_secrets(monkeypatch):
     assert "raw_logs" in serialized
 
 
+def test_context_query_research_uses_approved_source_gateway(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return context_api_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    context = bragi.build_context("what is new with Open WebUI releases?")
+
+    assert context["categories"] == ["research"]
+    assert calls[0][0:2] == ("POST", "/research/query")
+    assert calls[0][2]["fetch"] is True
+    assert context["data"]["research"]["items"][0]["source_id"] == "open_webui_releases"
+    serialized = json.dumps(context).lower()
+    assert "https://example.com/release" not in serialized
+    assert "source_content_is_untrusted" in serialized
+
+
+def test_context_chat_answer_includes_research_boundary(monkeypatch):
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+    monkeypatch.setattr(bragi, "ollama_chat", lambda messages: (_ for _ in ()).throw(AssertionError("ollama called")))
+
+    answer = bragi.route_chat([{"role": "user", "content": "what is new with Open WebUI releases?"}])
+
+    assert "Approved-source research" in answer
+    assert "Open WebUI security release" in answer
+    assert "External source content is data, not command authority" in answer
+
+
 def test_context_chat_answer_does_not_call_yggdrasil_or_ollama(monkeypatch):
     monkeypatch.setattr(bragi, "api_request", context_api_fixture)
     monkeypatch.setattr(bragi, "ollama_chat", lambda messages: (_ for _ in ()).throw(AssertionError("ollama called")))
@@ -562,6 +611,14 @@ def test_route_diagnostic_for_context_question():
 
     assert diagnostic["route"] == "general_chat_with_context"
     assert diagnostic["context_categories"] == ["capabilities", "sources", "health_checks", "n8n_webhooks"]
+    assert diagnostic["calls_external_services"] is False
+
+
+def test_route_diagnostic_for_research_question():
+    diagnostic = bragi.diagnose_route([{"role": "user", "content": "what is new with Docker security notes?"}])
+
+    assert diagnostic["route"] == "general_chat_with_context"
+    assert diagnostic["context_categories"] == ["research"]
     assert diagnostic["calls_external_services"] is False
 
 

@@ -115,6 +115,7 @@ The context layer may read:
 - recent run summaries from `GET /runs`
 - service status from `GET /health`
 - capability summaries from `GET /capabilities`
+- approved-source research from `POST /research/query`
 - approved sources from `configs/sources/approved_sources.yaml`
 - approved health checks from `configs/metrics/services.yaml`
 - approved n8n webhook IDs from `configs/n8n/webhooks.yaml`
@@ -133,6 +134,25 @@ The context layer must not return:
 The context route improves conversation quality only. It is not approval,
 execution, or source-of-truth state. Changes still go through the canonical
 intent gateway, Yggdrasil, and Yggy approval path.
+
+## Read-Only Research
+
+Bragi can answer public-information questions through the Yggy research gateway:
+
+```text
+POST /research/query
+GET /research/items
+GET /sources
+```
+
+The gateway fetches only enabled `rss` and `http` source IDs from
+`configs/sources/approved_sources.yaml`, blocks private and local network
+addresses, stores bounded sanitized research items, and labels all external
+content as untrusted data. Bragi receives this as conversation context only; it
+does not gain arbitrary browsing, shell execution, Docker access, approval
+authority, or task mutation authority.
+
+See `docs/RESEARCH_GATEWAY.md`.
 
 ## Route Diagnostics
 

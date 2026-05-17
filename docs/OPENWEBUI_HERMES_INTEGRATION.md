@@ -170,5 +170,10 @@ should use approved feed IDs such as `open_webui_releases`, `ollama_releases`,
 `n8n_releases`, and `docker_blog`, then ask for approval before enabling or
 changing recurring delivery.
 
+For public-source questions, Bragi should use the Yggy read-only research
+gateway rather than direct arbitrary browsing. The gateway fetches only enabled
+approved source IDs and returns sanitized context. See
+`docs/RESEARCH_GATEWAY.md`.
+
 For recurring task shapes, prefer the reviewed templates in
 `configs/task_templates/` and the workflow in `docs/TASK_TEMPLATES.md`.
