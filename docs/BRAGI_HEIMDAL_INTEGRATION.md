@@ -89,6 +89,50 @@ authorized to call Yggdrasil, Bragi should say that the understood automation
 request could not be forwarded because the service is not authorized. That is
 an authorization failure, not a capability failure.
 
+## Read-Only Context
+
+Bragi has a narrow context endpoint:
+
+```text
+POST /context/query
+```
+
+This endpoint is authenticated with `BRAGI_API_KEY` and is read-only. It lets
+Bragi answer natural questions like:
+
+```text
+what can you automate right now?
+what is pending?
+what sources can I use for a brief?
+what health checks do you know?
+show recent run history
+what does Yggy know about my AI stack?
+```
+
+The context layer may read:
+
+- visible task summaries from `GET /tasks`
+- recent run summaries from `GET /runs`
+- service status from `GET /health`
+- capability summaries from `GET /capabilities`
+- approved sources from `configs/sources/approved_sources.yaml`
+- approved health checks from `configs/metrics/services.yaml`
+- approved n8n webhook IDs from `configs/n8n/webhooks.yaml`
+- non-secret Bragi memory from `configs/bragi/memory.yaml`
+
+The context layer must not return:
+
+- approval nonces
+- admin-only approval records
+- admin API keys
+- raw run logs
+- registry URLs or webhook URLs
+- tokens, passwords, cookies, private keys, or credentials
+
+The context route improves conversation quality only. It is not approval,
+execution, or source-of-truth state. Changes still go through the canonical
+intent gateway, Yggdrasil, and Yggy approval path.
+
 ## Route Diagnostics
 
 Bragi exposes a read-only route diagnostic endpoint:
@@ -124,6 +168,9 @@ diagnose route: draft a weekday 08:00 local AI security briefing
 
 This is meant to make routing decisions visible without weakening the execution
 boundary. Diagnostics are not approval, execution, or a source of authority.
+For context questions, diagnostics report `general_chat_with_context` and the
+context categories that would be loaded, but the diagnostic itself does not load
+that context.
 
 ## Yggdrasil Boundary
 

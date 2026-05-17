@@ -33,6 +33,18 @@ CHAT_TIMEOUT = float(os.getenv("BRAGI_CHAT_TIMEOUT", "30"))
 CHAT_NUM_CTX = int(os.getenv("BRAGI_CHAT_NUM_CTX", "4096"))
 CHAT_MAX_TOKENS = int(os.getenv("BRAGI_CHAT_MAX_TOKENS", "512"))
 MEMORY_FILE = os.getenv("BRAGI_MEMORY_FILE", "/app/configs/bragi/memory.yaml").strip()
+CONFIG_ROOT = os.getenv("BRAGI_CONFIG_ROOT", "/app/configs").strip()
+CONTEXT_CATEGORIES = {
+    "tasks",
+    "pending_reviews",
+    "capabilities",
+    "sources",
+    "health_checks",
+    "n8n_webhooks",
+    "service_status",
+    "recent_runs",
+    "memory",
+}
 TASK_ALIASES = {
     "daily brief": "daily_local_ai_security_briefing",
     "daily briefing": "daily_local_ai_security_briefing",
@@ -91,6 +103,12 @@ app = FastAPI(
 class RouteDiagnosticsRequest(BaseModel):
     text: str | None = Field(default=None, max_length=12000)
     messages: list[dict[str, Any]] | None = None
+
+
+class ContextQueryRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=12000)
+    category: str | None = Field(default=None, max_length=64)
+    limit: int = Field(default=10, ge=1, le=50)
 
 
 def utcnow() -> datetime:
@@ -213,6 +231,360 @@ def memory_context() -> str:
     return rendered[:3000]
 
 
+def memory_summary() -> dict[str, Any]:
+    memory = load_memory()
+    if not memory:
+        return {}
+    allowed = {
+        "preferred_language",
+        "message_style",
+        "default_timezone",
+        "default_schedule",
+        "default_output_target",
+        "default_dry_run",
+        "service_aliases",
+        "automation_preferences",
+        "notes",
+    }
+    return context_redact({key: value for key, value in memory.items() if key in allowed})
+
+
+def config_path(relative: str) -> Path:
+    candidate = Path(CONFIG_ROOT) / relative
+    if candidate.exists():
+        return candidate
+    return Path.cwd() / "configs" / relative
+
+
+def read_yaml_registry(relative: str, collection_key: str) -> list[dict[str, Any]]:
+    path = config_path(relative)
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        print(f"bragi context registry load failed for {relative}: {exc}", file=sys.stderr)
+        return []
+    items = data.get(collection_key) if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [context_redact(item) for item in items if isinstance(item, dict)]
+
+
+def context_redact(value: Any, *, depth: int = 0) -> Any:
+    if depth > 6:
+        return "[truncated]"
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if any(marker in lowered for marker in ("authorization", "cookie", "password", "secret", "token", "api_key", "apikey", "private_key", "credential", "nonce")):
+                redacted[key_text] = "[redacted]"
+                continue
+            if lowered in {"url", "webhook_url", "path"}:
+                redacted[key_text] = "[omitted]"
+                continue
+            redacted[key_text] = context_redact(item, depth=depth + 1)
+        return redacted
+    if isinstance(value, list):
+        return [context_redact(item, depth=depth + 1) for item in value[:50]]
+    if isinstance(value, str):
+        text = redact_diagnostic_text(value)
+        if has_secret_like_material(text):
+            return "[redacted]"
+        return text[:1000]
+    return value
+
+
+def context_api_get(path: str) -> Any:
+    response = api_request("GET", path)
+    if "data" in response and set(response) == {"data"}:
+        return response["data"]
+    return response
+
+
+def safe_task_summary(task: dict[str, Any]) -> dict[str, Any]:
+    config = task.get("config") if isinstance(task.get("config"), dict) else {}
+    trigger = config.get("trigger") if isinstance(config.get("trigger"), dict) else {}
+    output = config.get("output") if isinstance(config.get("output"), dict) else {}
+    runtime = config.get("runtime") if isinstance(config.get("runtime"), dict) else {}
+    return context_redact(
+        {
+            "id": task.get("id"),
+            "name": task.get("name"),
+            "type": task.get("type"),
+            "enabled": task.get("enabled"),
+            "status": task.get("status"),
+            "approval_level": task.get("approval_level"),
+            "created_by": task.get("created_by"),
+            "trigger": {
+                "kind": trigger.get("kind"),
+                "cron": trigger.get("cron"),
+                "timezone": trigger.get("timezone"),
+            },
+            "output": {
+                "channel": output.get("channel"),
+                "target": output.get("target"),
+            },
+            "dry_run": runtime.get("dry_run"),
+        }
+    )
+
+
+def safe_run_summary(run: dict[str, Any]) -> dict[str, Any]:
+    log = run.get("log") if isinstance(run.get("log"), dict) else {}
+    result_status = log.get("result_status") or log.get("status")
+    notification = log.get("notification") if isinstance(log.get("notification"), dict) else {}
+    return context_redact(
+        {
+            "id": run.get("id"),
+            "task_id": run.get("task_id"),
+            "status": run.get("status"),
+            "created_at": run.get("created_at"),
+            "completed_at": run.get("completed_at"),
+            "result_status": result_status,
+            "notification_sent": notification.get("sent") if notification else None,
+        }
+    )
+
+
+def safe_capability_summary(capability: dict[str, Any]) -> dict[str, Any]:
+    return context_redact(
+        {
+            "id": capability.get("id"),
+            "purpose": capability.get("purpose"),
+            "maps_to_task_type": capability.get("maps_to_task_type"),
+            "allowed_approval_levels": capability.get("allowed_approval_levels", []),
+            "allowed_output_targets": capability.get("allowed_output_targets", []),
+            "required_slots": capability.get("required_slots", []),
+            "allowed_source_ids": capability.get("allowed_source_ids", []),
+            "allowed_check_ids": capability.get("allowed_check_ids", []),
+            "allowed_webhook_ids": capability.get("allowed_webhook_ids", []),
+            "safety_rules": capability.get("safety_rules", []),
+        }
+    )
+
+
+def context_categories_for_text(text: str, requested_category: str | None = None) -> list[str]:
+    if requested_category:
+        category = requested_category.strip().lower()
+        return [category] if category in CONTEXT_CATEGORIES else []
+    lowered = text.lower()
+    if re.match(r"^\s*(draft|create|set up|setup|schedule|run|send|pause|disable|approve|reject)\b", lowered):
+        return []
+    categories: list[str] = []
+
+    def add(*items: str) -> None:
+        for item in items:
+            if item not in categories:
+                categories.append(item)
+
+    if "what can you automate" in lowered or "what can yggy automate" in lowered or "capabilit" in lowered or "supported automation" in lowered:
+        add("capabilities", "sources", "health_checks", "n8n_webhooks")
+    if "what does yggy know" in lowered or "what do you know about my ai stack" in lowered:
+        add("tasks", "capabilities", "sources", "health_checks", "n8n_webhooks", "memory")
+    if "source" in lowered or "rss" in lowered or "feed" in lowered:
+        add("sources")
+    if "health check" in lowered or "check ids" in lowered or "known services" in lowered or "service aliases" in lowered:
+        add("health_checks")
+    if "webhook" in lowered or "n8n workflow" in lowered:
+        add("n8n_webhooks")
+    if "pending" in lowered or "approval" in lowered or "review" in lowered:
+        add("pending_reviews")
+    if "live task" in lowered or "enabled task" in lowered or "draft task" in lowered or "task status" in lowered:
+        add("tasks")
+    if "recent run" in lowered or "run history" in lowered or "last run" in lowered:
+        add("recent_runs")
+    if "service status" in lowered or "control plane status" in lowered or "worker status" in lowered or "yggy status" in lowered:
+        add("service_status")
+    if "memory" in lowered or "preferences" in lowered or "remember" in lowered:
+        add("memory")
+    return categories
+
+
+def build_context(query: str, *, category: str | None = None, limit: int = 10) -> dict[str, Any]:
+    categories = context_categories_for_text(query, category)
+    if not categories:
+        categories = ["tasks", "capabilities"]
+    limit = max(1, min(limit, 50))
+    data: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+
+    def capture(name: str, producer) -> None:
+        try:
+            data[name] = producer()
+        except Exception as exc:
+            errors[name] = exc.__class__.__name__
+
+    if "tasks" in categories or "pending_reviews" in categories:
+        capture("tasks", lambda: [safe_task_summary(task) for task in context_api_get("/tasks")[:limit]])
+    if "pending_reviews" in categories:
+        def pending_reviews() -> list[dict[str, Any]]:
+            tasks = data.get("tasks")
+            if not isinstance(tasks, list):
+                tasks = [safe_task_summary(task) for task in context_api_get("/tasks")[:limit]]
+            return [task for task in tasks if task.get("status") == "pending_approval"]
+
+        capture("pending_reviews", pending_reviews)
+    if "capabilities" in categories:
+        capture("capabilities", lambda: [safe_capability_summary(item) for item in context_api_get("/capabilities")[:limit]])
+    if "sources" in categories:
+        capture("sources", lambda: approved_source_summaries(limit=limit))
+    if "health_checks" in categories:
+        capture("health_checks", lambda: approved_health_check_summaries(limit=limit))
+    if "n8n_webhooks" in categories:
+        capture("n8n_webhooks", lambda: approved_webhook_summaries(limit=limit))
+    if "service_status" in categories:
+        capture("service_status", lambda: context_redact(context_api_get("/health")))
+    if "recent_runs" in categories:
+        capture("recent_runs", lambda: [safe_run_summary(run) for run in context_api_get(f"/runs?limit={limit}")])
+    if "memory" in categories:
+        capture("memory", memory_summary)
+
+    return {
+        "service": "bragi",
+        "context_version": 1,
+        "read_only": True,
+        "query_preview": redact_diagnostic_text(query)[:240],
+        "categories": categories,
+        "data": context_redact(data),
+        "errors": errors,
+        "redaction": {
+            "raw_logs": "omitted",
+            "approval_nonces": "omitted",
+            "secrets": "redacted",
+            "registry_urls": "omitted",
+        },
+    }
+
+
+def approved_source_summaries(*, limit: int) -> list[dict[str, Any]]:
+    sources = read_yaml_registry("sources/approved_sources.yaml", "sources")
+    return [
+        {
+            "id": source.get("id"),
+            "name": source.get("name"),
+            "type": source.get("type"),
+            "enabled": source.get("enabled"),
+            "categories": source.get("categories", []),
+            "trust_level": source.get("trust_level"),
+            "max_items": source.get("max_items"),
+        }
+        for source in sources[:limit]
+    ]
+
+
+def approved_health_check_summaries(*, limit: int) -> list[dict[str, Any]]:
+    services = read_yaml_registry("metrics/services.yaml", "services")
+    return [
+        {
+            "id": service.get("id"),
+            "name": service.get("name"),
+            "type": service.get("type"),
+            "enabled": service.get("enabled"),
+            "expected_status": service.get("expected_status"),
+            "description": service.get("description"),
+        }
+        for service in services[:limit]
+    ]
+
+
+def approved_webhook_summaries(*, limit: int) -> list[dict[str, Any]]:
+    webhooks = read_yaml_registry("n8n/webhooks.yaml", "webhooks")
+    return [
+        {
+            "id": webhook.get("id"),
+            "name": webhook.get("name"),
+            "method": webhook.get("method"),
+            "enabled": webhook.get("enabled"),
+            "max_payload_keys": webhook.get("max_payload_keys"),
+            "description": webhook.get("description"),
+        }
+        for webhook in webhooks[:limit]
+    ]
+
+
+def format_context_answer(context: dict[str, Any]) -> str:
+    data = context.get("data") if isinstance(context.get("data"), dict) else {}
+    lines = ["Here is the read-only Yggy context I can see:"]
+    tasks = data.get("tasks")
+    if isinstance(tasks, list):
+        enabled = [task for task in tasks if task.get("enabled")]
+        pending = [task for task in tasks if task.get("status") == "pending_approval"]
+        lines.extend(["", f"Tasks: {len(tasks)} visible, {len(enabled)} enabled, {len(pending)} pending approval."])
+        for task in tasks[:10]:
+            lines.append(
+                f"- `{task.get('id')}`: {task.get('name')} ({task.get('type')}, status `{task.get('status')}`, enabled `{str(task.get('enabled')).lower()}`)"
+            )
+    pending_reviews = data.get("pending_reviews")
+    if isinstance(pending_reviews, list):
+        lines.extend(["", f"Pending reviews: {len(pending_reviews)}."])
+        if pending_reviews:
+            for task in pending_reviews[:10]:
+                lines.append(f"- `{task.get('id')}`: {task.get('name')} ({task.get('approval_level')})")
+        else:
+            lines.append("- None.")
+        lines.append("Approval nonces are not available to Bragi. Use the local ops UI or admin CLI for decisions.")
+    capabilities = data.get("capabilities")
+    if isinstance(capabilities, list):
+        lines.extend(["", "Supported capabilities:"])
+        for capability in capabilities[:10]:
+            lines.append(f"- `{capability.get('id')}`: {capability.get('purpose')}")
+    sources = data.get("sources")
+    if isinstance(sources, list):
+        lines.extend(["", "Approved sources:"])
+        for source in sources[:10]:
+            categories = ", ".join(source.get("categories") or [])
+            lines.append(f"- `{source.get('id')}`: {source.get('name')} ({source.get('type')}, {source.get('trust_level')}, {categories})")
+    checks = data.get("health_checks")
+    if isinstance(checks, list):
+        lines.extend(["", "Approved health checks:"])
+        for check in checks[:10]:
+            lines.append(f"- `{check.get('id')}`: {check.get('name')} ({check.get('type')})")
+    webhooks = data.get("n8n_webhooks")
+    if isinstance(webhooks, list):
+        lines.extend(["", "Approved n8n webhooks:"])
+        for webhook in webhooks[:10]:
+            lines.append(f"- `{webhook.get('id')}`: {webhook.get('name')} ({webhook.get('method')})")
+    service_status = data.get("service_status")
+    if isinstance(service_status, dict):
+        worker = service_status.get("worker") if isinstance(service_status.get("worker"), dict) else {}
+        database = service_status.get("database") if isinstance(service_status.get("database"), dict) else {}
+        lines.extend(
+            [
+                "",
+                "Control-plane status:",
+                f"- API: `{service_status.get('status')}`",
+                f"- Database connected: `{str(database.get('connected')).lower()}`",
+                f"- Worker: `{worker.get('status')}` age `{worker.get('age_seconds')}` seconds",
+            ]
+        )
+    runs = data.get("recent_runs")
+    if isinstance(runs, list):
+        lines.extend(["", "Recent runs:"])
+        if runs:
+            for run in runs[:10]:
+                lines.append(f"- `{run.get('id')}` task `{run.get('task_id')}` status `{run.get('status')}` completed `{run.get('completed_at')}`")
+        else:
+            lines.append("- None.")
+    memory = data.get("memory")
+    if isinstance(memory, dict):
+        lines.extend(["", "Non-secret memory:"])
+        if memory:
+            lines.append(f"```yaml\n{yaml.safe_dump(memory, sort_keys=True, allow_unicode=False).strip()}\n```")
+        else:
+            lines.append("- No non-secret memory loaded.")
+    errors = context.get("errors")
+    if isinstance(errors, dict) and errors:
+        lines.extend(["", "Some context could not be loaded:"])
+        for key, value in errors.items():
+            lines.append(f"- `{key}`: {value}")
+    lines.append("")
+    lines.append("This is context only. Changes, runs, and approvals still go through Heimdal, Yggdrasil, and the Yggy approval path.")
+    return "\n".join(lines)
+
+
 def openwebui_auxiliary_answer(user_text: str) -> str | None:
     lowered = user_text.lower()
     if "### task:" not in lowered:
@@ -317,6 +689,16 @@ def diagnose_route(messages: list[dict[str, Any]]) -> dict[str, Any]:
 
     mode = classify_request(user_text)
     diagnostic["mode"] = mode
+    context_categories = context_categories_for_text(user_text)
+    if context_categories:
+        diagnostic.update(
+            {
+                "route": "general_chat_with_context",
+                "reason": "Question can be answered from read-only Bragi/Yggy context.",
+                "context_categories": context_categories,
+            }
+        )
+        return diagnostic
     operation = operation_from_text(user_text)
     if operation is not None:
         diagnostic.update(
@@ -361,6 +743,9 @@ def format_route_diagnostic(diagnostic: dict[str, Any]) -> str:
         f"- Reason: {diagnostic.get('reason')}",
         f"- External calls made by diagnostic: `{str(diagnostic.get('calls_external_services')).lower()}`",
     ]
+    categories = diagnostic.get("context_categories")
+    if isinstance(categories, list) and categories:
+        lines.append(f"- Context categories: {', '.join(f'`{item}`' for item in categories)}")
     operation = diagnostic.get("operation")
     if isinstance(operation, dict):
         lines.extend(["", "Canonical operation:", f"```json\n{json.dumps(operation, indent=2, sort_keys=True)}\n```"])
@@ -855,6 +1240,11 @@ def route_chat(messages: list[dict[str, Any]]) -> str:
         yggdrasil = yggdrasil_canonical_request(result["yggdrasil_request"])
         return yggdrasil.get("answer") or json.dumps(yggdrasil, indent=2)
 
+    context_categories = context_categories_for_text(user_text)
+    if context_categories:
+        context = build_context(user_text)
+        return format_context_answer(context)
+
     pending = pending_intent_from_prior(prior)
     if pending and result_needs_details(prior):
         intent = merge_intent_slots(pending, user_text)
@@ -905,6 +1295,13 @@ def route_diagnostics(payload: RouteDiagnosticsRequest, authorization: str | Non
     else:
         raise HTTPException(status_code=422, detail="text or messages is required")
     return diagnose_route(messages)
+
+
+@app.post("/context/query")
+def context_query(payload: ContextQueryRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return build_context(payload.query, category=payload.category, limit=payload.limit)
 
 
 @app.get("/v1/models")

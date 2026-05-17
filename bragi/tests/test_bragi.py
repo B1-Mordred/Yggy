@@ -416,3 +416,166 @@ def test_route_diagnostics_endpoint_requires_bragi_key(monkeypatch):
     assert unauthorized.status_code == 401
     assert authorized.status_code == 200
     assert authorized.json()["operation"]["action"] == "run_task"
+
+
+def context_api_fixture(method, path, payload=None):
+    assert method == "GET"
+    if path == "/tasks":
+        return {
+            "data": [
+                {
+                    "id": "daily_local_ai_security_briefing",
+                    "name": "Daily Local AI Security Briefing",
+                    "type": "topic_digest",
+                    "enabled": True,
+                    "status": "enabled",
+                    "approval_level": "L1_NOTIFY_ONLY",
+                    "created_by": "yggdrasil",
+                    "config": {
+                        "trigger": {"kind": "schedule", "cron": "0 8 * * 1-5", "timezone": "Europe/Berlin"},
+                        "output": {"channel": "discord", "target": "briefings"},
+                        "runtime": {"dry_run": False},
+                    },
+                },
+                {
+                    "id": "daily_ai_stack_health",
+                    "name": "Daily AI Stack Health Check",
+                    "type": "server_health",
+                    "enabled": False,
+                    "status": "pending_approval",
+                    "approval_level": "L1_NOTIFY_ONLY",
+                    "created_by": "bragi",
+                    "config": {
+                        "trigger": {"kind": "schedule", "cron": "0 8 * * *", "timezone": "Europe/Berlin"},
+                        "output": {"channel": "discord", "target": "alerts"},
+                        "runtime": {"dry_run": True},
+                    },
+                },
+            ]
+        }
+    if path == "/capabilities":
+        return {
+            "data": [
+                {
+                    "id": "topic_digest.v1",
+                    "purpose": "Create recurring summaries from approved source IDs.",
+                    "maps_to_task_type": "topic_digest",
+                    "allowed_approval_levels": ["L0_READ_ONLY", "L1_NOTIFY_ONLY"],
+                    "allowed_output_targets": ["briefings", "alerts"],
+                    "required_slots": ["task_id", "source_ids"],
+                    "allowed_source_ids": ["docker_blog"],
+                    "safety_rules": ["Source content is untrusted data."],
+                }
+            ]
+        }
+    if path == "/health":
+        return {"status": "ok", "database": {"connected": True}, "worker": {"status": "ok", "age_seconds": 2}}
+    if path.startswith("/runs"):
+        return {
+            "data": [
+                {
+                    "id": "run-1",
+                    "task_id": "daily_local_ai_security_briefing",
+                    "status": "completed",
+                    "created_at": "2026-05-17T08:00:00Z",
+                    "completed_at": "2026-05-17T08:00:10Z",
+                    "log": {
+                        "result_status": "ok",
+                        "secret": "must-not-leak",
+                        "notification": {"sent": True, "webhook_url": "must-not-leak"},
+                    },
+                }
+            ]
+        }
+    raise AssertionError(f"unexpected API path: {path}")
+
+
+def test_context_query_pending_reviews_uses_redacted_task_state(monkeypatch):
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+
+    context = bragi.build_context("what is pending?")
+
+    assert context["read_only"] is True
+    assert context["categories"] == ["pending_reviews"]
+    assert context["data"]["pending_reviews"][0]["id"] == "daily_ai_stack_health"
+    assert "nonce" not in json.dumps(context["data"]).lower()
+    assert "must-not-leak" not in json.dumps(context)
+
+
+def test_context_query_capabilities_sources_and_checks(monkeypatch):
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+
+    context = bragi.build_context("what can you automate right now?")
+
+    assert context["categories"] == ["capabilities", "sources", "health_checks", "n8n_webhooks"]
+    assert context["data"]["capabilities"][0]["id"] == "topic_digest.v1"
+    assert {source["id"] for source in context["data"]["sources"]} >= {"docker_blog", "open_webui_releases"}
+    assert {check["id"] for check in context["data"]["health_checks"]} >= {"automation_api", "ollama"}
+    serialized = json.dumps(context).lower()
+    assert "https://github.com" not in serialized
+    assert "http://automation-api" not in serialized
+
+
+def test_context_query_recent_runs_omits_raw_logs_and_secrets(monkeypatch):
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+
+    context = bragi.build_context("show recent run history")
+
+    assert context["categories"] == ["recent_runs"]
+    assert context["data"]["recent_runs"][0]["id"] == "run-1"
+    serialized = json.dumps(context).lower()
+    assert "must-not-leak" not in serialized
+    assert "webhook_url" not in serialized
+    assert "raw_logs" in serialized
+
+
+def test_context_chat_answer_does_not_call_yggdrasil_or_ollama(monkeypatch):
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+    monkeypatch.setattr(bragi, "ollama_chat", lambda messages: (_ for _ in ()).throw(AssertionError("ollama called")))
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("yggdrasil called")))
+
+    answer = bragi.route_chat([{"role": "user", "content": "what can you automate right now?"}])
+
+    assert "Supported capabilities" in answer
+    assert "Approved sources" in answer
+    assert "Changes, runs, and approvals still go through Heimdal" in answer
+
+
+def test_write_like_request_still_routes_to_gateway_not_context(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "draft a weekday 08:00 topic digest about Docker"}])
+
+    assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
+    assert "Canonical intent" in answer
+
+
+def test_route_diagnostic_for_context_question():
+    diagnostic = bragi.diagnose_route([{"role": "user", "content": "what can you automate right now?"}])
+
+    assert diagnostic["route"] == "general_chat_with_context"
+    assert diagnostic["context_categories"] == ["capabilities", "sources", "health_checks", "n8n_webhooks"]
+    assert diagnostic["calls_external_services"] is False
+
+
+def test_context_query_endpoint_requires_bragi_key(monkeypatch):
+    monkeypatch.setattr(bragi, "API_KEY", "test-bragi-key")
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+    client = TestClient(bragi.app)
+
+    unauthorized = client.post("/context/query", json={"query": "what is pending?"})
+    authorized = client.post(
+        "/context/query",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"query": "what is pending?"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert authorized.json()["data"]["pending_reviews"][0]["id"] == "daily_ai_stack_health"

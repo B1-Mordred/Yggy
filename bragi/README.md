@@ -19,6 +19,7 @@ Bragi exposes an OpenAI-compatible API:
 ```text
 GET  /health
 POST /diagnostics/route
+POST /context/query
 GET  /v1/models
 POST /v1/chat/completions
 ```
@@ -32,6 +33,23 @@ You can also ask Bragi directly:
 
 ```text
 diagnose route: send daily brief now
+```
+
+`POST /context/query` is also read-only. It gives Bragi a redacted view of
+safe context categories such as visible tasks, pending reviews by task status,
+supported capabilities, approved source IDs, approved health-check IDs, approved
+n8n webhook IDs, service status, recent run summaries, and non-secret memory.
+It does not return approval nonces, admin-only approval records, raw run logs,
+registry URLs, webhook URLs, tokens, passwords, or API keys.
+
+Examples:
+
+```text
+what can you automate right now?
+what is pending?
+what sources can I use for a brief?
+what health checks do you know?
+show recent run history
 ```
 
 Configure Open WebUI as a separate model/provider for Bragi. Do not attach
@@ -57,6 +75,7 @@ BRAGI_CHAT_TEMPERATURE=0.55
 BRAGI_CHAT_TIMEOUT=30
 BRAGI_CHAT_NUM_CTX=4096
 BRAGI_CHAT_MAX_TOKENS=512
+BRAGI_CONFIG_ROOT=/app/configs
 BRAGI_MEMORY_FILE=/app/configs/bragi/memory.yaml
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
