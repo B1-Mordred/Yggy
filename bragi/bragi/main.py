@@ -155,6 +155,18 @@ class MemoryForgetRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=100)
 
 
+class DiscordMessageRequest(BaseModel):
+    channel_id: str = Field(min_length=1, max_length=128)
+    author_id: str = Field(min_length=1, max_length=128)
+    author_name: str | None = Field(default=None, max_length=128)
+    content: str = Field(min_length=1, max_length=12000)
+    message_id: str | None = Field(default=None, max_length=128)
+    timestamp: str | None = Field(default=None, max_length=128)
+    is_bot: bool = False
+    attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+    history: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -321,6 +333,132 @@ def read_yaml_registry(relative: str, collection_key: str) -> list[dict[str, Any
     if not isinstance(items, list):
         return []
     return [context_redact(item) for item in items if isinstance(item, dict)]
+
+
+def load_channel_registry() -> list[dict[str, Any]]:
+    return read_yaml_registry("channels.yaml", "channels")
+
+
+def enabled_channels(channel_type: str | None = None) -> list[dict[str, Any]]:
+    channels = []
+    for channel in load_channel_registry():
+        if not channel.get("enabled", True):
+            continue
+        if channel_type and channel.get("type") != channel_type:
+            continue
+        channels.append(channel)
+    return channels
+
+
+def is_placeholder_value(value: str) -> bool:
+    stripped = value.strip().lower()
+    return not stripped or stripped.startswith("replace-with") or stripped in {"changeme", "todo", "unset"}
+
+
+def env_ref_value(ref: str | None) -> str:
+    if not ref:
+        return ""
+    return os.getenv(str(ref).strip(), "").strip()
+
+
+def comma_env_ref_values(ref: str | None) -> set[str]:
+    raw = env_ref_value(ref)
+    if is_placeholder_value(raw):
+        return set()
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def discord_channel_for_request(channel_id: str, author_id: str) -> dict[str, Any]:
+    for channel in enabled_channels("discord"):
+        configured_channel_id = env_ref_value(channel.get("channel_id_ref"))
+        if is_placeholder_value(configured_channel_id) or configured_channel_id != channel_id:
+            continue
+        allowed_user_ids = comma_env_ref_values(channel.get("allowed_user_ids_ref"))
+        if allowed_user_ids and author_id not in allowed_user_ids:
+            raise HTTPException(status_code=403, detail="discord author is not allowed for this channel")
+        return channel
+    raise HTTPException(status_code=403, detail="discord channel is not registered for Bragi")
+
+
+def normalize_discord_content(text: str, *, strip_mentions: bool = True) -> str:
+    normalized = text
+    if strip_mentions:
+        normalized = re.sub(r"<@!?\d+>", "", normalized)
+        normalized = re.sub(r"<@&\d+>", "", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def discord_admin_or_approval_request(text: str) -> bool:
+    lowered = text.lower()
+    if re.search(r"\b(admin key|admin api key|api key|token|password|secret|nonce)\b", lowered):
+        return True
+    if re.search(r"^\s*(approve|reject)\b", lowered):
+        return True
+    if re.search(r"\b(approve|reject)\s+(task|approval|request|proposal)\b", lowered):
+        return True
+    return False
+
+
+def discord_history_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for item in history[-12:]:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        content = extract_text(item.get("content")).strip()
+        if not content:
+            continue
+        messages.append({"role": role, "content": content[:6000]})
+    return messages
+
+
+def channel_required_capability(diagnostic: dict[str, Any]) -> str:
+    route = diagnostic.get("route")
+    if route in {"bragi_memory_commit", "bragi_memory_propose", "bragi_memory_forget", "bragi_memory_query"}:
+        return "memory"
+    if route == "general_chat_with_context":
+        return "context"
+    if route in {"heimdal_validate_intent", "heimdal_prepare_yggdrasil_request"}:
+        return "draft_task"
+    if route == "yggdrasil_canonical_action":
+        operation = diagnostic.get("operation") if isinstance(diagnostic.get("operation"), dict) else {}
+        action = operation.get("action")
+        if action in {"list_tasks", "show_task"}:
+            return "task_read"
+        if action == "run_task":
+            return "run_l1"
+        if action == "pause_task":
+            return "pause_l1"
+        return "task_read"
+    return "chat"
+
+
+def channel_allows(channel: dict[str, Any], capability: str) -> bool:
+    allowed = channel.get("allowed_capabilities")
+    if not isinstance(allowed, list):
+        return capability == "chat"
+    return capability in {str(item) for item in allowed}
+
+
+def truncate_for_channel(reply: str, max_chars: int) -> str:
+    max_chars = max(5, min(max_chars, 12000))
+    if len(reply) <= max_chars:
+        return reply
+    suffix = "\n\n[truncated for channel limit]"
+    if max_chars <= len(suffix) + 5:
+        return reply[:max_chars]
+    return reply[: max_chars - len(suffix)].rstrip() + suffix
+
+
+def channel_registry_status() -> dict[str, Any]:
+    channels = load_channel_registry()
+    return {
+        "configured": len(channels),
+        "enabled": len([channel for channel in channels if channel.get("enabled", True)]),
+        "types": sorted({str(channel.get("type")) for channel in channels if channel.get("type")}),
+    }
 
 
 def context_redact(value: Any, *, depth: int = 0) -> Any:
@@ -739,12 +877,12 @@ def handle_memory_proposal(user_text: str, *, user_id: str = DEFAULT_USER_ID) ->
     return format_memory_proposal(record)
 
 
-def handle_memory_commit(prior: str) -> str | None:
+def handle_memory_commit(prior: str, *, user_id: str = DEFAULT_USER_ID) -> str | None:
     pending = pending_memory_from_prior(prior)
     if not pending:
         return None
     try:
-        record = commit_memory(memory_id=str(pending["memory_id"]), user_id=str(pending.get("user_id") or DEFAULT_USER_ID))
+        record = commit_memory(memory_id=str(pending["memory_id"]), user_id=user_id)
     except MemoryValidationError as exc:
         return f"I could not save that memory: {exc}."
     except Exception as exc:
@@ -838,12 +976,13 @@ def diagnostic_intent(intent: dict[str, Any] | None) -> dict[str, Any] | None:
     return cleaned
 
 
-def diagnose_route(messages: list[dict[str, Any]]) -> dict[str, Any]:
+def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> dict[str, Any]:
     user_text = latest_user_request(messages)
     preview = redact_diagnostic_text(user_text)[:240]
     diagnostic: dict[str, Any] = {
         "service": "bragi",
         "diagnostic_version": 1,
+        "user_id": user_id,
         "request_preview": preview,
         "request_length": len(user_text),
         "mode": "none",
@@ -884,7 +1023,7 @@ def diagnose_route(messages: list[dict[str, Any]]) -> dict[str, Any]:
                 "mode": "memory_proposal",
                 "route": "bragi_memory_propose",
                 "reason": "Explicit remember request creates a pending non-secret memory proposal.",
-                "memory_candidate": {"user_id": DEFAULT_USER_ID, "category": category, "key": key},
+                "memory_candidate": {"user_id": user_id, "category": category, "key": key},
             }
         )
         return diagnostic
@@ -1146,22 +1285,22 @@ def is_simple_greeting(text: str) -> bool:
     return bool(words & greeting_words) and len(words) <= 5
 
 
-def general_chat_answer(messages: list[dict[str, Any]]) -> str:
+def general_chat_answer(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:
     user_text = latest_user_request(messages)
     if is_simple_greeting(user_text):
         return "Hello. I am Bragi. I can talk normally, and when you ask for a supported automation I will put on the helmet and route it through Heimdal."
     if GENERAL_CHAT_ENABLED and CHAT_MODEL:
         try:
-            return ollama_chat(messages)
+            return ollama_chat(messages, user_id=user_id)
         except Exception as exc:
             print(f"bragi general chat fallback: {exc}", file=sys.stderr)
             pass
     return "I can talk through that. I do not have general-purpose tools in this chat path, but I can reason with you and help shape a safe automation if that is where the road leads."
 
 
-def ollama_chat(messages: list[dict[str, Any]]) -> str:
+def ollama_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:
     ollama_messages = [{"role": "system", "content": GENERAL_CHAT_SYSTEM_PROMPT}]
-    context = memory_context()
+    context = memory_context(user_id=user_id)
     if context:
         ollama_messages.append(
             {
@@ -1470,7 +1609,7 @@ def slot_hint(slot: str) -> str:
     return hints.get(slot, "provide this value explicitly")
 
 
-def route_chat(messages: list[dict[str, Any]]) -> str:
+def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:
     user_text = latest_user_request(messages)
     if not user_text:
         return "I need a request before I can do anything useful."
@@ -1480,22 +1619,22 @@ def route_chat(messages: list[dict[str, Any]]) -> str:
     diagnostic_probe = diagnostic_probe_from_text(user_text)
     if diagnostic_probe:
         diagnostic_messages = [*messages[:-1], {"role": "user", "content": diagnostic_probe}]
-        return format_route_diagnostic(diagnose_route(diagnostic_messages))
+        return format_route_diagnostic(diagnose_route(diagnostic_messages, user_id=user_id))
 
     prior = prior_text(messages)
     if is_memory_commit_confirmation(user_text):
-        committed = handle_memory_commit(prior)
+        committed = handle_memory_commit(prior, user_id=user_id)
         if committed is not None:
             return committed
         return "I do not have a pending Bragi memory proposal to save."
-    memory_proposal = handle_memory_proposal(user_text)
+    memory_proposal = handle_memory_proposal(user_text, user_id=user_id)
     if memory_proposal is not None:
         return memory_proposal
-    memory_forget = handle_memory_forget(user_text)
+    memory_forget = handle_memory_forget(user_text, user_id=user_id)
     if memory_forget is not None:
         return memory_forget
     if re.search(r"\bwhat do you remember\b|\bwhat.*memory\b|\bshow.*memory\b", user_text, re.IGNORECASE):
-        return format_memory_query_answer(DEFAULT_USER_ID)
+        return format_memory_query_answer(user_id)
 
     if is_confirmation(user_text):
         pending = pending_intent_from_prior(prior)
@@ -1510,7 +1649,7 @@ def route_chat(messages: list[dict[str, Any]]) -> str:
 
     context_categories = context_categories_for_text(user_text)
     if context_categories:
-        context = build_context(user_text)
+        context = build_context(user_text, user_id=user_id)
         return format_context_answer(context)
 
     pending = pending_intent_from_prior(prior)
@@ -1526,7 +1665,7 @@ def route_chat(messages: list[dict[str, Any]]) -> str:
 
     intent = build_candidate_intent(user_text)
     if intent is None:
-        return general_chat_answer(messages)
+        return general_chat_answer(messages, user_id=user_id)
     result = api_request("POST", "/capabilities/validate-intent", intent)
     return format_gateway_result(result, intent)
 
@@ -1550,6 +1689,7 @@ def health() -> dict[str, Any]:
         "memory_file": MEMORY_FILE,
         "memory_loaded": bool(load_memory()),
         "memory_store": memory_store_status(),
+        "channel_registry": channel_registry_status(),
     }
 
 
@@ -1564,6 +1704,88 @@ def route_diagnostics(payload: RouteDiagnosticsRequest, authorization: str | Non
     else:
         raise HTTPException(status_code=422, detail="text or messages is required")
     return diagnose_route(messages)
+
+
+@app.post("/channels/discord/message")
+def discord_channel_message(payload: DiscordMessageRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    channel = discord_channel_for_request(payload.channel_id, payload.author_id)
+    if payload.is_bot:
+        raise HTTPException(status_code=403, detail="discord bot messages are ignored")
+    if payload.attachments and channel.get("reject_attachments", True):
+        raise HTTPException(status_code=422, detail="discord attachments are not accepted by Bragi")
+
+    max_message_chars = int(channel.get("max_message_chars") or 3000)
+    content = normalize_discord_content(payload.content, strip_mentions=bool(channel.get("strip_mentions", True)))
+    if not content:
+        raise HTTPException(status_code=422, detail="discord message is empty after normalization")
+    if len(content) > max_message_chars:
+        raise HTTPException(status_code=413, detail="discord message exceeds channel limit")
+
+    try:
+        user_id = safe_identifier(str(channel.get("audience") or DEFAULT_USER_ID), field_name="user_id")
+    except MemoryValidationError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid channel audience: {exc}") from exc
+    if discord_admin_or_approval_request(content):
+        reply = (
+            "Approvals and admin credentials stay out of Discord. Use the local ops UI or admin CLI for approval "
+            "decisions; I will not handle admin keys, approval nonces, tokens, or passwords here."
+        )
+        return {
+            "service": "bragi",
+            "channel": "discord",
+            "channel_config_id": channel.get("id"),
+            "user_id": user_id,
+            "reply": truncate_for_channel(reply, max_message_chars),
+            "classification": {
+                "route": "discord_admin_guard",
+                "required_capability": "none",
+                "forwarded_to_yggdrasil": False,
+            },
+            "allowed_mentions": [],
+            "requires_followup": False,
+        }
+
+    messages = discord_history_messages(payload.history)
+    messages.append({"role": "user", "content": content})
+    diagnostic = diagnose_route(messages, user_id=user_id)
+    required_capability = channel_required_capability(diagnostic)
+    if not channel_allows(channel, required_capability):
+        reply = (
+            f"This Discord channel is not configured for `{required_capability}`. "
+            "I can keep talking here, but that request will not be sent toward Yggdrasil from this channel."
+        )
+        return {
+            "service": "bragi",
+            "channel": "discord",
+            "channel_config_id": channel.get("id"),
+            "user_id": user_id,
+            "reply": truncate_for_channel(reply, max_message_chars),
+            "classification": {
+                **context_redact(diagnostic),
+                "required_capability": required_capability,
+                "forwarded_to_yggdrasil": False,
+            },
+            "allowed_mentions": [],
+            "requires_followup": False,
+        }
+
+    reply = route_chat(messages, user_id=user_id)
+    return {
+        "service": "bragi",
+        "channel": "discord",
+        "channel_config_id": channel.get("id"),
+        "user_id": user_id,
+        "reply": truncate_for_channel(reply, max_message_chars),
+        "classification": {
+            **context_redact(diagnostic),
+            "required_capability": required_capability,
+            "forwarded_to_yggdrasil": diagnostic.get("route") == "yggdrasil_canonical_action",
+        },
+        "allowed_mentions": [],
+        "requires_followup": "Canonical intent" in reply or "Reply `remember`" in reply,
+    }
 
 
 @app.post("/context/query")

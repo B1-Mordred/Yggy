@@ -162,7 +162,7 @@ def test_general_chat_does_not_claim_capability_failure(monkeypatch):
         raise AssertionError("general chat should not call Heimdal")
 
     monkeypatch.setattr(bragi, "api_request", fake_api_request)
-    monkeypatch.setattr(bragi, "general_chat_answer", lambda messages: "Hello. Pull up a chair.")
+    monkeypatch.setattr(bragi, "general_chat_answer", lambda messages, **kwargs: "Hello. Pull up a chair.")
 
     answer = bragi.route_chat([{"role": "user", "content": "hello there"}])
 
@@ -180,7 +180,7 @@ def test_how_to_brief_question_stays_in_general_chat(monkeypatch):
         raise AssertionError("help questions should not call Heimdal")
 
     monkeypatch.setattr(bragi, "api_request", fake_api_request)
-    monkeypatch.setattr(bragi, "general_chat_answer", lambda messages: "You can describe the topic you want to add.")
+    monkeypatch.setattr(bragi, "general_chat_answer", lambda messages, **kwargs: "You can describe the topic you want to add.")
 
     answer = bragi.route_chat([{"role": "user", "content": "how can i add a new subject to the brief?"}])
 
@@ -214,7 +214,7 @@ def test_discussion_summary_does_not_draft_digest(monkeypatch):
         raise AssertionError("discussion should not call Heimdal")
 
     monkeypatch.setattr(bragi, "api_request", fake_api_request)
-    monkeypatch.setattr(bragi, "general_chat_answer", lambda messages: "Let us discuss Docker security.")
+    monkeypatch.setattr(bragi, "general_chat_answer", lambda messages, **kwargs: "Let us discuss Docker security.")
 
     answer = bragi.route_chat([{"role": "user", "content": "summarize Docker security risks for me"}])
 
@@ -713,3 +713,187 @@ def test_memory_diagnostics_identifies_proposal_and_forget():
     assert proposal["route"] == "bragi_memory_propose"
     assert forget["mode"] == "memory_forget"
     assert forget["route"] == "bragi_memory_forget"
+
+
+def configure_discord_channel(tmp_path, monkeypatch, *, audience="local_user", max_chars=3000, allowed_user_ids="user-1"):
+    config_root = tmp_path / "configs"
+    config_root.mkdir()
+    (config_root / "channels.yaml").write_text(
+        f"""
+version: 1
+channels:
+  - id: discord_home
+    type: discord
+    enabled: true
+    audience: {audience}
+    channel_id_ref: DISCORD_HOME_CHANNEL
+    allowed_user_ids_ref: DISCORD_ALLOWED_USER_IDS
+    allowed_capabilities:
+      - chat
+      - context
+      - memory
+      - draft_task
+      - task_read
+      - run_l1
+      - pause_l1
+    allow_approvals: false
+    max_message_chars: {max_chars}
+    strip_mentions: true
+    reject_attachments: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bragi, "CONFIG_ROOT", str(config_root))
+    monkeypatch.setenv("DISCORD_HOME_CHANNEL", "channel-1")
+    if allowed_user_ids is None:
+        monkeypatch.delenv("DISCORD_ALLOWED_USER_IDS", raising=False)
+    else:
+        monkeypatch.setenv("DISCORD_ALLOWED_USER_IDS", allowed_user_ids)
+
+
+def discord_client(monkeypatch):
+    monkeypatch.setattr(bragi, "API_KEY", "test-bragi-key")
+    return TestClient(bragi.app)
+
+
+def test_discord_message_endpoint_routes_context_safely(tmp_path, monkeypatch):
+    configure_discord_channel(tmp_path, monkeypatch)
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+    client = discord_client(monkeypatch)
+
+    response = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={
+            "channel_id": "channel-1",
+            "author_id": "user-1",
+            "content": "<@1234> what can you automate right now?",
+        },
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["channel_config_id"] == "discord_home"
+    assert body["classification"]["route"] == "general_chat_with_context"
+    assert body["classification"]["required_capability"] == "context"
+    assert "Supported capabilities" in body["reply"]
+    assert body["allowed_mentions"] == []
+
+
+def test_discord_message_endpoint_rejects_unknown_channel(tmp_path, monkeypatch):
+    configure_discord_channel(tmp_path, monkeypatch)
+    client = discord_client(monkeypatch)
+
+    response = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"channel_id": "other-channel", "author_id": "user-1", "content": "hello"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_discord_message_endpoint_enforces_allowed_user_ids(tmp_path, monkeypatch):
+    configure_discord_channel(tmp_path, monkeypatch, allowed_user_ids="allowed-user")
+    client = discord_client(monkeypatch)
+
+    response = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"channel_id": "channel-1", "author_id": "other-user", "content": "hello"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_discord_message_endpoint_rejects_bots_attachments_and_overlong(tmp_path, monkeypatch):
+    configure_discord_channel(tmp_path, monkeypatch, max_chars=5)
+    client = discord_client(monkeypatch)
+    base = {"channel_id": "channel-1", "author_id": "user-1"}
+
+    bot = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={**base, "content": "hello", "is_bot": True},
+    )
+    attachment = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={**base, "content": "hello", "attachments": [{"filename": "x.txt"}]},
+    )
+    overlong = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={**base, "content": "123456"},
+    )
+
+    assert bot.status_code == 403
+    assert attachment.status_code == 422
+    assert overlong.status_code == 413
+
+
+def test_discord_message_endpoint_blocks_approval_and_admin_material(tmp_path, monkeypatch):
+    configure_discord_channel(tmp_path, monkeypatch)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("yggdrasil called")))
+    client = discord_client(monkeypatch)
+
+    response = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"channel_id": "channel-1", "author_id": "user-1", "content": "approve task with nonce abc"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["classification"]["route"] == "discord_admin_guard"
+    assert "ops UI or admin CLI" in body["reply"]
+    assert "abc" not in body["reply"]
+
+
+def test_discord_message_endpoint_can_route_run_operation(tmp_path, monkeypatch):
+    configure_discord_channel(tmp_path, monkeypatch)
+    calls = []
+
+    def fake_yggdrasil(payload):
+        calls.append(payload)
+        return {"status": "ok", "answer": "Run queued for task `daily_local_ai_security_briefing`."}
+
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", fake_yggdrasil)
+    client = discord_client(monkeypatch)
+
+    response = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"channel_id": "channel-1", "author_id": "user-1", "content": "send daily brief now"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert calls == [{"action": "run_task", "task_id": "daily_local_ai_security_briefing"}]
+    assert body["classification"]["required_capability"] == "run_l1"
+    assert body["classification"]["forwarded_to_yggdrasil"] is True
+    assert "Run queued" in body["reply"]
+
+
+def test_discord_memory_uses_channel_audience_scope(tmp_path, monkeypatch):
+    reset_memory(tmp_path)
+    configure_discord_channel(tmp_path, monkeypatch, audience="discord_user")
+    client = discord_client(monkeypatch)
+
+    response = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={
+            "channel_id": "channel-1",
+            "author_id": "user-1",
+            "content": "Remember that I prefer compact replies in Discord.",
+        },
+    )
+
+    body = response.json()
+    pending = memory_store.query_memory(user_id="discord_user", include_pending=True)
+    assert response.status_code == 200
+    assert body["user_id"] == "discord_user"
+    assert body["classification"]["required_capability"] == "memory"
+    assert pending[0]["status"] == "pending"
+    assert memory_store.query_memory(user_id="local_user", include_pending=True) == []

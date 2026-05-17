@@ -118,7 +118,8 @@ The context layer may read:
 - approved sources from `configs/sources/approved_sources.yaml`
 - approved health checks from `configs/metrics/services.yaml`
 - approved n8n webhook IDs from `configs/n8n/webhooks.yaml`
-- non-secret Bragi memory from `configs/bragi/memory.yaml`
+- static non-secret Bragi memory from `configs/bragi/memory.yaml`
+- user-scoped persistent Bragi memory from Bragi-owned database tables
 
 The context layer must not return:
 
@@ -286,6 +287,73 @@ configs/identities.yaml
 It defines stable local user IDs and channel subject references for future
 channel adapters. Deployment-specific subject values should be referenced by
 environment variable name, not committed as secrets.
+
+## Channel Registry
+
+Human-facing transports are configured in:
+
+```text
+configs/channels.yaml
+```
+
+The registry is declarative, non-secret, and versioned. It defines which
+channels may talk to Bragi and which safe Bragi capabilities are available per
+channel.
+
+Initial capabilities are:
+
+```text
+chat
+context
+memory
+draft_task
+task_read
+run_l1
+pause_l1
+```
+
+All model-facing channels must keep `allow_approvals: false`. Approval and
+admin authority remain in the local ops UI, admin CLI, and automation API.
+
+Discord channels use environment references instead of raw identifiers or
+credentials in YAML:
+
+```yaml
+channel_id_ref: DISCORD_HOME_CHANNEL
+allowed_user_ids_ref: DISCORD_ALLOWED_USER_IDS
+```
+
+`DISCORD_ALLOWED_USER_IDS` is a comma-separated allowlist. If it is empty, the
+channel allowlist still applies, but per-user restriction is not enforced.
+
+## Discord Transport
+
+Bragi exposes:
+
+```text
+POST /channels/discord/message
+```
+
+This is an ingress endpoint for a Discord bridge. The bridge passes the channel
+ID, author ID, message content, optional message history, and attachment
+metadata. Bragi returns a reply and classification metadata; it does not receive
+the Discord bot token and does not send Discord messages itself.
+
+The endpoint:
+
+- requires `BRAGI_API_KEY`
+- accepts only configured Discord channels
+- optionally enforces `DISCORD_ALLOWED_USER_IDS`
+- ignores bot messages
+- strips bot mentions before routing
+- rejects attachments by default
+- rejects overlong messages according to the channel registry
+- refuses admin keys, tokens, approval nonces, and approval/rejection handling
+- routes only configured safe capabilities for that channel
+
+Discord can be used for natural conversation, context questions, memory
+proposals, task reads, and configured low-risk L1 runs. It cannot approve
+tasks, expose nonces, handle admin secrets, or bypass the Yggy automation API.
 
 ## Open WebUI
 

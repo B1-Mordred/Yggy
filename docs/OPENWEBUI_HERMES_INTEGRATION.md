@@ -10,6 +10,19 @@ tools, admin keys, approval nonces, webhook URLs, or secrets.
 See `docs/BRAGI_HEIMDAL_INTEGRATION.md` for the Bragi -> Heimdal -> Yggdrasil
 boundary model.
 
+Discord should use Bragi through the narrow channel adapter, not through the
+strict Yggdrasil profile:
+
+```text
+POST http://bragi:8650/channels/discord/message
+Authorization: Bearer <BRAGI_API_KEY>
+```
+
+The Discord bridge should send channel ID, author ID, message content, optional
+short history, and attachment metadata. Bragi returns the text reply to post.
+Do not give Bragi the Discord bot token, webhook URLs, admin API key, approval
+nonces, shell tools, Docker tools, or filesystem write tools.
+
 ## Bragi Provider
 
 When the Bragi service is running, add it to Open WebUI as a separate

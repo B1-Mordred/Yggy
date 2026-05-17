@@ -23,6 +23,41 @@ from exporter.config import load_config as load_metrics_config  # noqa: E402
 from task_template_lib import load_templates, render_task_from_template  # noqa: E402
 
 
+SAFE_CHANNEL_CAPABILITIES = {
+    "chat",
+    "context",
+    "memory",
+    "draft_task",
+    "task_read",
+    "run_l1",
+    "pause_l1",
+}
+
+
+def has_secret_like_material(value) -> bool:
+    text = yaml.safe_dump(value, sort_keys=True, allow_unicode=False).lower()
+    markers = (
+        "api_key:",
+        "apikey:",
+        "token:",
+        "password:",
+        "secret:",
+        "webhook_url:",
+        "private_key:",
+        "cookie:",
+        "nonce:",
+        "discord.com/api/webhooks/",
+        "discordapp.com/api/webhooks/",
+    )
+    return any(marker in text for marker in markers)
+
+
+def is_slug_like(value: str) -> bool:
+    import re
+
+    return bool(re.match(r"^[a-z][a-z0-9_]{2,127}$", value))
+
+
 def validate_tasks() -> list[str]:
     errors: list[str] = []
     policy = load_policy(str(ROOT / "configs" / "policies.yaml"))
@@ -132,6 +167,60 @@ def validate_identities() -> list[str]:
     return errors
 
 
+def validate_channels() -> list[str]:
+    path = ROOT / "configs" / "channels.yaml"
+    if not path.exists():
+        return [f"{path}: missing channel registry"]
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        return [f"{path}: {exc}"]
+    errors: list[str] = []
+    if has_secret_like_material(data):
+        errors.append(f"{path}: channel registry must not contain secrets, webhook URLs, tokens, passwords, cookies, or nonces")
+    if data.get("version") != 1:
+        errors.append(f"{path}: version must be 1")
+    channels = data.get("channels")
+    if not isinstance(channels, list) or not channels:
+        errors.append(f"{path}: channels must be a non-empty list")
+        return errors
+    seen: set[str] = set()
+    for index, channel in enumerate(channels):
+        prefix = f"{path}: channels[{index}]"
+        if not isinstance(channel, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        channel_id = str(channel.get("id") or "")
+        if not is_slug_like(channel_id):
+            errors.append(f"{prefix}.id must be a slug-like id")
+        elif channel_id in seen:
+            errors.append(f"{prefix}.id duplicates {channel_id}")
+        seen.add(channel_id)
+        channel_type = channel.get("type")
+        if channel_type not in {"openwebui", "discord"}:
+            errors.append(f"{prefix}.type must be openwebui or discord")
+        if not isinstance(channel.get("enabled"), bool):
+            errors.append(f"{prefix}.enabled must be a boolean")
+        if channel.get("allow_approvals") is not False:
+            errors.append(f"{prefix}.allow_approvals must be false for model-facing channels")
+        capabilities = channel.get("allowed_capabilities")
+        if not isinstance(capabilities, list) or not capabilities:
+            errors.append(f"{prefix}.allowed_capabilities must be a non-empty list")
+        else:
+            unknown = sorted({str(item) for item in capabilities} - SAFE_CHANNEL_CAPABILITIES)
+            if unknown:
+                errors.append(f"{prefix}.allowed_capabilities contains unsupported values: {', '.join(unknown)}")
+        max_chars = channel.get("max_message_chars")
+        if not isinstance(max_chars, int) or max_chars < 5 or max_chars > 12000:
+            errors.append(f"{prefix}.max_message_chars must be an integer from 5 to 12000")
+        if channel_type == "discord":
+            if not channel.get("channel_id_ref"):
+                errors.append(f"{prefix}.channel_id_ref is required for Discord channels")
+            if "webhook" in yaml.safe_dump(channel, sort_keys=True).lower():
+                errors.append(f"{prefix} must not reference Discord webhook credentials")
+    return errors
+
+
 def main() -> int:
     errors = (
         validate_policies()
@@ -141,6 +230,7 @@ def main() -> int:
         + validate_task_templates()
         + validate_capabilities()
         + validate_identities()
+        + validate_channels()
     )
     if errors:
         for error in errors:

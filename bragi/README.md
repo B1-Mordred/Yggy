@@ -24,6 +24,7 @@ POST /memory/query
 POST /memory/propose
 POST /memory/commit
 POST /memory/forget
+POST /channels/discord/message
 GET  /v1/models
 POST /v1/chat/completions
 ```
@@ -73,6 +74,23 @@ forget Discord alerts
 Memory is conversation context only. It is not approval state, task state,
 credential state, or execution authority.
 
+Bragi also exposes a narrow Discord ingress endpoint:
+
+```text
+POST /channels/discord/message
+```
+
+This endpoint is for a Discord bridge to call after it receives a message in a
+registered channel. Bragi does not receive the bot token and does not post to
+Discord itself. It validates the channel against `configs/channels.yaml`, checks
+the configured environment references such as `DISCORD_HOME_CHANNEL` and
+`DISCORD_ALLOWED_USER_IDS`, strips bot mentions, rejects attachments by default,
+and returns a reply for the bridge to send.
+
+Discord is not an approval surface. Requests involving admin keys, tokens,
+approval nonces, or approval/rejection decisions are refused with instructions
+to use the local ops UI or admin CLI.
+
 Configure Open WebUI as a separate model/provider for Bragi. Do not attach
 Workspace Python tools, shell tools, Docker tools, filesystem write tools, admin
 keys, approval nonces, webhook URLs, passwords, or tokens to Bragi.
@@ -101,6 +119,8 @@ BRAGI_CONFIG_ROOT=/app/configs
 BRAGI_MEMORY_FILE=/app/configs/bragi/memory.yaml
 BRAGI_MEMORY_DATABASE_URL=mysql+pymysql://automation:...@automation-mysql:3306/automation
 OLLAMA_BASE_URL=http://host.docker.internal:11434
+DISCORD_HOME_CHANNEL=...
+DISCORD_ALLOWED_USER_IDS=...
 ```
 
 `BRAGI_MEMORY_FILE` is read-only non-secret context. It can hold preferences,

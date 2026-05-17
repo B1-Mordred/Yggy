@@ -16,6 +16,13 @@ non-secret, inspectable, and forgettable. The identity registry in
 references for Open WebUI, Discord, and future adapters. Use `_ref` fields for
 deployment-specific identifiers and keep credentials out of this registry.
 
+The channel registry in `configs/channels.yaml` defines which human-facing
+transports may talk to Bragi and which safe capabilities each channel can use.
+Use environment-variable references such as `DISCORD_HOME_CHANNEL` and
+`DISCORD_ALLOWED_USER_IDS`; do not commit raw bot tokens, webhook URLs, API
+keys, approval nonces, or credentials. Model-facing channels must keep
+`allow_approvals: false`.
+
 Reusable task templates live in `configs/task_templates/`. They render disabled,
 dry-run task YAML through `scripts/render_task_template.py` and must still pass
 the normal task schema and policy checks. See `docs/TASK_TEMPLATES.md`.
