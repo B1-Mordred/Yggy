@@ -4,7 +4,7 @@ import secrets
 from html import escape
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
@@ -33,6 +33,9 @@ MAX_RUN_DETAIL_TEXT = 6000
 MAX_RUN_DETAIL_FIELD_TEXT = 1200
 MAX_RUN_DETAIL_DEPTH = 5
 MAX_RUN_DETAIL_KEYS = 25
+MAX_AUDIT_DETAIL_TEXT = 1200
+MAX_AUDIT_DETAIL_DEPTH = 4
+MAX_AUDIT_DETAIL_KEYS = 20
 RUN_DETAIL_SECRET_KEY_MARKERS = (
     "authorization",
     "cookie",
@@ -196,6 +199,20 @@ def ops_run_detail(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
     task = session.get(TaskModel, run.task_id)
     return _run_detail(run, task)
+
+
+@router.get("/ops/audit", include_in_schema=False)
+def ops_audit_events(
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> dict:
+    events = session.query(AuditEventModel).order_by(AuditEventModel.created_at.desc()).limit(limit).all()
+    return {
+        "generated_at": utcnow(),
+        "limit": limit,
+        "events": [_audit_event_detail(event) for event in events],
+    }
 
 
 @router.post("/ops/tasks/{task_id}/run", status_code=status.HTTP_202_ACCEPTED, include_in_schema=False)
@@ -503,28 +520,53 @@ def _truncate_text(value: Any, limit: int) -> str | None:
     return f"{text[:limit]}...<truncated>"
 
 
-def _bounded_value(value: Any, depth: int = 0) -> Any:
-    if depth >= MAX_RUN_DETAIL_DEPTH:
+def _bounded_value(
+    value: Any,
+    depth: int = 0,
+    *,
+    max_depth: int = MAX_RUN_DETAIL_DEPTH,
+    max_keys: int = MAX_RUN_DETAIL_KEYS,
+    text_limit: int = MAX_RUN_DETAIL_TEXT,
+    field_text_limit: int = MAX_RUN_DETAIL_FIELD_TEXT,
+) -> Any:
+    if depth >= max_depth:
         return "<truncated>"
     if isinstance(value, dict):
         bounded: dict[str, Any] = {}
         for index, (key, child) in enumerate(value.items()):
-            if index >= MAX_RUN_DETAIL_KEYS:
-                bounded["_truncated_keys"] = len(value) - MAX_RUN_DETAIL_KEYS
+            if index >= max_keys:
+                bounded["_truncated_keys"] = len(value) - max_keys
                 break
             key_text = str(key)
             if _run_detail_secret_key(key_text):
                 bounded[key_text] = "[REDACTED]"
             else:
-                bounded[key_text] = _bounded_value(child, depth + 1)
+                bounded[key_text] = _bounded_value(
+                    child,
+                    depth + 1,
+                    max_depth=max_depth,
+                    max_keys=max_keys,
+                    text_limit=text_limit,
+                    field_text_limit=field_text_limit,
+                )
         return bounded
     if isinstance(value, list):
-        bounded_items = [_bounded_value(item, depth + 1) for item in value[:MAX_RUN_DETAIL_ITEMS]]
+        bounded_items = [
+            _bounded_value(
+                item,
+                depth + 1,
+                max_depth=max_depth,
+                max_keys=max_keys,
+                text_limit=text_limit,
+                field_text_limit=field_text_limit,
+            )
+            for item in value[:MAX_RUN_DETAIL_ITEMS]
+        ]
         if len(value) > MAX_RUN_DETAIL_ITEMS:
             bounded_items.append({"_truncated_items": len(value) - MAX_RUN_DETAIL_ITEMS})
         return bounded_items
     if isinstance(value, str):
-        limit = MAX_RUN_DETAIL_TEXT if depth <= 2 else MAX_RUN_DETAIL_FIELD_TEXT
+        limit = text_limit if depth <= 2 else field_text_limit
         return _truncate_text(value, limit)
     return value
 
@@ -633,8 +675,30 @@ def _audit_summary(audit: AuditEventModel | None) -> dict | None:
     return {
         "action": audit.action,
         "created_at": audit.created_at,
-        "detail": audit.detail,
+        "detail": _bounded_audit_detail(audit.detail),
     }
+
+
+def _audit_event_detail(audit: AuditEventModel) -> dict:
+    return {
+        "id": audit.id,
+        "actor_role": audit.actor_role,
+        "action": audit.action,
+        "resource_type": audit.resource_type,
+        "resource_id": audit.resource_id,
+        "detail": _bounded_audit_detail(audit.detail),
+        "created_at": audit.created_at,
+    }
+
+
+def _bounded_audit_detail(detail: Any) -> Any:
+    return _bounded_value(
+        redact_secrets(detail),
+        max_depth=MAX_AUDIT_DETAIL_DEPTH,
+        max_keys=MAX_AUDIT_DETAIL_KEYS,
+        text_limit=MAX_AUDIT_DETAIL_TEXT,
+        field_text_limit=MAX_AUDIT_DETAIL_TEXT,
+    )
 
 
 DASHBOARD_HTML = f"""<!doctype html>
@@ -676,11 +740,35 @@ DASHBOARD_HTML = f"""<!doctype html>
       color: var(--text);
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }}
-    header, main {{ width: min(1180px, calc(100vw - 32px)); margin: 0 auto; }}
+    header, .tabs, main {{ width: min(1180px, calc(100vw - 32px)); margin: 0 auto; }}
     header {{ padding: 24px 0 12px; display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; }}
     h1 {{ margin: 0; font-size: 24px; font-weight: 700; letter-spacing: 0; }}
     h2 {{ margin: 0 0 10px; font-size: 15px; letter-spacing: 0; }}
     h3 {{ margin: 0 0 8px; font-size: 13px; letter-spacing: 0; }}
+    .tabs {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 8px 0 10px;
+      background: color-mix(in srgb, var(--bg) 92%, transparent);
+      backdrop-filter: blur(8px);
+    }}
+    .tab-button {{
+      white-space: nowrap;
+      color: var(--muted);
+      padding: 8px 10px;
+    }}
+    .tab-button.active {{
+      color: var(--text);
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+    }}
+    .tab-count {{ color: var(--muted); margin-left: 4px; }}
+    .view {{ display: none; }}
+    .view.active {{ display: block; }}
     button {{
       border: 1px solid var(--line);
       background: var(--panel);
@@ -721,6 +809,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     .meta {{ color: var(--muted); font-size: 12px; }}
     .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }}
     .section {{ margin: 18px 0; }}
+    .section-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }}
     .panel, .metric, table {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -783,24 +872,54 @@ DASHBOARD_HTML = f"""<!doctype html>
     </div>
     <button id="refresh" type="button" title="Refresh status">Refresh</button>
   </header>
+  <nav class="tabs" aria-label="Operations views">
+    <button class="tab-button active" type="button" data-view-target="overview">Overview</button>
+    <button class="tab-button" type="button" data-view-target="tasks">Tasks <span class="tab-count" data-count="tasks"></span></button>
+    <button class="tab-button" type="button" data-view-target="runs">Runs <span class="tab-count" data-count="runs"></span></button>
+    <button class="tab-button" type="button" data-view-target="approvals">Approvals <span class="tab-count" data-count="approvals"></span></button>
+    <button class="tab-button" type="button" data-view-target="audit">Audit</button>
+    <button class="tab-button" type="button" data-view-target="retention">Retention</button>
+  </nav>
   <main>
-    <section class="grid" id="metrics"></section>
-    <section class="section panel" id="service"></section>
-    <section class="section">
-      <h2>Tasks</h2>
-      <div class="table-wrap"><table id="tasks"></table></div>
-      <div class="meta" id="task-action-status"></div>
+    <section class="view active" data-view="overview">
+      <section class="grid" id="metrics"></section>
+      <section class="section panel" id="service"></section>
     </section>
-    <section class="section">
-      <h2>Recent Runs</h2>
-      <div class="table-wrap"><table id="runs"></table></div>
+    <section class="view" data-view="tasks">
+      <section class="section">
+        <h2>Tasks</h2>
+        <div class="table-wrap"><table id="tasks"></table></div>
+        <div class="meta" id="task-action-status"></div>
+      </section>
     </section>
-    <section class="section panel" id="run-detail">
-      <h2>Run Detail</h2>
-      <div class="empty">Select a recent run to inspect its digest, n8n response, notification decision, and Discord result.</div>
+    <section class="view" data-view="runs">
+      <section class="section">
+        <h2>Recent Runs</h2>
+        <div class="table-wrap"><table id="runs"></table></div>
+      </section>
+      <section class="section panel" id="run-detail">
+        <h2>Run Detail</h2>
+        <div class="empty">Select a recent run to inspect its digest, n8n response, notification decision, and Discord result.</div>
+      </section>
     </section>
-    <section class="section panel" id="approvals"></section>
-    <section class="section panel" id="retention"></section>
+    <section class="view" data-view="approvals">
+      <section class="section panel" id="approvals"></section>
+    </section>
+    <section class="view" data-view="audit">
+      <section class="section panel">
+        <div class="section-head">
+          <div>
+            <h2>Audit Events</h2>
+            <div class="meta" id="audit-generated">Not loaded yet.</div>
+          </div>
+          <button id="audit-refresh" type="button">Refresh Audit</button>
+        </div>
+        <div class="table-wrap"><table id="audit"></table></div>
+      </section>
+    </section>
+    <section class="view" data-view="retention">
+      <section class="section panel" id="retention"></section>
+    </section>
   </main>
   <script>
     const text = value => value === null || value === undefined || value === '' ? 'n/a' : String(value);
@@ -822,6 +941,26 @@ DASHBOARD_HTML = f"""<!doctype html>
       const table = document.getElementById(id);
       table.innerHTML = `<thead><tr>${{headers.map(h => `<th>${{h}}</th>`).join('')}}</tr></thead>`
         + `<tbody>${{rows.map(row => `<tr>${{row.map(cell => `<td>${{cell}}</td>`).join('')}}</tr>`).join('')}}</tbody>`;
+    }}
+    let activeView = 'overview';
+    function showView(view) {{
+      activeView = view;
+      document.querySelectorAll('.view').forEach(section => {{
+        section.classList.toggle('active', section.dataset.view === view);
+      }});
+      document.querySelectorAll('[data-view-target]').forEach(button => {{
+        button.classList.toggle('active', button.dataset.viewTarget === view);
+      }});
+      if (view === 'audit') loadAudit();
+    }}
+    function wireViewTabs() {{
+      document.querySelectorAll('[data-view-target]').forEach(button => {{
+        button.addEventListener('click', () => showView(button.dataset.viewTarget));
+      }});
+    }}
+    function setTabCount(name, value) {{
+      const target = document.querySelector(`[data-count="${{name}}"]`);
+      if (target) target.textContent = `(${{value}})`;
     }}
     let selectedRunId = null;
     const runButton = run => `<button type="button" class="link-button" data-run-id="${{esc(run.id)}}" title="${{esc(run.id)}}">${{esc(shortId(run.id))}}</button>`;
@@ -974,6 +1113,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     async function loadRunDetail(runId) {{
       selectedRunId = runId;
+      showView('runs');
       const panel = document.getElementById('run-detail');
       panel.innerHTML = '<h2>Run Detail</h2><div class="empty">Loading run detail...</div>';
       try {{
@@ -1065,6 +1205,9 @@ DASHBOARD_HTML = f"""<!doctype html>
       if (!response.ok) throw new Error(`status ${{response.status}}`);
       const data = await response.json();
       document.getElementById('generated').textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}`;
+      setTabCount('tasks', data.counts.tasks);
+      setTabCount('runs', data.recent_runs.length);
+      setTabCount('approvals', data.counts.pending_approvals);
       document.getElementById('metrics').innerHTML = [
         metric('Service', statusLabel(data.service.status), `worker age ${{text(data.service.worker.age_seconds)}}s`),
         metric('Tasks', data.counts.tasks, `${{data.counts.enabled_tasks}} enabled`),
@@ -1096,7 +1239,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       wireRunLinks();
       wireTaskRunButtons();
       wireTaskStateButtons();
-      if (selectedRunId) loadRunDetail(selectedRunId);
+      if (selectedRunId && activeView === 'runs') loadRunDetail(selectedRunId);
       renderApprovals(data.pending_approvals);
       const latestRetention = data.retention.latest;
       document.getElementById('retention').innerHTML = `
@@ -1105,11 +1248,35 @@ DASHBOARD_HTML = f"""<!doctype html>
         ${{latestRetention ? `<div>Latest: <code>${{latestRetention.action}}</code> at ${{text(latestRetention.created_at)}}</div>` : '<div class="empty">No cleanup recorded yet.</div>'}}
       `;
     }}
+    async function loadAudit() {{
+      const generated = document.getElementById('audit-generated');
+      generated.textContent = 'Loading audit events...';
+      try {{
+        const response = await fetch('/ops/audit?limit=50', {{credentials: 'same-origin'}});
+        if (!response.ok) throw new Error(`status ${{response.status}}`);
+        const data = await response.json();
+        generated.textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}; showing ${{data.events.length}} events.`;
+        renderTable('audit', ['Time', 'Actor', 'Action', 'Resource', 'Detail'], data.events.map(event => [
+          esc(event.created_at),
+          `<span class="pill">${{esc(event.actor_role)}}</span>`,
+          `<code>${{esc(event.action)}}</code>`,
+          `${{esc(event.resource_type)}}<br><code>${{esc(event.resource_id)}}</code>`,
+          jsonBlock(event.detail),
+        ]));
+      }} catch (error) {{
+        generated.textContent = `Unable to load audit events: ${{error.message}}`;
+      }}
+    }}
     async function refresh() {{
-      try {{ await loadStatus(); }}
+      try {{
+        await loadStatus();
+        if (activeView === 'audit') await loadAudit();
+      }}
       catch (error) {{ document.getElementById('generated').textContent = `Unable to load status: ${{error.message}}`; }}
     }}
     document.getElementById('refresh').addEventListener('click', refresh);
+    document.getElementById('audit-refresh').addEventListener('click', loadAudit);
+    wireViewTabs();
     refresh();
     setInterval(refresh, 30000);
   </script>

@@ -149,12 +149,13 @@ The API serves a local operations and approval dashboard at:
 http://127.0.0.1:8088/ops
 ```
 
-It shows task state, latest runs, pending approvals, worker heartbeat, and
-retention status. Pending approvals include actions, worst-case failure mode,
-and the redacted task config. The dashboard can approve or reject pending
-approvals when the operator enters the approval nonce. It does not expose
-secrets, does not expose nonce hashes, and is not included in the OpenAPI tool
-schema.
+It is split into views for overview, tasks, runs, approvals, audit, and
+retention so routine checks do not require scanning every table. It shows task
+state, latest runs, pending approvals, worker heartbeat, and retention status.
+Pending approvals include actions, worst-case failure mode, and the redacted task
+config. The dashboard can approve or reject pending approvals when the operator
+enters the approval nonce. It does not expose secrets, does not expose nonce
+hashes, and is not included in the OpenAPI tool schema.
 
 Recent run ids in the dashboard are clickable. The run-detail panel is backed by
 the hidden `/ops/runs/{run_id}` endpoint and shows a bounded, redacted projection
@@ -183,6 +184,11 @@ stored task config. `Resume` re-enables L0 tasks directly and re-enables L1
 tasks only when an approved approval record already exists for the same task and
 approval level. Pending, rejected, L2+, L3, and L4 tasks are not resumed through
 the dashboard.
+
+The `Audit` view is backed by hidden `/ops/audit` and lists recent audit events
+for approvals, task drafts/updates, manual runs, pause/resume, run lifecycle
+updates, heartbeats, and retention cleanup. Audit details are bounded and
+redacted before reaching the browser.
 
 Configure it with separate local credentials:
 

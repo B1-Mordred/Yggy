@@ -20,6 +20,8 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert denied.headers["www-authenticate"] == "Basic"
     assert allowed.status_code == 200
     assert "Yggy Operations" in allowed.text
+    assert "data-view-target=\"audit\"" in allowed.text
+    assert "data-view=\"tasks\"" in allowed.text
 
 
 def test_admin_key_can_access_ops_status_without_dashboard_password(client):
@@ -201,6 +203,51 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
     assert body["notification"]["discord_token"] == "[REDACTED]"
     assert "hidden-secret" not in response.text
     assert "api_token" not in response.text
+
+
+def test_ops_audit_events_are_redacted_and_limited(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    with Session(get_engine()) as session:
+        session.add_all(
+            [
+                AuditEventModel(
+                    actor_role="tool",
+                    action="task.draft",
+                    resource_type="task",
+                    resource_id="older_task",
+                    detail={"message": "older"},
+                    created_at=utcnow(),
+                ),
+                AuditEventModel(
+                    actor_role="ops_dashboard",
+                    action="task.run",
+                    resource_type="task",
+                    resource_id="daily_local_ai_security_briefing",
+                    detail={
+                        "run_id": "run-1",
+                        "dry_run": True,
+                        "api_token": "hidden-secret",
+                        "nested": {"authorization": "Bearer hidden-secret"},
+                    },
+                    created_at=utcnow(),
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get("/ops/audit?limit=1", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["limit"] == 1
+    assert len(body["events"]) == 1
+    event = body["events"][0]
+    assert event["action"] == "task.run"
+    assert event["resource_id"] == "daily_local_ai_security_briefing"
+    assert event["detail"]["api_token"] == "[REDACTED]"
+    assert event["detail"]["nested"]["authorization"] == "[REDACTED]"
+    assert "hidden-secret" not in response.text
 
 
 def test_ops_task_run_requires_action_header(client, monkeypatch):
@@ -753,6 +800,7 @@ def test_ops_routes_are_not_in_openapi(client):
     paths = response.json()["paths"]
     assert "/ops" not in paths
     assert "/ops/status" not in paths
+    assert "/ops/audit" not in paths
     assert "/ops/runs/{run_id}" not in paths
     assert "/ops/tasks/{task_id}/run" not in paths
     assert "/ops/tasks/{task_id}/pause" not in paths
