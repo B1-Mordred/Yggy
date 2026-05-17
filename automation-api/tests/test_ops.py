@@ -104,6 +104,105 @@ def test_ops_status_summarizes_without_logs_or_nonces(client, monkeypatch):
     assert "super-secret-value" not in response.text
 
 
+def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task_id = "daily_local_ai_security_briefing"
+    run_id = str(uuid.uuid4())
+    config = sample_task(task_id)
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task_id,
+                name="Daily Local AI Security Briefing",
+                type="topic_digest",
+                enabled=True,
+                owner="local_user",
+                created_by="yggdrasil",
+                approval_level="L1_NOTIFY_ONLY",
+                status="enabled",
+                config={**config, "enabled": True},
+            )
+        )
+        session.add(
+            RunModel(
+                id=run_id,
+                task_id=task_id,
+                status="completed",
+                log={
+                    "result": {
+                        "status": "ready",
+                        "title": "Daily Local AI Security Briefing",
+                        "message": "digest body",
+                        "source_count": 4,
+                        "summary_mode": "llm",
+                        "items": [
+                            {
+                                "title": "Open WebUI release",
+                                "summary": "Security-relevant local AI update.",
+                                "link": "https://example.com/open-webui",
+                                "published": "2026-05-17",
+                                "type": "rss",
+                            }
+                        ],
+                        "errors": [{"source": "https://example.com/feed.xml", "error": "Timeout"}],
+                        "n8n": {
+                            "status": "ready",
+                            "notify": False,
+                            "webhook_id": "daily_briefing_stub",
+                            "path": "/webhook/yggy-daily-briefing",
+                            "status_code": 200,
+                            "message": "n8n webhook daily_briefing_stub dispatched.",
+                            "response": {
+                                "action": "normalize_digest_payload",
+                                "normalized": {"item_count": 1, "source_count": 1},
+                                "authorization": "Bearer hidden-secret",
+                            },
+                        },
+                    },
+                    "notification_decision": {
+                        "send": True,
+                        "reason": "enabled",
+                        "classification": "success",
+                        "secret_token": "hidden-secret",
+                    },
+                    "notification": {
+                        "sent": True,
+                        "dry_run": False,
+                        "target": "briefings",
+                        "transport": "bot",
+                        "status_code": 200,
+                        "discord_token": "hidden-secret",
+                    },
+                    "api_token": "hidden-secret",
+                },
+                created_at=utcnow(),
+                completed_at=utcnow(),
+            )
+        )
+        session.commit()
+
+    response = client.get(f"/ops/runs/{run_id}", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run"]["id"] == run_id
+    assert body["task"]["id"] == task_id
+    assert body["digest"]["item_count"] == 1
+    assert body["digest"]["error_count"] == 1
+    assert body["digest"]["summary_mode"] == "llm"
+    assert body["digest"]["items"][0]["url"] == "https://example.com/open-webui"
+    assert body["n8n"]["webhook_id"] == "daily_briefing_stub"
+    assert body["n8n"]["response"]["action"] == "normalize_digest_payload"
+    assert body["n8n"]["response"]["authorization"] == "[REDACTED]"
+    assert body["notification_decision"]["send"] is True
+    assert body["notification_decision"]["secret_token"] == "[REDACTED]"
+    assert body["notification"]["sent"] is True
+    assert body["notification"]["discord_token"] == "[REDACTED]"
+    assert "hidden-secret" not in response.text
+    assert "api_token" not in response.text
+
+
 def test_ops_approval_requires_action_header(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
@@ -204,5 +303,6 @@ def test_ops_routes_are_not_in_openapi(client):
     paths = response.json()["paths"]
     assert "/ops" not in paths
     assert "/ops/status" not in paths
+    assert "/ops/runs/{run_id}" not in paths
     assert "/ops/approvals/{approval_id}/approve" not in paths
     assert "/ops/approvals/{approval_id}/reject" not in paths

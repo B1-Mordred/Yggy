@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import secrets
 from html import escape
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
@@ -24,6 +24,25 @@ from app.services.validation_service import redact_secrets
 router = APIRouter(tags=["ops"])
 basic_security = HTTPBasic(auto_error=False)
 OPS_ACTION_HEADER = "approval-decision"
+MAX_RUN_DETAIL_ITEMS = 10
+MAX_RUN_DETAIL_ERRORS = 10
+MAX_RUN_DETAIL_TEXT = 6000
+MAX_RUN_DETAIL_FIELD_TEXT = 1200
+MAX_RUN_DETAIL_DEPTH = 5
+MAX_RUN_DETAIL_KEYS = 25
+RUN_DETAIL_SECRET_KEY_MARKERS = (
+    "authorization",
+    "cookie",
+    "password",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "private_key",
+    "credential",
+    "webhook",
+)
+RUN_DETAIL_NON_SECRET_KEYS = {"webhook_id"}
 
 
 class OpsApprovalDecision(BaseModel):
@@ -145,6 +164,19 @@ def ops_status(
     }
 
 
+@router.get("/ops/runs/{run_id}", include_in_schema=False)
+def ops_run_detail(
+    run_id: str,
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+) -> dict:
+    run = session.get(RunModel, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
+    task = session.get(TaskModel, run.task_id)
+    return _run_detail(run, task)
+
+
 @router.post("/ops/approvals/{approval_id}/approve", include_in_schema=False)
 def ops_approve_approval(
     approval_id: str,
@@ -255,6 +287,141 @@ def _run_summary(run: RunModel | None) -> dict | None:
             "transport": notification.get("transport") if notification else None,
         },
     }
+
+
+def _run_detail(run: RunModel, task: TaskModel | None) -> dict:
+    log = _as_dict(_bounded_value(redact_secrets(run.log if isinstance(run.log, dict) else {})))
+    result = _as_dict(log.get("result"))
+    notification = log.get("notification") if isinstance(log.get("notification"), dict) else None
+    notification_decision = (
+        log.get("notification_decision") if isinstance(log.get("notification_decision"), dict) else {}
+    )
+    return {
+        "run": _run_summary(run),
+        "task": _task_summary(task, run) if task else {"id": run.task_id},
+        "digest": _digest_detail(result),
+        "n8n": _n8n_detail(result),
+        "notification_decision": notification_decision,
+        "notification": notification,
+        "failure": _failure_detail(log),
+    }
+
+
+def _digest_detail(result: dict) -> dict | None:
+    if not result:
+        return None
+    items = _as_list(result.get("items"))
+    errors = _as_list(result.get("errors"))
+    has_digest_fields = any(
+        key in result
+        for key in ("title", "message", "items", "errors", "source_count", "summary_mode", "summary_error")
+    )
+    if not has_digest_fields:
+        return None
+    return {
+        "status": result.get("status"),
+        "title": _truncate_text(result.get("title"), MAX_RUN_DETAIL_FIELD_TEXT),
+        "message": _truncate_text(result.get("message"), MAX_RUN_DETAIL_TEXT),
+        "summary_mode": result.get("summary_mode"),
+        "summary_error": result.get("summary_error"),
+        "source_count": result.get("source_count"),
+        "item_count": len(items),
+        "error_count": len(errors),
+        "items": [_digest_item_detail(item) for item in items[:MAX_RUN_DETAIL_ITEMS] if isinstance(item, dict)],
+        "errors": [_source_error_detail(error) for error in errors[:MAX_RUN_DETAIL_ERRORS] if isinstance(error, dict)],
+    }
+
+
+def _digest_item_detail(item: dict) -> dict:
+    return {
+        "title": _truncate_text(item.get("title"), MAX_RUN_DETAIL_FIELD_TEXT),
+        "summary": _truncate_text(item.get("summary"), MAX_RUN_DETAIL_FIELD_TEXT),
+        "url": _truncate_text(item.get("link") or item.get("url") or item.get("source"), MAX_RUN_DETAIL_FIELD_TEXT),
+        "published": _truncate_text(item.get("published"), 200),
+        "type": _truncate_text(item.get("type"), 100),
+    }
+
+
+def _source_error_detail(error: dict) -> dict:
+    return {
+        "source": _truncate_text(error.get("source"), MAX_RUN_DETAIL_FIELD_TEXT),
+        "error": _truncate_text(error.get("error"), 200),
+    }
+
+
+def _n8n_detail(result: dict) -> dict | None:
+    n8n = _as_dict(result.get("n8n"))
+    if not n8n:
+        return None
+    return {
+        "status": n8n.get("status"),
+        "notify": n8n.get("notify"),
+        "webhook_id": n8n.get("webhook_id"),
+        "path": n8n.get("path"),
+        "status_code": n8n.get("status_code"),
+        "message": _truncate_text(n8n.get("message"), MAX_RUN_DETAIL_FIELD_TEXT),
+        "payload_keys": _as_list(n8n.get("payload_keys")),
+        "response": _bounded_value(n8n.get("response")),
+    }
+
+
+def _failure_detail(log: dict) -> dict | None:
+    if not log.get("error") and not log.get("message"):
+        return None
+    return {
+        "error": _truncate_text(log.get("error"), 200),
+        "message": _truncate_text(log.get("message"), MAX_RUN_DETAIL_FIELD_TEXT),
+    }
+
+
+def _as_dict(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _truncate_text(value: Any, limit: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...<truncated>"
+
+
+def _bounded_value(value: Any, depth: int = 0) -> Any:
+    if depth >= MAX_RUN_DETAIL_DEPTH:
+        return "<truncated>"
+    if isinstance(value, dict):
+        bounded: dict[str, Any] = {}
+        for index, (key, child) in enumerate(value.items()):
+            if index >= MAX_RUN_DETAIL_KEYS:
+                bounded["_truncated_keys"] = len(value) - MAX_RUN_DETAIL_KEYS
+                break
+            key_text = str(key)
+            if _run_detail_secret_key(key_text):
+                bounded[key_text] = "[REDACTED]"
+            else:
+                bounded[key_text] = _bounded_value(child, depth + 1)
+        return bounded
+    if isinstance(value, list):
+        bounded_items = [_bounded_value(item, depth + 1) for item in value[:MAX_RUN_DETAIL_ITEMS]]
+        if len(value) > MAX_RUN_DETAIL_ITEMS:
+            bounded_items.append({"_truncated_items": len(value) - MAX_RUN_DETAIL_ITEMS})
+        return bounded_items
+    if isinstance(value, str):
+        limit = MAX_RUN_DETAIL_TEXT if depth <= 2 else MAX_RUN_DETAIL_FIELD_TEXT
+        return _truncate_text(value, limit)
+    return value
+
+
+def _run_detail_secret_key(key: str) -> bool:
+    lower_key = key.lower()
+    if lower_key in RUN_DETAIL_NON_SECRET_KEYS:
+        return False
+    return any(marker in lower_key for marker in RUN_DETAIL_SECRET_KEY_MARKERS)
 
 
 def _approval_summary(approval: ApprovalModel, task: TaskModel | None = None) -> dict:
@@ -401,6 +568,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     header {{ padding: 24px 0 12px; display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; }}
     h1 {{ margin: 0; font-size: 24px; font-weight: 700; letter-spacing: 0; }}
     h2 {{ margin: 0 0 10px; font-size: 15px; letter-spacing: 0; }}
+    h3 {{ margin: 0 0 8px; font-size: 13px; letter-spacing: 0; }}
     button {{
       border: 1px solid var(--line);
       background: var(--panel);
@@ -410,6 +578,15 @@ DASHBOARD_HTML = f"""<!doctype html>
       cursor: pointer;
     }}
     button:hover {{ border-color: var(--accent); }}
+    .link-button {{
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      padding: 0;
+      text-decoration: underline;
+      font: inherit;
+    }}
+    .link-button:hover {{ border-color: transparent; }}
     input {{
       width: min(360px, 100%);
       border: 1px solid var(--line);
@@ -465,9 +642,15 @@ DASHBOARD_HTML = f"""<!doctype html>
     .approval-actions {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
     .approval-message {{ min-height: 18px; }}
     .danger {{ border-color: var(--bad); color: var(--bad); }}
+    .detail-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
+    .detail-block {{ min-width: 0; }}
+    .detail-block.wide {{ grid-column: 1 / -1; }}
+    .digest-items {{ margin: 0; padding-left: 22px; }}
+    .digest-items li {{ margin: 7px 0; }}
     @media (max-width: 860px) {{
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .detail-grid {{ grid-template-columns: 1fr; }}
     }}
     @media (max-width: 560px) {{
       .grid {{ grid-template-columns: 1fr; }}
@@ -493,6 +676,10 @@ DASHBOARD_HTML = f"""<!doctype html>
       <h2>Recent Runs</h2>
       <div class="table-wrap"><table id="runs"></table></div>
     </section>
+    <section class="section panel" id="run-detail">
+      <h2>Run Detail</h2>
+      <div class="empty">Select a recent run to inspect its digest, n8n response, notification decision, and Discord result.</div>
+    </section>
     <section class="section panel" id="approvals"></section>
     <section class="section panel" id="retention"></section>
   </main>
@@ -516,6 +703,78 @@ DASHBOARD_HTML = f"""<!doctype html>
       const table = document.getElementById(id);
       table.innerHTML = `<thead><tr>${{headers.map(h => `<th>${{h}}</th>`).join('')}}</tr></thead>`
         + `<tbody>${{rows.map(row => `<tr>${{row.map(cell => `<td>${{cell}}</td>`).join('')}}</tr>`).join('')}}</tbody>`;
+    }}
+    let selectedRunId = null;
+    const runButton = run => `<button type="button" class="link-button" data-run-id="${{esc(run.id)}}" title="${{esc(run.id)}}">${{esc(shortId(run.id))}}</button>`;
+    function wireRunLinks() {{
+      document.querySelectorAll('[data-run-id]').forEach(button => {{
+        button.addEventListener('click', () => loadRunDetail(button.dataset.runId));
+      }});
+    }}
+    function digestItems(items) {{
+      return items && items.length ? `<ol class="digest-items">${{items.map(item => `
+        <li>
+          <strong>${{esc(item.title)}}</strong><br>
+          <span>${{esc(item.summary)}}</span><br>
+          <span class="meta">${{esc(item.published)}} ${{esc(item.type)}} ${{item.url ? `- ${{esc(item.url)}}` : ''}}</span>
+        </li>
+      `).join('')}}</ol>` : '<div class="empty">No digest items recorded.</div>';
+    }}
+    function renderRunDetail(data) {{
+      const run = data.run || {{}};
+      const task = data.task || {{}};
+      const digest = data.digest;
+      const n8n = data.n8n;
+      const decision = data.notification_decision || {{}};
+      const notification = data.notification || null;
+      const failure = data.failure || null;
+      document.getElementById('run-detail').innerHTML = `
+        <h2>Run Detail</h2>
+        <div class="meta"><code>${{esc(run.id)}}</code> for <code>${{esc(run.task_id || task.id)}}</code> - ${{statusLabel(run.status)}} - completed ${{esc(run.completed_at)}}</div>
+        ${{failure ? `<div class="section bad"><strong>Failure</strong><br>${{esc(failure.error)}} ${{esc(failure.message)}}</div>` : ''}}
+        <div class="detail-grid section">
+          <div class="detail-block wide">
+            <h3>Digest</h3>
+            ${{digest ? `
+              <div class="meta">status ${{esc(digest.status)}}; mode ${{esc(digest.summary_mode)}}; items ${{esc(digest.item_count)}}; errors ${{esc(digest.error_count)}}; sources ${{esc(digest.source_count)}}</div>
+              <pre>${{esc(digest.message || '')}}</pre>
+              ${{digestItems(digest.items)}}
+              ${{digest.errors && digest.errors.length ? `<h3>Source Errors</h3>${{jsonBlock(digest.errors)}}` : ''}}
+            ` : '<div class="empty">No topic digest result recorded for this run.</div>'}}
+          </div>
+          <div class="detail-block">
+            <h3>n8n Response</h3>
+            ${{n8n ? `
+              <div class="meta">webhook <code>${{esc(n8n.webhook_id)}}</code>; status ${{esc(n8n.status)}}; HTTP ${{esc(n8n.status_code)}}</div>
+              <div>${{esc(n8n.message)}}</div>
+              ${{jsonBlock(n8n.response || {{payload_keys: n8n.payload_keys}})}}
+            ` : '<div class="empty">No n8n response recorded for this run.</div>'}}
+          </div>
+          <div class="detail-block">
+            <h3>Notification Decision</h3>
+            ${{jsonBlock(decision)}}
+          </div>
+          <div class="detail-block">
+            <h3>Discord Result</h3>
+            ${{notification ? jsonBlock(notification) : '<div class="empty">No Discord send result recorded.</div>'}}
+          </div>
+        </div>
+      `;
+    }}
+    async function loadRunDetail(runId) {{
+      selectedRunId = runId;
+      const panel = document.getElementById('run-detail');
+      panel.innerHTML = '<h2>Run Detail</h2><div class="empty">Loading run detail...</div>';
+      try {{
+        const response = await fetch(`/ops/runs/${{encodeURIComponent(runId)}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        renderRunDetail(await response.json());
+      }} catch (error) {{
+        panel.innerHTML = `<h2>Run Detail</h2><div class="bad">Unable to load run detail: ${{esc(error.message)}}</div>`;
+      }}
     }}
     function renderApprovals(approvals) {{
       const container = document.getElementById('approvals');
@@ -612,16 +871,18 @@ DASHBOARD_HTML = f"""<!doctype html>
         `${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}}<br><span class="meta">dry run ${{task.dry_run}}</span>`,
         `<code>${{esc(task.trigger.cron)}}</code><br><span class="meta">${{esc(task.trigger.timezone)}}</span>`,
         `${{esc(task.output.channel)}}<br><span class="meta">${{esc(task.output.target)}}</span>`,
-        task.latest_run ? `<code>${{esc(shortId(task.latest_run.id))}}</code> ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
+        task.latest_run ? `${{runButton(task.latest_run)}} ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
       ]));
       renderTable('runs', ['Run', 'Task', 'Status', 'Result', 'Notification', 'Completed'], data.recent_runs.map(run => [
-        `<code title="${{esc(run.id)}}">${{esc(shortId(run.id))}}</code>`,
+        runButton(run),
         `<code>${{esc(run.task_id)}}</code>`,
         statusLabel(run.status),
         `${{esc(run.result_status)}}${{run.failed_count !== null && run.failed_count !== undefined ? `<br><span class="meta">failed checks ${{esc(run.failed_count)}}</span>` : ''}}`,
         `${{run.notification.sent === true ? 'sent' : run.notification.sent === false ? 'not sent' : 'n/a'}}<br><span class="meta">${{esc(run.notification.target || run.notification.transport)}}</span>`,
         esc(run.completed_at),
       ]));
+      wireRunLinks();
+      if (selectedRunId) loadRunDetail(selectedRunId);
       renderApprovals(data.pending_approvals);
       const latestRetention = data.retention.latest;
       document.getElementById('retention').innerHTML = `

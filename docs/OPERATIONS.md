@@ -153,8 +153,14 @@ It shows task state, latest runs, pending approvals, worker heartbeat, and
 retention status. Pending approvals include actions, worst-case failure mode,
 and the redacted task config. The dashboard can approve or reject pending
 approvals when the operator enters the approval nonce. It does not expose
-secrets, does not include raw run logs, does not expose nonce hashes, and is not
-included in the OpenAPI tool schema.
+secrets, does not expose nonce hashes, and is not included in the OpenAPI tool
+schema.
+
+Recent run ids in the dashboard are clickable. The run-detail panel is backed by
+the hidden `/ops/runs/{run_id}` endpoint and shows a bounded, redacted projection
+of the run: topic digest message and items, n8n normalizer response, notification
+decision, and Discord send result. It intentionally does not expose raw logs,
+API keys, approval nonces, webhook secrets, or dashboard credentials.
 
 Configure it with separate local credentials:
 
