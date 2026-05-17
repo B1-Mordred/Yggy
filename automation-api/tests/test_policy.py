@@ -86,6 +86,23 @@ def test_topic_digest_source_id_must_match_registry_entry(client):
     assert "does not match the configured source identity" in response.text
 
 
+def test_topic_digest_can_use_included_preapproved_source(client):
+    task = sample_task(
+        "included_source_ok",
+        sources=[
+            {
+                "source_id": "cisa_news_events",
+                "type": "http",
+                "url": "https://www.cisa.gov/news-events",
+            }
+        ],
+    )
+    response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
+
+    assert response.status_code == 201
+    assert response.json()["task"]["config"]["sources"][0]["source_id"] == "cisa_news_events"
+
+
 def test_topic_digest_disabled_source_is_rejected(client, tmp_path, monkeypatch):
     sources = tmp_path / "sources.yaml"
     sources.write_text(

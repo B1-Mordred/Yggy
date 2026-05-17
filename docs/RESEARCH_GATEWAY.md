@@ -21,8 +21,15 @@ approve, enable, run, pause, or modify tasks.
 GET /sources
 ```
 
-Lists approved source metadata from `configs/sources/approved_sources.yaml`.
-Tool and admin roles may read this endpoint.
+Lists approved source metadata from `configs/sources/approved_sources.yaml` and
+its included catalog files. Tool and admin roles may read this endpoint.
+
+Source entries may declare an `ingestion_mode`:
+
+- `feed_metadata`: RSS/Atom item title, summary/snippet, link, and date only.
+- `http_summary`: bounded fetch of a public HTTP page for A/open-fit sources.
+- `metadata_only`: no network fetch; the source can be selected and cited by
+  registry metadata only.
 
 ```text
 POST /research/query
@@ -92,6 +99,7 @@ Example response shape:
   fetchable.
 - Fetchable source types are `rss` and `http`.
 - `web_query` sources are not fetched by the gateway.
+- C/licensed sources are kept metadata-only by registry policy.
 - URL schemes are limited to `http` and `https`.
 - Resolved private, loopback, link-local, multicast, reserved, and unspecified
   addresses are blocked.
@@ -133,3 +141,20 @@ Each research query writes a `research.query` audit event. Each topic-digest
 suggestion writes a `research.topic_digest_suggest` audit event. Events contain
 source IDs, item count, error count, and a redacted query preview. They do not
 store credentials, raw prompts, approval nonces, or full external documents.
+
+## Source Proposals
+
+Bragi and Yggdrasil can propose new approved sources through:
+
+```text
+POST /sources/propose
+GET /source-proposals
+POST /source-proposals/{proposal_id}/approve
+POST /source-proposals/{proposal_id}/apply
+```
+
+Tool-role callers may propose sources but cannot approve them. Admin approval
+requires the nonce shown once by the API. Applying a source proposal does not
+let the API mutate the checked-in registry from inside the container; it returns
+the reviewed YAML entry and operator instructions so the source can be added
+through normal repository review and deployment.

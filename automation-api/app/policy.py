@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import re
 from pathlib import Path
 from typing import Any
 
@@ -153,8 +155,124 @@ def load_source_registry(policy: dict[str, Any]) -> SourceRegistryConfig:
         registry_path = policy_file.parent / registry_path
     if not registry_path.exists():
         raise FileNotFoundError(registry_path)
-    data = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
-    return SourceRegistryConfig.model_validate(data)
+    sources = load_source_registry_sources(registry_path, visited=set())
+    return SourceRegistryConfig.model_validate({"version": 1, "sources": sources})
+
+
+def load_source_registry_sources(path: Path, *, visited: set[Path]) -> list[dict[str, Any]]:
+    resolved = path.resolve()
+    if resolved in visited:
+        raise ValueError(f"recursive source registry include: {path}")
+    visited.add(resolved)
+    if path.suffix.lower() == ".tsv":
+        return source_rows_from_tsv(path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    registry = SourceRegistryConfig.model_validate(data)
+    sources = [source.model_dump(mode="json") for source in registry.sources]
+    for include_file in registry.include_files:
+        sources.extend(load_source_registry_sources(path.parent / include_file, visited=visited))
+    return sources
+
+
+def source_rows_from_tsv(path: Path) -> list[dict[str, Any]]:
+    text = path.read_text(encoding="utf-8")
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    delimiter = "\t" if "\t" in first_line else "|"
+    rows = csv.DictReader(text.splitlines(), delimiter=delimiter)
+    sources: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for index, row in enumerate(rows, start=2):
+        if not row or not row.get("Title") or not row.get("URL"):
+            continue
+        source_id = unique_source_id(slug_source_id(str(row["Title"])), used_ids)
+        used_ids.add(source_id)
+        ai_safe_fit = str(row.get("AI-safe fit") or "").strip()
+        source_type_label = str(row.get("Source type") or "").strip()
+        sources.append(
+            {
+                "id": source_id,
+                "name": str(row["Title"]).strip(),
+                "type": source_config_type(source_type_label, str(row["URL"])),
+                "url": str(row["URL"]).strip(),
+                "categories": source_categories_from_row(row),
+                "trust_level": trust_level_from_ai_fit(ai_safe_fit),
+                "enabled": True,
+                "max_items": 5,
+                "description": str(row.get("Brief description") or "").strip(),
+                "region": str(row.get("Region") or "").strip(),
+                "languages": language_values(str(row.get("Language(s)") or "")),
+                "source_type_label": source_type_label,
+                "update_cadence": str(row.get("Update cadence") or "").strip(),
+                "ingestion_notes": str(row.get("Ingestion / license notes") or "").strip(),
+                "ai_safe_fit": ai_safe_fit,
+                "ingestion_mode": ingestion_mode_from_row(source_type_label, str(row["URL"]), ai_safe_fit),
+            }
+        )
+    return sources
+
+
+def source_config_type(source_type_label: str, url: str) -> str:
+    haystack = f"{source_type_label} {url}".lower()
+    if "rss" in haystack or "feed" in haystack or url.endswith((".rss", ".rdf", ".xml")):
+        return "rss"
+    return "http"
+
+
+def ingestion_mode_from_row(source_type_label: str, url: str, ai_safe_fit: str) -> str:
+    if source_config_type(source_type_label, url) == "rss":
+        return "feed_metadata"
+    if ai_safe_fit.strip().startswith("A"):
+        return "http_summary"
+    return "metadata_only"
+
+
+def trust_level_from_ai_fit(ai_safe_fit: str) -> str:
+    if ai_safe_fit.strip().startswith("A"):
+        return "ai_safe_a_open"
+    if ai_safe_fit.strip().startswith("C"):
+        return "ai_safe_c_metadata_only"
+    return "ai_safe_b_terms_check"
+
+
+def source_categories_from_row(row: dict[str, str]) -> list[str]:
+    values: list[str] = ["preapproved"]
+    for key in ("Category", "Subcategory"):
+        values.extend(slug_source_id(part) for part in re.split(r"[:/]", str(row.get(key) or "")) if part.strip())
+    for value in language_values(str(row.get("Language(s)") or "")):
+        values.append(f"language_{slug_source_id(value)}")
+    for value in re.split(r"[/,]", str(row.get("Region") or "")):
+        if value.strip():
+            values.append(f"region_{slug_source_id(value)}")
+    deduped: list[str] = []
+    for value in values:
+        if len(value) >= 3 and value not in deduped:
+            deduped.append(value[:127])
+    return deduped or ["preapproved"]
+
+
+def language_values(value: str) -> list[str]:
+    normalized = value.replace("+", "/").replace("regional editions", "regional")
+    return [item.strip() for item in re.split(r"[/,]", normalized) if item.strip()]
+
+
+def slug_source_id(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
+    slug = re.sub(r"_+", "_", slug)
+    if not slug or len(slug) < 3:
+        slug = "source"
+    if not re.match(r"^[a-z0-9]", slug):
+        slug = f"source_{slug}"
+    return slug[:120]
+
+
+def unique_source_id(source_id: str, used_ids: set[str]) -> str:
+    if source_id not in used_ids:
+        return source_id
+    for suffix in range(2, 1000):
+        candidate = f"{source_id[:115]}_{suffix}"
+        if candidate not in used_ids:
+            return candidate
+    raise ValueError(f"could not generate unique source id for {source_id}")
 
 
 def validate_task_sources(task: TaskConfig, policy: dict[str, Any]) -> list[str]:

@@ -59,6 +59,7 @@ class CapabilityDefinition(BaseModel):
     required_slots: list[str] = Field(default_factory=list)
     optional_slots: list[str] = Field(default_factory=list)
     allowed_source_ids: list[str] = Field(default_factory=list)
+    allow_any_approved_source: bool = False
     allowed_check_ids: list[str] = Field(default_factory=list)
     allowed_webhook_ids: list[str] = Field(default_factory=list)
     safety_rules: list[str] = Field(default_factory=list)
@@ -314,14 +315,16 @@ def validate_slots(intent: CanonicalIntent, capability: CapabilityDefinition) ->
 def validate_capability_specific_slots(slots: dict[str, Any], capability: CapabilityDefinition) -> list[str]:
     errors: list[str] = []
     if capability.id == "topic_digest.v1":
+        allowed_source_ids = source_ids_allowed_for_capability(capability)
         source_ids = list_slot(slots.get("source_ids"))
         for source_id in source_ids:
-            if source_id not in capability.allowed_source_ids:
+            if source_id not in allowed_source_ids:
                 errors.append(f"source_id {source_id} is not allowed for {capability.id}")
     if capability.id == "topic_digest.modify_subjects.v1":
+        allowed_source_ids = source_ids_allowed_for_capability(capability)
         for slot_name in ("add_source_ids", "remove_source_ids"):
             for source_id in list_slot(slots.get(slot_name)):
-                if source_id not in capability.allowed_source_ids:
+                if source_id not in allowed_source_ids:
                     errors.append(f"{slot_name} entry {source_id} is not allowed for {capability.id}")
         for slot_name in ("add_include", "remove_include"):
             for term in list_slot(slots.get(slot_name)):
@@ -341,6 +344,13 @@ def validate_capability_specific_slots(slots: dict[str, Any], capability: Capabi
         if webhook_id not in capability.allowed_webhook_ids:
             errors.append(f"webhook_id {webhook_id} is not allowed for {capability.id}")
     return errors
+
+
+def source_ids_allowed_for_capability(capability: CapabilityDefinition) -> set[str]:
+    if capability.allow_any_approved_source:
+        policy = load_policy()
+        return {source.id for source in load_source_registry(policy).sources if source.enabled}
+    return set(capability.allowed_source_ids)
 
 
 def build_yggdrasil_request(intent: CanonicalIntent, capability: CapabilityDefinition) -> dict[str, Any]:

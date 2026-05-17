@@ -17,7 +17,11 @@ def test_sources_endpoint_lists_approved_public_sources(client):
 
     assert response.status_code == 200
     sources = response.json()
-    assert {source["id"] for source in sources} >= {"open_webui_releases", "docker_blog"}
+    by_id = {source["id"]: source for source in sources}
+    assert set(by_id) >= {"open_webui_releases", "docker_blog", "cisa_news_events", "wikipedia", "handelsblatt"}
+    assert by_id["handelsblatt"]["ingestion_mode"] == "metadata_only"
+    assert by_id["cisa_news_events"]["ingestion_mode"] == "http_summary"
+    assert by_id["wikipedia"]["ai_safe_fit"].startswith("A")
     assert all("token" not in source for source in sources)
 
 
@@ -62,6 +66,33 @@ def test_research_query_fetches_approved_rss_and_caches_items(client, monkeypatc
     cached = client.get("/research/items?source_id=open_webui_releases", headers=TOOL_HEADERS)
     assert cached.status_code == 200
     assert cached.json()[0]["id"] == body["items"][0]["id"]
+
+
+def test_research_metadata_only_source_does_not_fetch_network(client, monkeypatch):
+    from app.services import research_service
+
+    called = False
+
+    def fake_get(url, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("metadata-only sources must not be fetched")
+
+    monkeypatch.setattr(research_service.httpx, "get", fake_get)
+
+    response = client.post(
+        "/research/query",
+        headers=TOOL_HEADERS,
+        json={"source_ids": ["handelsblatt"], "query": "business news", "limit": 5, "refresh": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert called is False
+    assert body["source_ids"] == ["handelsblatt"]
+    assert body["item_count"] == 1
+    assert body["items"][0]["title"] == "Handelsblatt"
+    assert body["items"][0]["metadata"]["ingestion_mode"] == "metadata_only"
 
 
 def test_research_topic_digest_suggestion_returns_slots_not_task(client, monkeypatch):

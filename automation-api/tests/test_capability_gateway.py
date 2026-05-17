@@ -137,6 +137,21 @@ def test_gateway_accepts_topic_digest_subject_change_intent(client):
     assert body["confirmation_summary"]["change_type"] == "topic_digest_subjects"
 
 
+def test_gateway_accepts_any_enabled_approved_source_from_catalog(client):
+    digest = topic_digest_intent(slots={"source_ids": ["cisa_news_events"], "include": ["CISA"]})
+    subject_change = topic_digest_subject_change_intent(slots={"add_source_ids": ["nasa_news"]})
+
+    digest_response = client.post("/capabilities/prepare-yggdrasil-request", headers=TOOL_HEADERS, json=digest)
+    subject_response = client.post("/capabilities/prepare-yggdrasil-request", headers=TOOL_HEADERS, json=subject_change)
+
+    assert digest_response.status_code == 200
+    assert digest_response.json()["outcome"] == "ACCEPT"
+    assert digest_response.json()["yggdrasil_request"]["template_values"]["source_ids"] == ["cisa_news_events"]
+    assert subject_response.status_code == 200
+    assert subject_response.json()["outcome"] == "ACCEPT"
+    assert subject_response.json()["yggdrasil_request"]["change"]["add_source_ids"] == ["nasa_news"]
+
+
 def test_gateway_requires_missing_slots_and_user_confirmation(client):
     missing = server_health_intent(slots={"check_ids": []})
     unconfirmed = server_health_intent(user_confirmation_obtained=False)

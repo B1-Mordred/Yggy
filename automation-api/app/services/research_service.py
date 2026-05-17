@@ -61,6 +61,14 @@ def source_to_dict(source: ApprovedSourceConfig) -> dict[str, Any]:
             "trust_level": source.trust_level,
             "enabled": source.enabled,
             "max_items": source.max_items,
+            "description": source.description,
+            "region": source.region,
+            "languages": list(source.languages),
+            "source_type_label": source.source_type_label,
+            "update_cadence": source.update_cadence,
+            "ingestion_notes": source.ingestion_notes,
+            "ai_safe_fit": source.ai_safe_fit,
+            "ingestion_mode": source.ingestion_mode,
         }
     )
 
@@ -229,7 +237,20 @@ def query_matching_sources(sources: list[ApprovedSourceConfig], query: str | Non
         return []
     matched: list[ApprovedSourceConfig] = []
     for source in sources:
-        haystack = " ".join([source.id, source.name, source.trust_level, *source.categories]).lower()
+        haystack = " ".join(
+            [
+                source.id,
+                source.name,
+                source.trust_level,
+                source.description,
+                source.region,
+                source.source_type_label,
+                source.update_cadence,
+                source.ai_safe_fit,
+                *source.languages,
+                *source.categories,
+            ]
+        ).lower()
         normalized = haystack.replace("_", " ").replace("-", " ")
         if any(term in normalized for term in terms):
             matched.append(source)
@@ -265,13 +286,20 @@ def fetch_source_items(
 ) -> list[ResearchItemModel]:
     if source.type not in {"rss", "http"} or not source.url:
         raise ResearchError(f"source {source.id} is not a fetchable public HTTP/RSS source")
+    if source.ingestion_mode == "metadata_only":
+        return [store_research_item(session, source, metadata_only_item(source))]
     validate_public_source_url(source.url, resolver=resolver)
     active_fetcher = fetcher or httpx.get
     response = active_fetcher(source.url, timeout=20, follow_redirects=True, headers={"User-Agent": "YggyResearchGateway/0.1"})
     response.raise_for_status()
     body = response.text[:HTTP_BODY_LIMIT]
     limit = min(int(source.max_items or request.limit), request.limit)
-    raw_items = parse_rss_items(body, source, limit=limit * 2) if source.type == "rss" else [http_page_item(body, source)]
+    if source.type == "rss":
+        raw_items = parse_rss_items(body, source, limit=limit * 2)
+    elif source.ingestion_mode == "http_summary":
+        raw_items = [http_page_item(body, source)]
+    else:
+        raw_items = [metadata_only_item(source)]
     models: list[ResearchItemModel] = []
     for raw_item in raw_items[:limit]:
         model = store_research_item(session, source, raw_item)
@@ -347,6 +375,15 @@ def http_page_item(body: str, source: ApprovedSourceConfig) -> dict[str, Any]:
     }
 
 
+def metadata_only_item(source: ApprovedSourceConfig) -> dict[str, Any]:
+    return {
+        "title": source.name,
+        "summary": source.description or "Approved source metadata only; full text ingestion is not enabled for this source.",
+        "url": source.url or "",
+        "published": "",
+    }
+
+
 def child_text(element: ET.Element, names: tuple[str, ...]) -> str:
     for child in list(element):
         local_name = child.tag.rsplit("}", 1)[-1].lower()
@@ -382,6 +419,13 @@ def store_research_item(session: Session, source: ApprovedSourceConfig, item: di
     metadata = redact_secrets(
         {
             "categories": list(source.categories),
+            "description": source.description,
+            "region": source.region,
+            "languages": list(source.languages),
+            "source_type_label": source.source_type_label,
+            "update_cadence": source.update_cadence,
+            "ai_safe_fit": source.ai_safe_fit,
+            "ingestion_mode": source.ingestion_mode,
             "source_content_is_untrusted": True,
         }
     )

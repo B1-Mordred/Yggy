@@ -409,6 +409,20 @@ class TaskChangeProposalReject(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+class SourceProposalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: ApprovedSourceConfig
+    summary: str = Field(default="", max_length=1200)
+    requested_by: str = Field(default="bragi", min_length=1, max_length=128)
+
+
+class SourceProposalReject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=500)
+
+
 class TopicConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -441,6 +455,14 @@ class ApprovedSourceConfig(BaseModel):
     trust_level: str = "approved"
     enabled: bool = True
     max_items: int | None = Field(default=None, ge=1, le=100)
+    description: str = ""
+    region: str = ""
+    languages: list[str] = Field(default_factory=list)
+    source_type_label: str = ""
+    update_cadence: str = ""
+    ingestion_notes: str = ""
+    ai_safe_fit: str = ""
+    ingestion_mode: str = "feed_metadata"
 
     @field_validator("id")
     @classmethod
@@ -464,6 +486,18 @@ class ApprovedSourceConfig(BaseModel):
             raise ValueError("source trust_level must be slug-like")
         return value
 
+    @field_validator("languages")
+    @classmethod
+    def languages_must_be_plain(cls, value: list[str]) -> list[str]:
+        return [str(item).strip()[:32] for item in value if str(item).strip()]
+
+    @field_validator("ingestion_mode")
+    @classmethod
+    def ingestion_mode_must_be_known(cls, value: str) -> str:
+        if value not in {"feed_metadata", "http_summary", "metadata_only"}:
+            raise ValueError("source ingestion_mode must be feed_metadata, http_summary, or metadata_only")
+        return value
+
     @model_validator(mode="after")
     def validate_source(self) -> "ApprovedSourceConfig":
         SourceConfig(type=self.type, url=self.url, query=self.query)
@@ -474,7 +508,21 @@ class SourceRegistryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = 1
+    include_files: list[str] = Field(default_factory=list)
     sources: list[ApprovedSourceConfig] = Field(default_factory=list)
+
+    @field_validator("include_files")
+    @classmethod
+    def include_files_must_be_plain(cls, value: list[str]) -> list[str]:
+        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        if len(cleaned) != len(value):
+            raise ValueError("source registry include_files entries may not be empty")
+        for item in cleaned:
+            if item.startswith("/") or ".." in item.split("/"):
+                raise ValueError("source registry include_files must be relative paths below the registry directory")
+            if not item.endswith((".yaml", ".yml", ".tsv")):
+                raise ValueError("source registry include_files entries must be yaml/yml/tsv files")
+        return cleaned
 
     @model_validator(mode="after")
     def validate_registry(self) -> "SourceRegistryConfig":

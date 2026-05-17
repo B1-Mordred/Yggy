@@ -38,6 +38,13 @@ Each approved source carries a trust level, categories, enabled flag, and
 optional per-source item cap. The worker records that metadata in each digest run
 and refuses to fetch disabled or unapproved sources at execution time.
 
+The approved source registry can include YAML or TSV catalog files through
+`include_files`. `configs/sources/preapproved_sources.tsv` contains the
+operator-preapproved public-source catalog. Its AI-safe fit labels are converted
+into conservative ingestion modes: licensed/C sources are metadata-only, RSS
+feeds use feed metadata/snippets, and high-fit/open HTTP sources may use bounded
+HTTP summaries.
+
 The same source registry powers the read-only research gateway. Bragi may ask
 Yggy to fetch or read cached public items from enabled `rss` and `http` source
 IDs, but it does not receive arbitrary browsing access. Research responses are

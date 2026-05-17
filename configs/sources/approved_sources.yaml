@@ -1,5 +1,8 @@
 version: 1
 
+include_files:
+  - preapproved_sources.tsv
+
 sources:
   - id: open_webui_releases
     name: Open WebUI releases

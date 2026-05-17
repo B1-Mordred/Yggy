@@ -92,6 +92,22 @@ class TaskChangeProposalModel(Base):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SourceProposalModel(Base):
+    __tablename__ = "source_proposals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    risk: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    nonce_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RunModel(Base):
     __tablename__ = "runs"
 

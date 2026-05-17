@@ -65,6 +65,7 @@ capabilities:
       - include
       - exclude
       - max_items
+    allow_any_approved_source: true
     allowed_source_ids:
       - open_webui_releases
       - ollama_releases
@@ -101,6 +102,7 @@ capabilities:
       - add_include
       - remove_include
       - output_target
+    allow_any_approved_source: true
     allowed_source_ids:
       - open_webui_releases
       - ollama_releases

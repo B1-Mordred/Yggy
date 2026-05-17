@@ -51,6 +51,24 @@ def web_query_source(**overrides) -> ApprovedSource:
     return ApprovedSource(**values)
 
 
+def http_source(**overrides) -> ApprovedSource:
+    values = {
+        "id": "example_http",
+        "name": "Example HTTP",
+        "type": "http",
+        "url": "https://example.com/",
+        "categories": ["preapproved"],
+        "trust_level": "ai_safe_b_terms_check",
+        "enabled": True,
+        "max_items": 1,
+        "description": "Example approved HTTP source.",
+        "ingestion_mode": "metadata_only",
+        "ai_safe_fit": "B - terms-check/variable",
+    }
+    values.update(overrides)
+    return ApprovedSource(**values)
+
+
 def test_topic_digest_requires_sources_when_required():
     with pytest.raises(ValueError):
         run_topic_digest({"name": "Digest", "sources": [], "policy": {"require_sources": True}})
@@ -115,6 +133,56 @@ def test_topic_digest_web_query_item_is_data_only():
     assert result["items"][0]["type"] == "web_query"
     assert result["items"][0]["title"] == "Web query configured"
     assert result["items"][0]["source_id"] == "example_query"
+
+
+def test_topic_digest_metadata_only_http_source_does_not_fetch():
+    called = False
+
+    def http_fetcher(url: str, timeout: int) -> str:
+        nonlocal called
+        called = True
+        raise AssertionError("metadata-only HTTP source should not be fetched")
+
+    result = run_topic_digest(
+        {
+            "name": "Digest",
+            "sources": [{"source_id": "example_http", "type": "http", "url": "https://example.com/"}],
+            "filters": {"include": ["Example"], "exclude": []},
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True},
+        },
+        http_fetcher=http_fetcher,
+        source_registry=registry(http_source()),
+    )
+
+    assert called is False
+    assert result["items"][0]["title"] == "Example HTTP"
+    assert result["items"][0]["source_ingestion_mode"] == "metadata_only"
+    assert result["source_health"][0]["ingestion_mode"] == "metadata_only"
+
+
+def test_topic_digest_http_summary_source_fetches_bounded_page():
+    calls = []
+
+    def http_fetcher(url: str, timeout: int) -> str:
+        calls.append((url, timeout))
+        return "<html><head><title>CISA advisory</title></head><body>Known exploited vulnerability update.</body></html>"
+
+    result = run_topic_digest(
+        {
+            "name": "Digest",
+            "sources": [{"source_id": "example_http", "type": "http", "url": "https://example.com/"}],
+            "filters": {"include": ["CISA"], "exclude": []},
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True, "timeout_seconds": 30},
+        },
+        http_fetcher=http_fetcher,
+        source_registry=registry(http_source(ingestion_mode="http_summary", trust_level="ai_safe_a_open")),
+    )
+
+    assert calls == [("https://example.com/", 30)]
+    assert result["items"][0]["title"] == "CISA advisory"
+    assert result["items"][0]["source_ingestion_mode"] == "http_summary"
 
 
 def test_topic_digest_uses_enabled_summarizer():

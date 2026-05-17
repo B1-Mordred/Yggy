@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from html import unescape
 
+from worker.clients.http_client import fetch_text
 from worker.clients.llm_client import OllamaSummarizer
 from worker.clients.rss_client import fetch_rss
 from worker.source_registry import ApprovedSource, SourceRegistry
@@ -80,6 +81,34 @@ def source_item_metadata(approved_source: ApprovedSource) -> dict:
         "source_name": approved_source.name,
         "source_trust_level": approved_source.trust_level,
         "source_categories": list(approved_source.categories),
+        "source_ai_safe_fit": approved_source.ai_safe_fit,
+        "source_ingestion_mode": approved_source.ingestion_mode,
+    }
+
+
+def metadata_only_item(approved_source: ApprovedSource) -> dict:
+    return {
+        "title": approved_source.name,
+        "summary": approved_source.description or "Approved source metadata only; full text ingestion is not enabled.",
+        "link": approved_source.url or "",
+        "published": "",
+        "source": approved_source.url or approved_source.query or approved_source.id,
+        "type": approved_source.type,
+        **source_item_metadata(approved_source),
+    }
+
+
+def http_page_item(body: str, approved_source: ApprovedSource) -> dict:
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
+    title = clean_text(title_match.group(1), limit=300) if title_match else approved_source.name
+    return {
+        "title": title or approved_source.name,
+        "summary": clean_text(body, limit=500),
+        "link": approved_source.url or "",
+        "published": "",
+        "source": approved_source.url or approved_source.id,
+        "type": "http",
+        **source_item_metadata(approved_source),
     }
 
 
@@ -92,6 +121,7 @@ def source_label(source: dict, approved_source: ApprovedSource | None = None) ->
 def collect_items(
     task_config: dict,
     rss_fetcher: Callable[[str, int], str] = fetch_rss,
+    http_fetcher: Callable[[str, int], str] = fetch_text,
     source_registry: SourceRegistry | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     policy = task_config.get("policy", {})
@@ -115,6 +145,8 @@ def collect_items(
             "type": approved_source.type if approved_source else source.get("type"),
             "url": approved_source.url if approved_source else source.get("url"),
             "trust_level": approved_source.trust_level if approved_source else None,
+            "ai_safe_fit": approved_source.ai_safe_fit if approved_source else None,
+            "ingestion_mode": approved_source.ingestion_mode if approved_source else None,
             "status": "pending",
             "item_count": 0,
         }
@@ -144,6 +176,45 @@ def collect_items(
                         health["item_count"] += 1
                     if len(items) >= max_items or health["item_count"] >= source_item_limit:
                         break
+                health["status"] = "ok"
+                source_health.append(health)
+            except Exception as exc:
+                health.update({"status": "error", "error": exc.__class__.__name__})
+                source_health.append(health)
+                errors.append(
+                    {
+                        "source": approved_source.id,
+                        "source_id": approved_source.id,
+                        "source_name": approved_source.name,
+                        "trust_level": approved_source.trust_level,
+                        "error": exc.__class__.__name__,
+                    }
+                )
+        elif source_type == "http":
+            try:
+                if approved_source.ingestion_mode == "metadata_only":
+                    candidate_items = [metadata_only_item(approved_source)]
+                elif approved_source.ingestion_mode == "http_summary":
+                    url = source.get("url", "")
+                    body = http_fetcher(url, int(task_config.get("runtime", {}).get("timeout_seconds", 120)))
+                    candidate_items = [http_page_item(body, approved_source)]
+                else:
+                    health.update({"status": "blocked", "error": "unsupported_ingestion_mode"})
+                    source_health.append(health)
+                    errors.append(
+                        {
+                            "source": approved_source.id,
+                            "source_id": approved_source.id,
+                            "source_name": approved_source.name,
+                            "trust_level": approved_source.trust_level,
+                            "error": "unsupported_ingestion_mode",
+                        }
+                    )
+                    continue
+                for item in candidate_items[:source_item_limit]:
+                    if item_matches_filters(item, filters):
+                        items.append(item)
+                        health["item_count"] += 1
                 health["status"] = "ok"
                 source_health.append(health)
             except Exception as exc:
@@ -222,7 +293,8 @@ def render_digest(task_config: dict, items: list[dict], errors: list[dict], sour
             detail = f"; {health.get('error')}" if health.get("error") else ""
             lines.append(
                 f"- `{health.get('source')}`: {health.get('status')} "
-                f"({health.get('item_count', 0)} items; trust: {health.get('trust_level') or 'n/a'}{detail})"
+                f"({health.get('item_count', 0)} items; trust: {health.get('trust_level') or 'n/a'}; "
+                f"mode: {health.get('ingestion_mode') or 'n/a'}{detail})"
             )
 
     source_refs = [item.get("link") or item.get("source") for item in items if item.get("link") or item.get("source")]
@@ -233,6 +305,7 @@ def render_digest(task_config: dict, items: list[dict], errors: list[dict], sour
 def run_topic_digest(
     task_config: dict,
     rss_fetcher: Callable[[str, int], str] = fetch_rss,
+    http_fetcher: Callable[[str, int], str] = fetch_text,
     summarizer: OllamaSummarizer | None = None,
     source_registry: SourceRegistry | None = None,
 ) -> dict:
@@ -241,7 +314,12 @@ def run_topic_digest(
     if policy.get("require_sources", True) and not sources:
         raise ValueError("topic digest requires at least one source")
 
-    items, errors, source_health = collect_items(task_config, rss_fetcher=rss_fetcher, source_registry=source_registry)
+    items, errors, source_health = collect_items(
+        task_config,
+        rss_fetcher=rss_fetcher,
+        http_fetcher=http_fetcher,
+        source_registry=source_registry,
+    )
     approved_source_count = sum(1 for health in source_health if health.get("status") != "blocked")
     if policy.get("require_sources", True) and approved_source_count == 0:
         raise ValueError("topic digest has no approved enabled sources")
