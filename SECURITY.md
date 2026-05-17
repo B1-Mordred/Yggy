@@ -64,6 +64,7 @@ Security expectations for LAN exposure:
 
 - Bind to a specific LAN address, not `0.0.0.0`.
 - Keep `AUTOMATION_OPS_DASHBOARD_PASSWORD` long and unique.
+- Restrict the published API/dashboard port with UFW or equivalent host firewall rules.
 - Do not expose `8088` through router port forwarding or a public reverse proxy.
 - Treat `/docs` and `/openapi.json` as visible to LAN clients on that interface.
 - Never place `AUTOMATION_ADMIN_API_KEY` or other API keys in browser bookmarks, chat, Open WebUI Knowledge, or task YAML.

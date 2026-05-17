@@ -114,3 +114,32 @@ http://192.168.2.2:8088/ops
 ```
 
 LAN exposure publishes the whole automation API port, not only the dashboard. The dashboard still requires Basic auth, and write/API endpoints still require API keys, but `/health`, `/docs`, and `/openapi.json` are reachable on that interface. Do not expose this port to untrusted networks or the public internet.
+
+### LAN Firewall Scope
+
+Use UFW to restrict the published API/dashboard port to trusted LAN clients. The helper defaults to a dry-run:
+
+```bash
+scripts/configure_lan_firewall.sh --lan-cidr 192.168.2.0/24
+```
+
+Apply the port-specific rule set and enable UFW:
+
+```bash
+scripts/configure_lan_firewall.sh --apply --enable-ufw --lan-cidr 192.168.2.0/24
+```
+
+The default script mode preserves existing inbound services by setting UFW's incoming policy to `allow` and then adding explicit rules for port `8088`:
+
+```text
+allow 8088/tcp from 192.168.2.0/24
+deny 8088/tcp from anywhere else
+```
+
+For stricter per-device access, use a single-client CIDR such as:
+
+```bash
+scripts/configure_lan_firewall.sh --apply --enable-ufw --lan-cidr 192.168.2.25/32
+```
+
+Use `--default-deny-incoming` only after adding allow rules for every other service that must remain reachable.
