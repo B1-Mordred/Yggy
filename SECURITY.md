@@ -55,3 +55,15 @@ Never put secrets in:
 - logs
 
 Use `.env`, Docker secrets, n8n credentials, or a local secret manager.
+
+## LAN Exposure
+
+Compose publishes the automation API on `127.0.0.1` by default. If `docker-compose.lan.yml` is enabled with `AUTOMATION_API_LAN_PUBLISHED_HOST`, the operations dashboard becomes reachable from that LAN, but the entire API port is published on that interface.
+
+Security expectations for LAN exposure:
+
+- Bind to a specific LAN address, not `0.0.0.0`.
+- Keep `AUTOMATION_OPS_DASHBOARD_PASSWORD` long and unique.
+- Do not expose `8088` through router port forwarding or a public reverse proxy.
+- Treat `/docs` and `/openapi.json` as visible to LAN clients on that interface.
+- Never place `AUTOMATION_ADMIN_API_KEY` or other API keys in browser bookmarks, chat, Open WebUI Knowledge, or task YAML.

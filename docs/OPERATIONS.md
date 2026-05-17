@@ -72,7 +72,7 @@ curl -sS -X POST http://127.0.0.1:8088/maintenance/retention \
 
 ## Local Operations Dashboard
 
-The API serves a read-only localhost dashboard at:
+The API serves a read-only dashboard at:
 
 ```text
 http://127.0.0.1:8088/ops
@@ -88,4 +88,29 @@ AUTOMATION_OPS_DASHBOARD_USER=admin
 AUTOMATION_OPS_DASHBOARD_PASSWORD=replace-with-long-random-dashboard-password
 ```
 
-Keep the dashboard bound to localhost unless it is placed behind a properly authenticated reverse proxy.
+By default Compose publishes the API only on localhost:
+
+```text
+127.0.0.1:8088
+```
+
+To make the dashboard reachable from a trusted LAN while keeping localhost access for local services, set the host's LAN address:
+
+```text
+AUTOMATION_API_LAN_PUBLISHED_HOST=192.168.2.2
+AUTOMATION_API_LAN_PUBLISHED_PORT=8088
+```
+
+Deploy with the LAN override:
+
+```bash
+docker compose -f docker-compose.automation.yml -f docker-compose.lan.yml up -d automation-api
+```
+
+Then use:
+
+```text
+http://192.168.2.2:8088/ops
+```
+
+LAN exposure publishes the whole automation API port, not only the dashboard. The dashboard still requires Basic auth, and write/API endpoints still require API keys, but `/health`, `/docs`, and `/openapi.json` are reachable on that interface. Do not expose this port to untrusted networks or the public internet.

@@ -1,0 +1,4 @@
+services:
+  automation-api:
+    ports:
+      - "${AUTOMATION_API_LAN_PUBLISHED_HOST:?set AUTOMATION_API_LAN_PUBLISHED_HOST to the host LAN IP}:${AUTOMATION_API_LAN_PUBLISHED_PORT:-8088}:8088"

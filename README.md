@@ -55,6 +55,14 @@ docker compose -f docker-compose.automation.yml up -d automation-mysql automatio
 curl http://127.0.0.1:8088/health
 ```
 
+The API port is published on localhost by default. For trusted LAN access to the operations dashboard, set `AUTOMATION_API_LAN_PUBLISHED_HOST` in `.env` to the host's LAN address and include the LAN override:
+
+```bash
+docker compose -f docker-compose.automation.yml -f docker-compose.lan.yml up -d automation-api
+```
+
+Then open `http://<lan-ip>:8088/ops`.
+
 Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_INTEGRATION.md](docs/OPENWEBUI_HERMES_INTEGRATION.md).
 
 ## Defaults
