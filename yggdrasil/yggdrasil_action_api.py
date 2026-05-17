@@ -998,10 +998,11 @@ def format_draft_response(status_code: int, body: Any, draft: dict[str, Any], *,
         task_id = draft['id']
         get_status, existing = automation_request('GET', f'/tasks/{task_id}')
         if get_status == 200 and isinstance(existing, dict):
+            draft_label = 'Requested template values' if template_id else 'Current YAML shape for the requested draft'
             return (
                 f"Task `{task_id}` already exists, so I did not create a duplicate.\n\n"
                 f"{format_task(existing)}\n\n"
-                "Current YAML shape for the requested draft would be:\n"
+                f"{draft_label}:\n"
                 f"```yaml\n{to_yaml(draft)}\n```"
             )
     return f'Automation API rejected the draft with status `{status_code}`:\n\n```json\n{json.dumps(body, indent=2)}\n```'
