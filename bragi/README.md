@@ -40,7 +40,7 @@ Useful runtime settings:
 
 ```text
 BRAGI_GENERAL_CHAT_ENABLED=true
-BRAGI_CHAT_MODEL=qwen3.5:9b
+BRAGI_CHAT_MODEL=llama3.1:8b
 BRAGI_CHAT_TEMPERATURE=0.55
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
