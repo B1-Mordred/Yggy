@@ -123,6 +123,21 @@ python scripts/approve_task.py --approval-id <id> --nonce <nonce>
 Never paste `AUTOMATION_ADMIN_API_KEY` into Open WebUI, Hermes, a browser form,
 chat, Knowledge, task YAML, or logs.
 
+## Notify Pending Approvals
+
+Approval notifications can be sent to the whitelisted Discord `approvals`
+target without granting Discord approval authority:
+
+```bash
+python scripts/notify_pending_approvals.py --dry-run --all
+python scripts/notify_pending_approvals.py --approval-id <approval-id>
+```
+
+Live sends require either `--approval-id` or `--all`. Messages include the
+approval id, task, risk, actions, failure mode, and redacted config diff summary,
+but not the admin key, nonce hash, or approval nonce. Approve only through the
+local `/ops` UI or local CLI. See `docs/APPROVAL_NOTIFICATIONS.md`.
+
 ## Logs
 
 Run logs are stored through the API with secret-looking values redacted. Treat logs as potentially sensitive operational data.

@@ -78,6 +78,9 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
 For registry drift checks between Git YAML and live API state, see
 [docs/CONFIG_REGISTRY.md](docs/CONFIG_REGISTRY.md).
 
+For Discord notifications about pending approvals, see
+[docs/APPROVAL_NOTIFICATIONS.md](docs/APPROVAL_NOTIFICATIONS.md).
+
 ## Defaults
 
 - API framework: FastAPI
