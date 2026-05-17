@@ -48,3 +48,39 @@ def test_external_side_effect_below_l3_is_rejected(client):
     response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
     assert response.status_code == 422
     assert "external side effects require L3" in response.text
+
+
+def test_topic_digest_web_query_is_rejected_by_source_policy(client):
+    task = sample_task(
+        "bad_web_query",
+        sources=[{"type": "web_query", "query": "Open WebUI Ollama security"}],
+    )
+    response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
+    assert response.status_code == 422
+    assert "web_query sources are disabled" in response.text
+
+
+def test_topic_digest_unapproved_rss_is_rejected(client):
+    task = sample_task(
+        "bad_source",
+        sources=[{"source_id": "unknown_source", "type": "rss", "url": "https://example.com/feed.xml"}],
+    )
+    response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
+    assert response.status_code == 422
+    assert "not in the approved source registry" in response.text
+
+
+def test_topic_digest_source_id_must_match_registry_entry(client):
+    task = sample_task(
+        "bad_source_identity",
+        sources=[
+            {
+                "source_id": "open_webui_releases",
+                "type": "rss",
+                "url": "https://github.com/ollama/ollama/releases.atom",
+            }
+        ],
+    )
+    response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
+    assert response.status_code == 422
+    assert "does not match the configured source identity" in response.text

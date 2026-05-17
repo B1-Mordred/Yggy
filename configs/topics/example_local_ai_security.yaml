@@ -12,5 +12,15 @@ keywords:
   - n8n
   - local AI security
 sources:
-  - type: rss
-    url: https://example.com/feed.xml
+  - source_id: open_webui_releases
+    type: rss
+    url: https://github.com/open-webui/open-webui/releases.atom
+  - source_id: ollama_releases
+    type: rss
+    url: https://github.com/ollama/ollama/releases.atom
+  - source_id: n8n_releases
+    type: rss
+    url: https://github.com/n8n-io/n8n/releases.atom
+  - source_id: docker_blog
+    type: rss
+    url: https://www.docker.com/blog/feed/

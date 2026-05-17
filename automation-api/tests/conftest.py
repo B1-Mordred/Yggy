@@ -42,7 +42,13 @@ def sample_task(task_id: str, approval_level: str = "L1_NOTIFY_ONLY", **override
         "owner": "local_user",
         "created_by": "yggdrasil",
         "trigger": {"kind": "schedule", "cron": "0 8 * * 1-5", "timezone": "Europe/Berlin"},
-        "sources": [{"type": "rss", "url": "https://example.com/feed.xml"}],
+        "sources": [
+            {
+                "source_id": "open_webui_releases",
+                "type": "rss",
+                "url": "https://github.com/open-webui/open-webui/releases.atom",
+            }
+        ],
         "filters": {"include": ["Open WebUI"], "exclude": ["sponsored"]},
         "output": {"channel": "discord", "target": "briefings", "format": "5 bullets"},
         "policy": {

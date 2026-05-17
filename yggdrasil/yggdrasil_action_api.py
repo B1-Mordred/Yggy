@@ -554,8 +554,26 @@ def local_ai_security_briefing_draft(text: str) -> dict[str, Any]:
         'created_by': 'yggdrasil',
         'trigger': {'kind': 'schedule', 'cron': cron, 'timezone': timezone},
         'sources': [
-            {'type': 'web_query', 'query': 'Open WebUI Ollama Hermes Agent Docker n8n local AI security'},
-            {'type': 'web_query', 'query': 'self-hosted local LLM automation security approvals Docker'},
+            {
+                'source_id': 'open_webui_releases',
+                'type': 'rss',
+                'url': 'https://github.com/open-webui/open-webui/releases.atom',
+            },
+            {
+                'source_id': 'ollama_releases',
+                'type': 'rss',
+                'url': 'https://github.com/ollama/ollama/releases.atom',
+            },
+            {
+                'source_id': 'n8n_releases',
+                'type': 'rss',
+                'url': 'https://github.com/n8n-io/n8n/releases.atom',
+            },
+            {
+                'source_id': 'docker_blog',
+                'type': 'rss',
+                'url': 'https://www.docker.com/blog/feed/',
+            },
         ],
         'filters': {
             'include': ['Open WebUI', 'Ollama', 'Hermes', 'Docker', 'n8n', 'local AI security'],

@@ -49,3 +49,15 @@ Recommended Knowledge documents:
 - `project_watchlist.md`
 
 Do not include credentials, API keys, webhook URLs, cookies, tokens, private keys, or recovery codes.
+
+## Approved Sources
+
+Use Knowledge files for preferences and non-secret project notes only. The
+automation worker source allowlist lives in Git at
+`configs/sources/approved_sources.yaml`, and topic digest tasks must reference
+those entries with `source_id`.
+
+Yggdrasil should not invent broad `web_query` sources for topic digests. Drafts
+should use approved feed IDs such as `open_webui_releases`, `ollama_releases`,
+`n8n_releases`, and `docker_blog`, then ask for approval before enabling or
+changing recurring delivery.

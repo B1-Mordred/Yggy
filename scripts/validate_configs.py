@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
+if sys.prefix == sys.base_prefix and VENV_PYTHON.exists():
+    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), *sys.argv])
+
 sys.path.insert(0, str(ROOT / "automation-api"))
 
 from app.policy import PolicyViolation, load_policy, validate_policy_config, validate_task_policy  # noqa: E402

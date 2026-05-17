@@ -1,7 +1,7 @@
 id: daily_local_ai_security_briefing
 name: Daily Local AI Security Briefing
 type: topic_digest
-enabled: false
+enabled: true
 owner: local_user
 created_by: yggdrasil
 
@@ -11,16 +11,18 @@ trigger:
   timezone: Europe/Berlin
 
 sources:
-  - type: rss
+  - source_id: open_webui_releases
+    type: rss
     url: https://github.com/open-webui/open-webui/releases.atom
-  - type: rss
+  - source_id: ollama_releases
+    type: rss
     url: https://github.com/ollama/ollama/releases.atom
-  - type: rss
+  - source_id: n8n_releases
+    type: rss
     url: https://github.com/n8n-io/n8n/releases.atom
-  - type: rss
+  - source_id: docker_blog
+    type: rss
     url: https://www.docker.com/blog/feed/
-  - type: web_query
-    query: "Hermes Agent local AI automation security"
 
 filters:
   include:
@@ -48,6 +50,6 @@ policy:
   allow_filesystem_write: false
 
 runtime:
-  dry_run: true
+  dry_run: false
   timeout_seconds: 120
   retry_count: 1

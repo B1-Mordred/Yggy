@@ -6,7 +6,14 @@ from typing import Any
 import yaml
 
 from .config import get_settings
-from .schemas import ApprovalLevel, TaskConfig, approval_at_least
+from .schemas import (
+    ApprovalLevel,
+    SourceConfig,
+    SourceRegistryConfig,
+    TaskConfig,
+    _source_identity,
+    approval_at_least,
+)
 from .services.validation_service import find_secret_paths
 
 
@@ -32,6 +39,12 @@ def default_policy() -> dict[str, Any]:
             "admin_required": ["L2_LOCAL_WRITE", "L3_EXTERNAL_SIDE_EFFECT"],
             "manual_only": ["L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE"],
         },
+        "source_policy": {
+            "approved_sources_file": "",
+            "require_approved_sources_for_task_types": [],
+            "require_source_ids": False,
+            "allow_web_query_sources": True,
+        },
     }
 
 
@@ -42,6 +55,7 @@ def load_policy(path: str | None = None) -> dict[str, Any]:
     data = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
     merged = default_policy()
     merged.update(data)
+    merged["_policy_file"] = str(policy_path)
     return merged
 
 
@@ -56,6 +70,19 @@ def validate_policy_config(policy: dict[str, Any]) -> None:
         for level in thresholds.get(key, []):
             if level not in ApprovalLevel.__members__:
                 errors.append(f"unknown approval level in {key}: {level}")
+    source_policy = policy.get("source_policy", {})
+    if not isinstance(source_policy.get("require_approved_sources_for_task_types", []), list):
+        errors.append("source_policy.require_approved_sources_for_task_types must be a list")
+    if not isinstance(source_policy.get("require_source_ids", False), bool):
+        errors.append("source_policy.require_source_ids must be a boolean")
+    if not isinstance(source_policy.get("allow_web_query_sources", True), bool):
+        errors.append("source_policy.allow_web_query_sources must be a boolean")
+    source_registry_path = source_policy.get("approved_sources_file")
+    if source_registry_path:
+        try:
+            load_source_registry(policy)
+        except Exception as exc:
+            errors.append(f"approved source registry is invalid: {exc}")
     if errors:
         raise PolicyViolation(errors)
 
@@ -80,9 +107,63 @@ def validate_task_policy(task: TaskConfig, policy: dict[str, Any] | None = None)
         if task.output.target not in allowed:
             errors.append(f"discord target is not whitelisted: {task.output.target}")
 
+    source_policy = active_policy.get("source_policy", {})
+    required_task_types = set(source_policy.get("require_approved_sources_for_task_types", []))
+    if task.type in required_task_types:
+        errors.extend(validate_task_sources(task, active_policy))
+
     secret_paths = find_secret_paths(task.model_dump(mode="json"))
     if secret_paths:
         errors.append("plain-text secret-like values found at " + ", ".join(secret_paths))
 
     if errors:
         raise PolicyViolation(errors)
+
+
+def load_source_registry(policy: dict[str, Any]) -> SourceRegistryConfig:
+    source_policy = policy.get("source_policy", {})
+    registry_file = source_policy.get("approved_sources_file")
+    if not registry_file:
+        return SourceRegistryConfig(version=1, sources=[])
+    registry_path = Path(registry_file)
+    if not registry_path.is_absolute():
+        policy_file = Path(policy.get("_policy_file", get_settings().policy_file))
+        registry_path = policy_file.parent / registry_path
+    if not registry_path.exists():
+        raise FileNotFoundError(registry_path)
+    data = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    return SourceRegistryConfig.model_validate(data)
+
+
+def validate_task_sources(task: TaskConfig, policy: dict[str, Any]) -> list[str]:
+    source_policy = policy.get("source_policy", {})
+    allow_web_query = bool(source_policy.get("allow_web_query_sources", True))
+    require_source_ids = bool(source_policy.get("require_source_ids", False))
+    registry = load_source_registry(policy)
+    approved_by_id = {source.id: source for source in registry.sources if source.enabled}
+    approved_by_identity = {
+        _source_identity(SourceConfig(type=source.type, url=source.url, query=source.query)): source
+        for source in registry.sources
+        if source.enabled
+    }
+    errors: list[str] = []
+
+    for index, source in enumerate(task.sources):
+        location = f"sources[{index}]"
+        if source.type == "web_query" and not allow_web_query:
+            errors.append(f"{location}: web_query sources are disabled by source policy")
+        if require_source_ids and not source.source_id:
+            errors.append(f"{location}: source_id is required by source policy")
+            continue
+        if source.source_id:
+            approved = approved_by_id.get(source.source_id)
+        else:
+            approved = approved_by_identity.get(_source_identity(source))
+        if not approved:
+            detail = source.source_id or source.url or source.query or source.type
+            errors.append(f"{location}: source is not in the approved source registry: {detail}")
+            continue
+        approved_identity = _source_identity(SourceConfig(type=approved.type, url=approved.url, query=approved.query))
+        if _source_identity(source) != approved_identity:
+            errors.append(f"{location}: source_id {approved.id} does not match the configured source identity")
+    return errors

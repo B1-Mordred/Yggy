@@ -83,6 +83,7 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
 - Discord: dry-run by default
 - n8n: optional execution backend, not approval authority
 - Ollama summarizer: disabled by default
+- Topic digest sources: explicit approved-source registry
 
 ## Safety Model
 
@@ -90,6 +91,7 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
 - No Docker socket exposed to the API, worker, Hermes, or Open WebUI tools.
 - Separate tool, worker, and admin API keys.
 - L2+ approvals require an admin-controlled process.
+- Topic digests must use approved `source_id` entries instead of broad generic `web_query` sources.
 - Secrets stay in `.env`, Docker secrets, n8n credentials, or a local secret manager.
 - Task YAML, Open WebUI Knowledge, prompts, chat history, and logs must not contain secrets.
 

@@ -8,6 +8,12 @@
 4. Approve through the local CLI or local UI using the admin key.
 5. The worker executes only approved enabled tasks.
 
+The daily local AI/security briefing is an approved L1 notification task. It is
+scheduled for weekdays at 08:00 Europe/Berlin and sends to the whitelisted
+`briefings` Discord target. Its source list is restricted to enabled entries in
+`configs/sources/approved_sources.yaml`; broad `web_query` sources are blocked
+for topic digests by policy.
+
 ## Pause A Task
 
 ```bash

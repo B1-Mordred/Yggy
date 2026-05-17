@@ -37,3 +37,10 @@ network_policy:
     - automation-api
     - n8n
     - ollama
+
+source_policy:
+  approved_sources_file: sources/approved_sources.yaml
+  require_approved_sources_for_task_types:
+    - topic_digest
+  require_source_ids: true
+  allow_web_query_sources: false

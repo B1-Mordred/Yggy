@@ -61,12 +61,22 @@ class TriggerConfig(BaseModel):
 class SourceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    source_id: str | None = None
     type: str
     url: str | None = None
     query: str | None = None
 
+    @field_validator("source_id")
+    @classmethod
+    def source_id_must_be_slug(cls, value: str | None) -> str | None:
+        if value is not None and not SLUG_RE.match(value):
+            raise ValueError("source_id must be slug-like")
+        return value
+
     @model_validator(mode="after")
     def validate_source(self) -> "SourceConfig":
+        if self.type not in {"rss", "http", "web_query"}:
+            raise ValueError("source type must be rss, http, or web_query")
         if self.type in {"rss", "http"}:
             if not self.url:
                 raise ValueError(f"{self.type} source requires url")
@@ -174,6 +184,59 @@ class TopicConfig(BaseModel):
         if not SLUG_RE.match(value):
             raise ValueError("id must be slug-like")
         return value
+
+
+class ApprovedSourceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    type: str
+    url: str | None = None
+    query: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    trust_level: str = "approved"
+    enabled: bool = True
+    max_items: int | None = Field(default=None, ge=1, le=100)
+
+    @field_validator("id")
+    @classmethod
+    def id_must_be_slug(cls, value: str) -> str:
+        if not SLUG_RE.match(value):
+            raise ValueError("id must be slug-like")
+        return value
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "ApprovedSourceConfig":
+        SourceConfig(type=self.type, url=self.url, query=self.query)
+        return self
+
+
+class SourceRegistryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 1
+    sources: list[ApprovedSourceConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_registry(self) -> "SourceRegistryConfig":
+        if self.version != 1:
+            raise ValueError("approved_sources.yaml version must be 1")
+        ids = [source.id for source in self.sources]
+        if len(ids) != len(set(ids)):
+            raise ValueError("approved source ids must be unique")
+        keys = [_source_identity(source) for source in self.sources]
+        if len(keys) != len(set(keys)):
+            raise ValueError("approved source identities must be unique")
+        return self
+
+
+def _source_identity(source: SourceConfig | ApprovedSourceConfig) -> tuple[str, str]:
+    if source.type in {"rss", "http"}:
+        return source.type, source.url or ""
+    if source.type == "web_query":
+        return source.type, source.query or ""
+    return source.type, source.url or source.query or ""
 
 
 class ApprovalDecision(BaseModel):

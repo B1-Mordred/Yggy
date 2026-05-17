@@ -6,7 +6,7 @@ Task YAML is declarative and non-secret.
 id: daily_local_ai_security_briefing
 name: Daily Local AI Security Briefing
 type: topic_digest
-enabled: false
+enabled: true
 owner: local_user
 created_by: yggdrasil
 
@@ -16,10 +16,12 @@ trigger:
   timezone: Europe/Berlin
 
 sources:
-  - type: rss
-    url: https://example.com/feed.xml
-  - type: web_query
-    query: "Open WebUI Ollama Hermes Docker security"
+  - source_id: open_webui_releases
+    type: rss
+    url: https://github.com/open-webui/open-webui/releases.atom
+  - source_id: ollama_releases
+    type: rss
+    url: https://github.com/ollama/ollama/releases.atom
 
 filters:
   include:
@@ -43,7 +45,7 @@ policy:
   allow_filesystem_write: false
 
 runtime:
-  dry_run: true
+  dry_run: false
   timeout_seconds: 120
   retry_count: 1
 ```
@@ -63,6 +65,20 @@ The API rejects tasks when:
 - filesystem writes are requested below L2
 - Discord target is not whitelisted
 - source URL scheme is not `http` or `https`
+- topic digest sources are not listed in `configs/sources/approved_sources.yaml`
+- topic digest sources omit `source_id`
+- topic digest sources use `web_query` while source policy disables web queries
+
+## Approved Sources
+
+`configs/policies.yaml` points to `configs/sources/approved_sources.yaml`. The
+source registry is the allowlist for topic digest inputs. A task source must name
+an enabled `source_id`, and the configured URL/query must match that registry
+entry.
+
+This keeps source selection declarative and reviewable. Webpages, feeds, release
+notes, and other retrieved content remain untrusted data; they do not gain command
+authority by being approved as data sources.
 
 ## Secret References
 
