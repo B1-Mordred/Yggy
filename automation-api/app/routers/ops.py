@@ -1434,10 +1434,30 @@ DASHBOARD_HTML = f"""<!doctype html>
     .version-actions {{ margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }}
     .version-actions button {{ padding: 6px 9px; }}
     .version-actions button:disabled {{ cursor: not-allowed; opacity: 0.55; }}
+    .timeline {{
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }}
+    .timeline-item {{
+      display: grid;
+      grid-template-columns: minmax(150px, 210px) 1fr;
+      gap: 12px;
+      align-items: start;
+      border-left: 3px solid var(--line);
+      padding: 4px 0 4px 12px;
+    }}
+    .timeline-item.ok {{ border-left-color: var(--ok); }}
+    .timeline-item.warn {{ border-left-color: var(--warn); }}
+    .timeline-item.bad {{ border-left-color: var(--bad); }}
+    .timeline-time {{ color: var(--muted); font-size: 12px; }}
+    .timeline-main {{ min-width: 0; }}
+    .timeline-main .meta {{ margin-top: 3px; }}
     @media (max-width: 860px) {{
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .detail-grid {{ grid-template-columns: 1fr; }}
+      .timeline-item {{ grid-template-columns: 1fr; }}
     }}
     @media (max-width: 560px) {{
       .grid {{ grid-template-columns: 1fr; }}
@@ -1546,6 +1566,10 @@ DASHBOARD_HTML = f"""<!doctype html>
         </div>
         <div class="table-wrap"><table id="runs"></table></div>
         <div class="pager" id="run-pagination"></div>
+      </section>
+      <section class="section panel" id="run-timeline">
+        <h2>Run Timeline</h2>
+        <div class="empty">Load a run view to see the timeline.</div>
       </section>
       <section class="section panel" id="run-detail">
         <h2>Run Detail</h2>
@@ -2009,6 +2033,19 @@ DASHBOARD_HTML = f"""<!doctype html>
         button.addEventListener('click', () => revertTaskVersion(button));
       }});
     }}
+    function wireTaskTimelineButtons() {{
+      document.querySelectorAll('[data-task-timeline-id]').forEach(button => {{
+        button.addEventListener('click', () => showTaskTimeline(button.dataset.taskTimelineId));
+      }});
+    }}
+    function showTaskTimeline(taskId) {{
+      clearViewFilters('runs');
+      setField('run-filter-task-id', taskId);
+      setSort('runs', 'created_at', 'desc');
+      resetPage('runs');
+      markCustomView();
+      showView('runs');
+    }}
     async function runTask(button) {{
       const taskId = button.dataset.taskId;
       const mode = button.dataset.runMode;
@@ -2226,6 +2263,9 @@ DASHBOARD_HTML = f"""<!doctype html>
             <div class="meta">type ${{esc(task.type)}}; dry run ${{esc(task.dry_run)}}</div>
             <div class="meta">cron <code>${{esc(task.trigger?.cron)}}</code> in ${{esc(task.trigger?.timezone)}}</div>
             <div class="meta">output ${{esc(task.output?.channel)}} / ${{esc(task.output?.target)}}</div>
+            <div class="state-actions">
+              <button type="button" data-task-timeline-id="${{esc(task.id)}}" title="Show filtered run timeline for this task">Timeline</button>
+            </div>
           </div>
           <div class="detail-block">
             <h3>Approval History</h3>
@@ -2247,6 +2287,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       `;
       wireRunLinks();
       wireTaskVersionRevertButtons();
+      wireTaskTimelineButtons();
     }}
     async function loadTaskDetail(taskId) {{
       selectedTaskId = taskId;
@@ -2321,8 +2362,57 @@ DASHBOARD_HTML = f"""<!doctype html>
         esc(run.completed_at),
       ]), 'No runs match the current filters.');
       renderPager('run-pagination', 'runs', total, runs.length, loadRuns);
+      renderRunTimeline(runs, pagination);
       wireSortHeaders('runs', 'runs', loadRuns);
       wireRunLinks();
+    }}
+    function runTimelineContext() {{
+      const filters = runFilterValues();
+      const parts = [];
+      const savedSelect = byId('saved-view-select');
+      if (savedSelect?.value) parts.push(`saved view ${{savedSelect.options[savedSelect.selectedIndex].text}}`);
+      if (filters.task_id) parts.push(`task ${{filters.task_id}}`);
+      if (filters.status) parts.push(`status ${{filters.status}}`);
+      if (filters.notification_sent === 'true') parts.push('sent notifications');
+      if (filters.notification_sent === 'false') parts.push('unsent notifications');
+      if (filters.q) parts.push(`search "${{filters.q}}"`);
+      return parts.length ? parts.join('; ') : 'all runs';
+    }}
+    function runNotificationLabel(run) {{
+      if (run.notification?.sent === true) return `notification sent${{run.notification.target ? ` to ${{run.notification.target}}` : ''}}`;
+      if (run.notification?.sent === false) return `notification not sent${{run.notification.target ? ` for ${{run.notification.target}}` : ''}}`;
+      return 'notification n/a';
+    }}
+    function renderRunTimeline(runs, pagination) {{
+      const panel = byId('run-timeline');
+      const total = pagination?.total ?? runs.length;
+      const context = runTimelineContext();
+      if (!runs.length) {{
+        panel.innerHTML = `<h2>Run Timeline</h2><div class="meta">${{esc(context)}}; 0 matching runs.</div><div class="empty">No runs match the current filters.</div>`;
+        return;
+      }}
+      panel.innerHTML = `
+        <div class="section-head">
+          <div>
+            <h2>Run Timeline</h2>
+            <div class="meta">${{esc(context)}}; showing ${{runs.length}} of ${{total}} matching runs in current sort order.</div>
+          </div>
+        </div>
+        <div class="timeline">
+          ${{runs.map(run => `
+            <div class="timeline-item ${{statusClass(run.status)}}">
+              <div class="timeline-time">
+                <div>${{esc(run.created_at)}}</div>
+                <div>${{run.completed_at ? `completed ${{esc(run.completed_at)}}` : 'not completed'}}</div>
+              </div>
+              <div class="timeline-main">
+                <div>${{runButton(run)}} <code>${{esc(run.task_id)}}</code> ${{statusLabel(run.status)}}</div>
+                <div class="meta">result ${{esc(run.result_status)}}; ${{esc(runNotificationLabel(run))}}${{run.failed_count !== null && run.failed_count !== undefined ? `; failed checks ${{esc(run.failed_count)}}` : ''}}</div>
+              </div>
+            </div>
+          `).join('')}}
+        </div>
+      `;
     }}
     function digestItems(items) {{
       return items && items.length ? `<ol class="digest-items">${{items.map(item => `

@@ -37,6 +37,8 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "run-filter-task-id" in allowed.text
     assert "run-filter-notification-sent" in allowed.text
     assert "run-page-size" in allowed.text
+    assert "run-timeline" in allowed.text
+    assert "data-task-timeline-id" in allowed.text
     assert "proposal-page-size" in allowed.text
     assert "approval-page-size" in allowed.text
     assert "audit-filter-action" in allowed.text
@@ -51,6 +53,7 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "failed_runs" in allowed.text
     assert "recent_discord_sends" in allowed.text
     assert "worker_activity" in allowed.text
+    assert "runTimelineContext" in allowed.text
 
 
 def test_admin_key_can_access_ops_status_without_dashboard_password(client):
