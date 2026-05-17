@@ -54,6 +54,27 @@ def topic_digest_intent(**overrides):
     return intent
 
 
+def topic_digest_subject_change_intent(**overrides):
+    intent = {
+        "intent": "propose_task_change",
+        "capability_id": "topic_digest.modify_subjects.v1",
+        "confidence": 0.91,
+        "requires_user_confirmation": True,
+        "user_confirmation_obtained": True,
+        "slots": {
+            "task_id": "daily_local_ai_security_briefing",
+            "add_source_ids": ["docker_blog"],
+            "add_include": ["Docker security"],
+        },
+    }
+    for key, value in overrides.items():
+        if key == "slots":
+            intent["slots"].update(value)
+        else:
+            intent[key] = value
+    return intent
+
+
 def n8n_intent(**overrides):
     intent = {
         "intent": "draft_task",
@@ -84,7 +105,7 @@ def test_tool_key_can_list_capabilities(client):
 
     assert response.status_code == 200
     ids = {item["id"] for item in response.json()}
-    assert {"server_health.v1", "topic_digest.v1", "n8n_webhook.v1"} <= ids
+    assert {"server_health.v1", "topic_digest.v1", "topic_digest.modify_subjects.v1", "n8n_webhook.v1"} <= ids
     assert "unsafe_keywords" not in response.text
 
 
@@ -100,17 +121,39 @@ def test_gateway_accepts_supported_intents(client):
         assert body["confirmation_summary"]["dry_run"] is True
 
 
+def test_gateway_accepts_topic_digest_subject_change_intent(client):
+    response = client.post("/capabilities/prepare-yggdrasil-request", headers=TOOL_HEADERS, json=topic_digest_subject_change_intent())
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["outcome"] == "ACCEPT"
+    request = body["yggdrasil_request"]
+    assert request["action"] == "propose_task_change"
+    assert request["capability_id"] == "topic_digest.modify_subjects.v1"
+    assert request["task_id"] == "daily_local_ai_security_briefing"
+    assert request["change"]["add_source_ids"] == ["docker_blog"]
+    assert request["change"]["add_include"] == ["Docker security"]
+    assert "user_request" not in request
+    assert body["confirmation_summary"]["change_type"] == "topic_digest_subjects"
+
+
 def test_gateway_requires_missing_slots_and_user_confirmation(client):
     missing = server_health_intent(slots={"check_ids": []})
     unconfirmed = server_health_intent(user_confirmation_obtained=False)
+    missing_subject_change = topic_digest_subject_change_intent(
+        slots={"add_source_ids": [], "add_include": [], "remove_source_ids": [], "remove_include": []}
+    )
 
     missing_response = client.post("/capabilities/validate-intent", headers=TOOL_HEADERS, json=missing)
     unconfirmed_response = client.post("/capabilities/validate-intent", headers=TOOL_HEADERS, json=unconfirmed)
+    subject_response = client.post("/capabilities/validate-intent", headers=TOOL_HEADERS, json=missing_subject_change)
 
     assert missing_response.json()["outcome"] == "ASK_CLARIFICATION"
     assert "check_ids" in missing_response.json()["missing_slots"]
     assert unconfirmed_response.json()["outcome"] == "ASK_CLARIFICATION"
     assert "user_confirmation" in unconfirmed_response.json()["missing_slots"]
+    assert subject_response.json()["outcome"] == "ASK_CLARIFICATION"
+    assert "subject_change" in subject_response.json()["missing_slots"]
 
 
 def test_gateway_rejects_unknown_and_unsafe_requests(client):
@@ -136,13 +179,19 @@ def test_gateway_proposes_new_capability_for_printer_toner(client):
 
 def test_gateway_rejects_unapproved_sources_webhooks_and_broad_web_queries(client):
     bad_source = topic_digest_intent(slots={"source_ids": ["not_registered"]})
+    bad_subject_source = topic_digest_subject_change_intent(slots={"add_source_ids": ["not_registered"]})
     web_query = topic_digest_intent(slots={"web_query": "Open WebUI security"})
+    subject_web_query = topic_digest_subject_change_intent(slots={"query": "Open WebUI security"})
     bad_webhook = n8n_intent(slots={"webhook_id": "unknown_webhook"})
 
     bad_source_response = client.post("/capabilities/validate-intent", headers=TOOL_HEADERS, json=bad_source)
+    bad_subject_source_response = client.post("/capabilities/validate-intent", headers=TOOL_HEADERS, json=bad_subject_source)
     web_query_response = client.post("/capabilities/validate-intent", headers=TOOL_HEADERS, json=web_query)
+    subject_web_query_response = client.post("/capabilities/validate-intent", headers=TOOL_HEADERS, json=subject_web_query)
     bad_webhook_response = client.post("/capabilities/validate-intent", headers=ADMIN_HEADERS, json=bad_webhook)
 
     assert bad_source_response.json()["outcome"] == "REJECT_UNSAFE"
+    assert bad_subject_source_response.json()["outcome"] == "REJECT_UNSAFE"
     assert web_query_response.json()["outcome"] == "REJECT_UNSAFE"
+    assert subject_web_query_response.json()["outcome"] == "REJECT_UNSAFE"
     assert bad_webhook_response.json()["outcome"] == "REJECT_UNSAFE"

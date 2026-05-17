@@ -7,7 +7,9 @@ validated change, but it cannot approve, apply, or reject that change.
 ## Flow
 
 ```text
-Yggdrasil/Open WebUI
+Bragi or Yggdrasil
+  -> canonical task-change request
+  -> Yggdrasil deterministic proposal compiler
   -> POST /tasks/{task_id}/propose-change
   -> API validates full proposed TaskConfig
   -> API stores redacted before/after config, diff, risk, and nonce
@@ -99,8 +101,23 @@ Yggdrasil, show pending task change proposals.
 Yggdrasil, show task change proposal <proposal-id>.
 ```
 
-Yggdrasil creates the proposal and shows the nonce, but it cannot approve or
-apply it. Approval and application stay on the local admin path.
+Bragi can also propose bounded topic-digest subject/source changes through
+Heimdal and Yggdrasil:
+
+```text
+Bragi, add Docker security updates to the daily brief.
+Bragi, remove n8n releases from the daily brief.
+Bragi, include Open WebUI release notes in the daily local AI security briefing.
+```
+
+That path produces a canonical `propose_task_change` request for
+`topic_digest.modify_subjects.v1`. It may add or remove approved source IDs and
+include-filter terms only. It must not add arbitrary URLs, broad `web_query`
+sources, raw natural-language instructions, or unapproved sources.
+
+The Bragi/Yggdrasil canonical path creates the proposal but intentionally does
+not show the approval nonce in the model-facing response. Approval and
+application stay on the local admin path.
 
 ## Risk Signals
 

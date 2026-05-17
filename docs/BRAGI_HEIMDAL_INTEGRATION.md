@@ -37,12 +37,14 @@ allows only:
 
 - `server_health.v1`
 - `topic_digest.v1`
+- `topic_digest.modify_subjects.v1`
 - `n8n_webhook.v1`
 
-Each capability maps to an existing task template. Unknown capabilities,
-unsafe requests, unapproved source IDs, unapproved health checks, unapproved n8n
-webhook IDs, and broad `web_query` style requests are rejected before reaching
-Yggdrasil.
+Draft capabilities map to existing task templates. The topic-digest subject
+change capability maps to an existing task-change proposal flow. Unknown
+capabilities, unsafe requests, unapproved source IDs, unapproved health checks,
+unapproved n8n webhook IDs, and broad `web_query` style requests are rejected
+before reaching Yggdrasil.
 
 ## Canonical Intent
 
@@ -77,6 +79,9 @@ Bragi uses an explicit request-mode split:
   summaries, Docker, or local AI.
 - Direct draft requests become canonical `draft_task` intents and are validated
   by Heimdal.
+- Direct requests to add, remove, include, or stop covering subjects in an
+  existing digest become canonical `propose_task_change` intents and are
+  validated by Heimdal.
 - Direct list/show/run/pause requests become structured Yggdrasil canonical
   operations such as `list_tasks`, `show_task`, `run_task`, and `pause_task`.
 
@@ -252,11 +257,19 @@ Supported canonical operations:
 
 ```text
 draft_task_from_template
+propose_task_change
 list_tasks
 show_task
 run_task
 pause_task
 ```
+
+`propose_task_change` is currently limited to
+`topic_digest.modify_subjects.v1`. It can add/remove approved source IDs and
+include-filter terms for an existing `topic_digest` task, but it creates only a
+pending task-change proposal. It does not approve, apply, enable, or run the
+task. The model-facing response intentionally does not show the approval nonce;
+review and approval stay in the local `/ops` UI or admin CLI.
 
 Run and pause operations still go through the automation API, so task approval,
 dry-run state, rate limits, active-run locks, and role checks remain

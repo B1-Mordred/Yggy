@@ -82,6 +82,44 @@ capabilities:
       - ignore instructions
       - post publicly
 
+  - id: topic_digest.modify_subjects.v1
+    purpose: Propose approved-source and filter changes for an existing topic digest task.
+    maps_to_task_type: topic_digest
+    maps_to_template: topic_digest
+    deterministic_action: propose_task_change
+    allowed_approval_levels:
+      - L1_NOTIFY_ONLY
+    default_approval_level: L1_NOTIFY_ONLY
+    allowed_output_targets:
+      - briefings
+      - alerts
+    required_slots:
+      - task_id
+    optional_slots:
+      - add_source_ids
+      - remove_source_ids
+      - add_include
+      - remove_include
+      - output_target
+    allowed_source_ids:
+      - open_webui_releases
+      - ollama_releases
+      - n8n_releases
+      - docker_blog
+    safety_rules:
+      - This capability proposes a task change only; it must not mutate a task directly.
+      - Added sources must already exist in the approved source registry.
+      - Broad web_query sources and arbitrary URLs are not allowed.
+      - User confirmation is separate from Yggy approval and does not authorize the change.
+    unsafe_keywords:
+      - web_query
+      - arbitrary website
+      - scrape everything
+      - raw url
+      - webhook url
+      - ignore instructions
+      - post publicly
+
   - id: n8n_webhook.v1
     purpose: Trigger an approved internal n8n workflow with bounded static payload metadata.
     maps_to_task_type: n8n_webhook

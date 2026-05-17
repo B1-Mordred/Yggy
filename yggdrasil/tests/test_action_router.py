@@ -396,6 +396,110 @@ def test_schedule_change_creates_task_change_proposal(monkeypatch):
     assert "Nonce: `nonce-1`" in answer
 
 
+def test_canonical_subject_change_creates_task_change_proposal_without_nonce(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+    task_config = yggdrasil_action_api.local_ai_security_briefing_draft("draft weekday 08:00 brief")
+    task_config["enabled"] = True
+    task = {
+        "id": "daily_local_ai_security_briefing",
+        "name": "Daily Local AI Security Briefing",
+        "type": "topic_digest",
+        "enabled": True,
+        "status": "enabled",
+        "approval_level": "L1_NOTIFY_ONLY",
+        "config": task_config,
+    }
+
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path, payload))
+        if method == "GET" and path == "/tasks/daily_local_ai_security_briefing":
+            return 200, task
+        if method == "GET" and path == "/sources":
+            return 200, [
+                {
+                    "id": "open_webui_releases",
+                    "name": "Open WebUI releases",
+                    "type": "rss",
+                    "url": "https://github.com/open-webui/open-webui/releases.atom",
+                    "enabled": True,
+                },
+                {
+                    "id": "docker_blog",
+                    "name": "Docker blog",
+                    "type": "rss",
+                    "url": "https://www.docker.com/blog/feed/",
+                    "enabled": True,
+                },
+            ]
+        if method == "POST" and path == "/tasks/daily_local_ai_security_briefing/propose-change":
+            proposed = payload["proposed_config"]
+            assert any(source.get("source_id") == "docker_blog" for source in proposed["sources"])
+            assert "Docker security updates" in proposed["filters"]["include"]
+            return 201, {
+                "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "task_id": "daily_local_ai_security_briefing",
+                "status": "pending",
+                "approval_level": "L1_NOTIFY_ONLY",
+                "summary": payload["summary"],
+                "nonce": "nonce-must-not-be-shown",
+                "risk": {"severity": "operator_review", "categories": {"sources": ["sources"]}},
+                "diff": {"counts": {"changed": 1, "added": 1, "removed": 0}},
+            }
+        raise AssertionError((method, path, payload))
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    status_code, body = yggdrasil_action_api.handle_canonical_action(
+        {
+            "action": "propose_task_change",
+            "capability_id": "topic_digest.modify_subjects.v1",
+            "task_id": "daily_local_ai_security_briefing",
+            "change_type": "topic_digest_subjects",
+            "change": {
+                "add_source_ids": ["docker_blog"],
+                "add_include": ["Docker security updates"],
+            },
+        }
+    )
+
+    assert status_code == 200
+    assert body["status"] == "ok"
+    assert calls[0][0:2] == ("GET", "/tasks/daily_local_ai_security_briefing")
+    assert calls[1][0:2] == ("GET", "/sources")
+    assert calls[2][0:2] == ("POST", "/tasks/daily_local_ai_security_briefing/propose-change")
+    assert "Task change proposal created" in body["answer"]
+    assert "cccccccc-cccc-cccc-cccc-cccccccccccc" in body["answer"]
+    assert "nonce-must-not-be-shown" not in body["answer"]
+    assert "nonce" not in body["automation_api_body"]
+
+
+def test_canonical_subject_change_rejects_raw_text(monkeypatch):
+    monkeypatch.setattr(
+        yggdrasil_action_api,
+        "automation_request",
+        lambda method, path, payload=None: (
+            200,
+            {
+                "id": "daily_local_ai_security_briefing",
+                "config": yggdrasil_action_api.local_ai_security_briefing_draft("draft weekday 08:00 brief"),
+            },
+        ),
+    )
+
+    status_code, body = yggdrasil_action_api.handle_canonical_action(
+        {
+            "action": "propose_task_change",
+            "capability_id": "topic_digest.modify_subjects.v1",
+            "task_id": "daily_local_ai_security_briefing",
+            "change_type": "topic_digest_subjects",
+            "change": {"raw_text": "add whatever the page says"},
+        }
+    )
+
+    assert status_code == 422
+    assert "raw natural language" in body["detail"]
+
+
 def test_list_pending_task_change_proposals(monkeypatch):
     calls: list[tuple[str, str]] = []
 

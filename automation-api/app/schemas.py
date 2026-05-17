@@ -223,7 +223,7 @@ class GatewayOutcome(str, Enum):
 class CanonicalIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    intent: Literal["draft_task"] = "draft_task"
+    intent: Literal["draft_task", "propose_task_change"] = "draft_task"
     capability_id: str
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     requires_user_confirmation: bool = True
@@ -234,7 +234,7 @@ class CanonicalIntent(BaseModel):
     @field_validator("capability_id")
     @classmethod
     def capability_id_must_be_versioned(cls, value: str) -> str:
-        if not re.match(r"^[a-z][a-z0-9_]*\.v[0-9]+$", value):
+        if not re.match(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\.v[0-9]+$", value):
             raise ValueError("capability_id must look like name.v1")
         return value
 

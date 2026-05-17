@@ -31,6 +31,11 @@ def gateway_response_for(payload: dict) -> dict:
     missing = []
     if payload["capability_id"] == "topic_digest.v1" and not payload["slots"].get("source_ids"):
         missing.append("source_ids")
+    if payload["capability_id"] == "topic_digest.modify_subjects.v1" and not any(
+        payload["slots"].get(slot)
+        for slot in ("add_source_ids", "remove_source_ids", "add_include", "remove_include")
+    ):
+        missing.append("subject_change")
     if payload["capability_id"] == "server_health.v1" and not payload["slots"].get("check_ids"):
         missing.append("check_ids")
     if payload["capability_id"] == "n8n_webhook.v1" and not payload["slots"].get("webhook_id"):
@@ -50,12 +55,36 @@ def gateway_response_for(payload: dict) -> dict:
                 "schedule": {"cron": payload["slots"].get("cron"), "timezone": payload["slots"].get("timezone")},
                 "checks": payload["slots"].get("check_ids", []),
                 "sources": payload["slots"].get("source_ids", []),
+                "change_type": "topic_digest_subjects" if payload["capability_id"] == "topic_digest.modify_subjects.v1" else None,
+                "add_source_ids": payload["slots"].get("add_source_ids", []),
+                "remove_source_ids": payload["slots"].get("remove_source_ids", []),
+                "add_include": payload["slots"].get("add_include", []),
+                "remove_include": payload["slots"].get("remove_include", []),
                 "webhook_id": payload["slots"].get("webhook_id"),
                 "output_target": payload["slots"].get("output_target"),
                 "dry_run": True,
                 "approval_level": "L1_NOTIFY_ONLY",
                 "worst_case_failure_mode": "A noisy alert could be sent.",
                 "rollback_disable_method": "Pause through /ops.",
+            },
+        }
+    if payload["capability_id"] == "topic_digest.modify_subjects.v1":
+        return {
+            "outcome": "ACCEPT",
+            "capability_id": payload["capability_id"],
+            "message": "accepted",
+            "confirmation_summary": {},
+            "yggdrasil_request": {
+                "action": "propose_task_change",
+                "capability_id": payload["capability_id"],
+                "task_id": payload["slots"]["task_id"],
+                "change_type": "topic_digest_subjects",
+                "change": {
+                    "add_source_ids": payload["slots"].get("add_source_ids", []),
+                    "remove_source_ids": payload["slots"].get("remove_source_ids", []),
+                    "add_include": payload["slots"].get("add_include", []),
+                    "remove_include": payload["slots"].get("remove_include", []),
+                },
             },
         }
     return {
@@ -204,6 +233,76 @@ def test_direct_brief_draft_still_routes_to_gateway(monkeypatch):
     assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
     assert calls[0][2]["capability_id"] == "topic_digest.v1"
     assert "Reply `confirm`" in answer
+
+
+def test_add_subject_to_existing_brief_routes_as_task_change(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "add Docker security updates to the daily brief"}])
+
+    assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
+    intent = calls[0][2]
+    assert intent["intent"] == "propose_task_change"
+    assert intent["capability_id"] == "topic_digest.modify_subjects.v1"
+    assert intent["slots"]["task_id"] == "daily_local_ai_security_briefing"
+    assert intent["slots"]["add_source_ids"] == ["docker_blog"]
+    assert intent["slots"]["add_include"] == ["Docker security updates"]
+    assert "task-change proposal" in answer
+    assert "Reply `confirm`" in answer
+
+
+def test_confirmed_brief_subject_change_forwards_canonical_proposal(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    def fake_yggdrasil(payload):
+        calls.append(("POST", "/v1/yggdrasil/canonical-actions", payload))
+        return {"status": "ok", "answer": "Task change proposal created for the existing topic digest."}
+
+    pending = bragi.topic_digest_subject_change_intent("add Docker security updates to the daily brief")
+    prior = "Canonical intent pending confirmation:\n```json\n" + json.dumps(pending) + "\n```"
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", fake_yggdrasil)
+
+    answer = bragi.route_chat(
+        [
+            {"role": "assistant", "content": prior},
+            {"role": "user", "content": "confirm"},
+        ]
+    )
+
+    assert calls[0][0:2] == ("POST", "/capabilities/prepare-yggdrasil-request")
+    assert calls[0][2]["user_confirmation_obtained"] is True
+    assert calls[1][0:2] == ("POST", "/v1/yggdrasil/canonical-actions")
+    assert calls[1][2]["action"] == "propose_task_change"
+    assert calls[1][2]["task_id"] == "daily_local_ai_security_briefing"
+    assert "user_request" not in json.dumps(calls[1][2])
+    assert "Task change proposal created" in answer
+
+
+def test_vague_subject_change_asks_for_subject_details(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "add a subject to the daily brief"}])
+
+    assert calls[0][2]["capability_id"] == "topic_digest.modify_subjects.v1"
+    assert "`subject_change`" in answer
+    assert "Canonical intent awaiting details" in answer
 
 
 def test_discussion_summary_does_not_draft_digest(monkeypatch):

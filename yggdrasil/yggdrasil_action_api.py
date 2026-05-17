@@ -1112,6 +1112,192 @@ def canonical_task_id(payload: dict[str, Any]) -> str | None:
     return task_id
 
 
+def canonical_string_list(value: Any, *, field_name: str, max_items: int = 20, max_length: int = 120) -> list[str]:
+    if value is None:
+        return []
+    raw_items = value.split(',') if isinstance(value, str) else value
+    if not isinstance(raw_items, list):
+        raise ValueError(f'{field_name} must be a list of strings')
+    items: list[str] = []
+    for raw in raw_items:
+        item = str(raw).strip()
+        if not item:
+            continue
+        if len(item) > max_length:
+            raise ValueError(f'{field_name} entries must be {max_length} characters or shorter')
+        if re.search(r'(?i)\b(api[_-]?key|token|password|secret|webhook[_-]?url|private[_-]?key|cookie|nonce)\b', item):
+            raise ValueError(f'{field_name} contains secret-like material')
+        if item.lower() not in {existing.lower() for existing in items}:
+            items.append(item)
+    if len(items) > max_items:
+        raise ValueError(f'{field_name} may contain at most {max_items} entries')
+    return items
+
+
+def canonical_source_id_list(value: Any, *, field_name: str) -> list[str]:
+    ids = canonical_string_list(value, field_name=field_name, max_items=20, max_length=128)
+    for source_id in ids:
+        if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{2,127}', source_id):
+            raise ValueError(f'{field_name} entries must be slug-like approved source IDs')
+    return ids
+
+
+def source_registry_by_id() -> dict[str, dict[str, Any]]:
+    status_code, body = automation_request('GET', '/sources')
+    if status_code != 200 or not isinstance(body, list):
+        raise ValueError(f'could not load approved source registry from automation API: status {status_code}')
+    sources: dict[str, dict[str, Any]] = {}
+    for item in body:
+        if isinstance(item, dict) and item.get('enabled', True) is not False and item.get('id'):
+            sources[str(item['id'])] = item
+    return sources
+
+
+def rendered_source_from_registry(source_id: str, registry: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    source = registry.get(source_id)
+    if source is None:
+        raise ValueError(f'source_id `{source_id}` is not enabled in the approved source registry')
+    source_type = str(source.get('type') or '').strip()
+    rendered = {'source_id': source_id, 'type': source_type}
+    if source_type in {'rss', 'http'}:
+        url = str(source.get('url') or '').strip()
+        if not re.match(r'^https?://', url):
+            raise ValueError(f'source_id `{source_id}` does not expose a usable http/https URL')
+        rendered['url'] = url
+    elif source_type == 'web_query':
+        query = str(source.get('query') or '').strip()
+        if not query:
+            raise ValueError(f'source_id `{source_id}` does not expose a usable query')
+        rendered['query'] = query
+    else:
+        raise ValueError(f'source_id `{source_id}` has unsupported type `{source_type}`')
+    return rendered
+
+
+def source_id_for_config(source: dict[str, Any], registry: dict[str, dict[str, Any]]) -> str | None:
+    configured = str(source.get('source_id') or '').strip()
+    if configured:
+        return configured
+    source_type = str(source.get('type') or '').strip()
+    url = str(source.get('url') or '').strip()
+    query = str(source.get('query') or '').strip()
+    for source_id, registered in registry.items():
+        if str(registered.get('type') or '').strip() != source_type:
+            continue
+        if source_type in {'rss', 'http'} and str(registered.get('url') or '').strip() == url:
+            return source_id
+        if source_type == 'web_query' and str(registered.get('query') or '').strip() == query:
+            return source_id
+    return None
+
+
+def merge_unique_strings(existing: list[str], additions: list[str]) -> list[str]:
+    merged = [item for item in existing if str(item).strip()]
+    lowered = {item.lower() for item in merged}
+    for item in additions:
+        if item.lower() not in lowered:
+            merged.append(item)
+            lowered.add(item.lower())
+    return merged
+
+
+def remove_strings(existing: list[str], removals: list[str]) -> list[str]:
+    removal_set = {item.lower() for item in removals}
+    return [item for item in existing if item.lower() not in removal_set]
+
+
+def apply_topic_digest_subject_change(config: dict[str, Any], change: dict[str, Any]) -> tuple[dict[str, Any], dict[str, list[str]]]:
+    if config.get('type') != 'topic_digest':
+        raise ValueError('topic digest subject changes can only target topic_digest tasks')
+    if 'user_request' in change or 'raw_text' in change:
+        raise ValueError('raw natural language is not accepted on the canonical task-change path')
+
+    add_source_ids = canonical_source_id_list(change.get('add_source_ids'), field_name='add_source_ids')
+    remove_source_ids = canonical_source_id_list(change.get('remove_source_ids'), field_name='remove_source_ids')
+    add_include = canonical_string_list(change.get('add_include'), field_name='add_include')
+    remove_include = canonical_string_list(change.get('remove_include'), field_name='remove_include')
+    output_target = str(change.get('output_target') or '').strip()
+
+    if not any((add_source_ids, remove_source_ids, add_include, remove_include, output_target)):
+        raise ValueError('at least one topic digest subject change is required')
+
+    proposed = json.loads(json.dumps(config))
+    registry = source_registry_by_id() if add_source_ids or remove_source_ids else {}
+
+    if add_source_ids or remove_source_ids:
+        sources = proposed.setdefault('sources', [])
+        if not isinstance(sources, list):
+            raise ValueError('task config sources must be a list')
+        if remove_source_ids:
+            remove_set = set(remove_source_ids)
+            sources[:] = [
+                source
+                for source in sources
+                if not (isinstance(source, dict) and source_id_for_config(source, registry) in remove_set)
+            ]
+        existing_after_remove = {
+            source_id_for_config(source, registry)
+            for source in sources
+            if isinstance(source, dict)
+        }
+        for source_id in add_source_ids:
+            if source_id not in existing_after_remove:
+                sources.append(rendered_source_from_registry(source_id, registry))
+                existing_after_remove.add(source_id)
+        if not sources:
+            raise ValueError('topic digest must keep at least one source')
+
+    if add_include or remove_include:
+        filters = proposed.setdefault('filters', {})
+        if not isinstance(filters, dict):
+            raise ValueError('task config filters must be an object')
+        include = filters.setdefault('include', [])
+        if not isinstance(include, list):
+            raise ValueError('task config filters.include must be a list')
+        include_values = [str(item).strip() for item in include if str(item).strip()]
+        include_values = merge_unique_strings(include_values, add_include)
+        include_values = remove_strings(include_values, remove_include)
+        filters['include'] = include_values
+
+    if output_target:
+        if output_target not in {'briefings', 'alerts'}:
+            raise ValueError('output_target must be briefings or alerts')
+        output = proposed.setdefault('output', {})
+        if not isinstance(output, dict):
+            raise ValueError('task config output must be an object')
+        output['target'] = output_target
+
+    applied = {
+        'add_source_ids': add_source_ids,
+        'remove_source_ids': remove_source_ids,
+        'add_include': add_include,
+        'remove_include': remove_include,
+    }
+    if output_target:
+        applied['output_target'] = [output_target]
+    return proposed, applied
+
+
+def strip_nonce(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: strip_nonce(item) for key, item in value.items() if str(key).lower() != 'nonce'}
+    if isinstance(value, list):
+        return [strip_nonce(item) for item in value]
+    return value
+
+
+def format_subject_change_response(status_code: int, body: Any, task_id: str) -> str:
+    if status_code == 201 and isinstance(body, dict):
+        proposal = strip_nonce(body)
+        return (
+            "Task change proposal created for the existing topic digest.\n\n"
+            f"{format_task_change_proposal(proposal)}\n\n"
+            "The approval nonce is intentionally not shown on this model-facing path. "
+            "Use the local /ops UI or admin CLI to review, approve, and apply it."
+        )
+    return f'Automation API returned status `{status_code}` while creating a task change proposal for `{task_id}`:\n\n```json\n{json.dumps(strip_nonce(body), indent=2)}\n```'
+
+
 def handle_canonical_action(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     action = str(payload.get('action') or '').strip()
     capability_id = str(payload.get('capability_id') or '').strip()
@@ -1168,6 +1354,57 @@ def handle_canonical_action(payload: dict[str, Any]) -> tuple[int, dict[str, Any
             f'Automation API returned status `{status_code}` while pausing the task:\n\n```json\n{json.dumps(body, indent=2)}\n```'
         )
         return 200, {'status': 'ok' if status_code == 200 else 'automation_api_rejected', 'task_id': task_id, 'automation_api_status': status_code, 'automation_api_body': body, 'answer': answer}
+    if action == 'propose_task_change':
+        try:
+            task_id = canonical_task_id(payload)
+        except ValueError as exc:
+            return 422, {'status': 'rejected', 'detail': str(exc)}
+        if not task_id:
+            return 422, {'status': 'rejected', 'detail': 'task_id is required'}
+        if capability_id != 'topic_digest.modify_subjects.v1':
+            return 422, {'status': 'rejected', 'detail': 'unsupported task-change capability_id'}
+        if payload.get('change_type') != 'topic_digest_subjects':
+            return 422, {'status': 'rejected', 'detail': 'unsupported change_type'}
+        change = payload.get('change')
+        if not isinstance(change, dict):
+            return 422, {'status': 'rejected', 'detail': 'change must be an object'}
+        status_code, task = automation_request('GET', f'/tasks/{task_id}')
+        if status_code != 200 or not isinstance(task, dict):
+            answer = f'Automation API returned status `{status_code}` while loading task `{task_id}`:\n\n```json\n{json.dumps(strip_nonce(task), indent=2)}\n```'
+            return 200, {'status': 'automation_api_rejected', 'task_id': task_id, 'automation_api_status': status_code, 'automation_api_body': strip_nonce(task), 'answer': answer}
+        config = task.get('config')
+        if not isinstance(config, dict):
+            return 422, {'status': 'rejected', 'detail': f'task `{task_id}` did not return a usable config'}
+        try:
+            proposed, applied = apply_topic_digest_subject_change(config, change)
+        except ValueError as exc:
+            return 422, {'status': 'rejected', 'detail': str(exc)}
+        summary_parts = []
+        if applied.get('add_source_ids'):
+            summary_parts.append('add sources ' + ', '.join(applied['add_source_ids']))
+        if applied.get('remove_source_ids'):
+            summary_parts.append('remove sources ' + ', '.join(applied['remove_source_ids']))
+        if applied.get('add_include'):
+            summary_parts.append('add include terms ' + ', '.join(applied['add_include']))
+        if applied.get('remove_include'):
+            summary_parts.append('remove include terms ' + ', '.join(applied['remove_include']))
+        if applied.get('output_target'):
+            summary_parts.append('set output target ' + ', '.join(applied['output_target']))
+        summary = f"Propose topic digest subject change for {task_id}: {'; '.join(summary_parts)}."
+        create_status, proposal = automation_request(
+            'POST',
+            f'/tasks/{task_id}/propose-change',
+            {'requested_by': 'yggdrasil', 'summary': summary[:1200], 'proposed_config': proposed},
+        )
+        answer = format_subject_change_response(create_status, proposal, task_id)
+        return 200, {
+            'status': 'ok' if create_status == 201 else 'automation_api_rejected',
+            'capability_id': capability_id,
+            'task_id': task_id,
+            'automation_api_status': create_status,
+            'automation_api_body': strip_nonce(proposal),
+            'answer': answer,
+        }
     if action != 'draft_task_from_template':
         return 422, {'status': 'rejected', 'detail': 'unsupported canonical action'}
     if template_id not in {'server_health', 'topic_digest', 'n8n_webhook'}:

@@ -562,7 +562,7 @@ def context_categories_for_text(text: str, requested_category: str | None = None
         category = requested_category.strip().lower()
         return [category] if category in CONTEXT_CATEGORIES else []
     lowered = text.lower()
-    if re.match(r"^\s*(draft|create|set up|setup|schedule|run|send|pause|disable|approve|reject)\b", lowered):
+    if re.match(r"^\s*(draft|create|set up|setup|schedule|add|include|remove|exclude|stop|run|send|pause|disable|approve|reject)\b", lowered):
         return []
     categories: list[str] = []
 
@@ -1296,7 +1296,7 @@ def pending_intent_from_prior(text: str) -> dict[str, Any] | None:
             payload = json.loads(match.group(1))
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict) and payload.get("intent") == "draft_task" and payload.get("capability_id"):
+        if isinstance(payload, dict) and payload.get("intent") in {"draft_task", "propose_task_change"} and payload.get("capability_id"):
             return payload
     return None
 
@@ -1316,6 +1316,8 @@ def build_candidate_intent(user_text: str) -> dict[str, Any] | None:
     if mode != "draft":
         return None
     lowered = user_text.lower()
+    if is_topic_digest_subject_change_request(user_text):
+        return topic_digest_subject_change_intent(user_text)
     if any(term in lowered for term in ("printer", "toner", "cartridge", "ink level")):
         return server_health_intent(user_text)
     if any(term in lowered for term in ("restart docker", "docker socket", "reorganize all files", "delete files")):
@@ -1397,6 +1399,11 @@ def task_id_from_text(text: str) -> str | None:
     for explicit in re.finditer(r"\b([a-z][a-z0-9_]{2,127})\b", lowered):
         if "_" in explicit.group(1):
             return explicit.group(1)
+    return task_alias_from_text(text)
+
+
+def task_alias_from_text(text: str) -> str | None:
+    lowered = text.lower()
     for phrase, task_id in sorted(TASK_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
         if phrase in lowered:
             return task_id
@@ -1521,6 +1528,41 @@ def topic_digest_intent(user_text: str) -> dict[str, Any]:
     }
 
 
+def is_topic_digest_subject_change_request(text: str) -> bool:
+    lowered = text.lower()
+    if not any(term in lowered for term in ("brief", "briefing", "digest")):
+        return False
+    return bool(
+        re.search(r"\b(add|include|cover|remove|drop|exclude)\b", lowered)
+        or re.search(r"\bstop\s+covering\b", lowered)
+    )
+
+
+def topic_digest_subject_change_intent(user_text: str) -> dict[str, Any]:
+    remove = bool(re.search(r"\b(remove|drop|exclude)\b|\bstop\s+covering\b", user_text, re.IGNORECASE))
+    source_ids = source_ids_from_text(user_text)
+    terms = brief_subject_terms_from_text(user_text)
+    slots: dict[str, Any] = {
+        "task_id": task_alias_from_text(user_text) or "daily_local_ai_security_briefing",
+        "name": "Daily Local AI Security Briefing",
+    }
+    if remove:
+        slots["remove_source_ids"] = source_ids
+        slots["remove_include"] = terms
+    else:
+        slots["add_source_ids"] = source_ids
+        slots["add_include"] = terms
+    return {
+        "intent": "propose_task_change",
+        "capability_id": "topic_digest.modify_subjects.v1",
+        "confidence": 0.86 if source_ids or terms else 0.70,
+        "requires_user_confirmation": True,
+        "user_confirmation_obtained": False,
+        "user_request": user_text,
+        "slots": slots,
+    }
+
+
 def n8n_intent(user_text: str) -> dict[str, Any]:
     webhook_id = "daily_briefing_stub" if "daily" in user_text.lower() or "brief" in user_text.lower() else None
     slots: dict[str, Any] = {
@@ -1613,6 +1655,42 @@ def include_terms_from_text(text: str) -> list[str]:
     return [word for word in words if len(word) > 2][:8]
 
 
+def brief_subject_terms_from_text(text: str) -> list[str]:
+    patterns = [
+        r"\badd\s+(.+?)\s+(?:to|into)\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
+        r"\binclude\s+(.+?)\s+in\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
+        r"\bcover\s+(.+?)\s+in\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
+        r"\bremove\s+(.+?)\s+from\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
+        r"\bdrop\s+(.+?)\s+from\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
+        r"\bexclude\s+(.+?)\s+from\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
+        r"\bstop\s+covering\s+(.+?)(?:\s+(?:in|from)\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b|$)",
+    ]
+    subject = ""
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            break
+    if not subject:
+        return []
+    subject = re.sub(r"\b(discord|briefings|alerts|please|now)\b", "", subject, flags=re.IGNORECASE)
+    parts = [clean_subject_term(part) for part in re.split(r"\band\b|,|/", subject, flags=re.IGNORECASE)]
+    terms: list[str] = []
+    for part in parts:
+        if len(part) < 3:
+            continue
+        if part.lower() in {"a subject", "new subject", "subject", "a topic", "new topic", "topic", "something"}:
+            continue
+        if part.lower() not in {term.lower() for term in terms}:
+            terms.append(part)
+    return terms[:8]
+
+
+def clean_subject_term(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", value).strip(" .,-")
+    return cleaned[:120]
+
+
 def merge_intent_slots(intent: dict[str, Any], user_text: str) -> dict[str, Any]:
     merged = json.loads(json.dumps(intent))
     slots = merged.setdefault("slots", {})
@@ -1642,10 +1720,55 @@ def merge_intent_slots(intent: dict[str, Any], user_text: str) -> dict[str, Any]
         match = re.search(r"\b([a-z][a-z0-9_]{2,127})\b", user_text)
         if match and "webhook" in user_text.lower():
             slots["webhook_id"] = match.group(1)
+    if merged.get("capability_id") == "topic_digest.modify_subjects.v1":
+        remove = bool(re.search(r"\b(remove|drop|exclude)\b|\bstop\s+covering\b", user_text, re.IGNORECASE))
+        source_ids = source_ids_from_text(user_text)
+        terms = brief_subject_terms_from_text(user_text)
+        if remove:
+            if source_ids and not slots.get("remove_source_ids"):
+                slots["remove_source_ids"] = source_ids
+            if terms and not slots.get("remove_include"):
+                slots["remove_include"] = terms
+        else:
+            if source_ids and not slots.get("add_source_ids"):
+                slots["add_source_ids"] = source_ids
+            if terms and not slots.get("add_include"):
+                slots["add_include"] = terms
     return merged
 
 
 def format_confirmation(summary: dict[str, Any], intent: dict[str, Any]) -> str:
+    if summary.get("change_type") == "topic_digest_subjects":
+        lines = [
+            "I can map that to a supported Yggy task-change proposal. No axes, no direct mutation, just paperwork with teeth.",
+            "",
+            f"- Capability: `{summary.get('capability_id')}`",
+            f"- Task: `{summary.get('task_id')}`",
+            f"- Approval level: `{summary.get('approval_level')}`",
+            f"- Worst-case failure mode: {summary.get('worst_case_failure_mode')}",
+            f"- Rollback/disable: {summary.get('rollback_disable_method')}",
+        ]
+        if summary.get("add_source_ids"):
+            lines.append(f"- Add approved sources: {', '.join(f'`{item}`' for item in summary['add_source_ids'])}")
+        if summary.get("remove_source_ids"):
+            lines.append(f"- Remove approved sources: {', '.join(f'`{item}`' for item in summary['remove_source_ids'])}")
+        if summary.get("add_include"):
+            lines.append(f"- Add subject/filter terms: {', '.join(f'`{item}`' for item in summary['add_include'])}")
+        if summary.get("remove_include"):
+            lines.append(f"- Remove subject/filter terms: {', '.join(f'`{item}`' for item in summary['remove_include'])}")
+        if summary.get("output_target"):
+            lines.append(f"- Output target: `{summary.get('output_target')}`")
+        lines.extend(
+            [
+                "",
+                "Reply `confirm` if this is what you meant. Confirmation only proves I understood you; Yggy approval still controls whether the task changes.",
+                "",
+                "Canonical intent pending confirmation:",
+                f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```",
+            ]
+        )
+        return "\n".join(lines)
+
     lines = [
         "I can map that to a supported Yggy automation. The ravens found a path that does not involve giving a chatbot a battle axe.",
         "",
@@ -1732,6 +1855,7 @@ def slot_hint(slot: str) -> str:
         "source_ids": "approved source IDs such as `open_webui_releases`, `ollama_releases`, `n8n_releases`, or `docker_blog`",
         "check_ids": "approved check IDs such as `open_webui`, `ollama`, `automation_api`, `automation_worker`, or `n8n`",
         "webhook_id": "an approved n8n webhook ID, not a raw URL",
+        "subject_change": "the subject/filter terms or approved source IDs to add or remove",
         "output_target": "a whitelisted target such as `briefings` or `alerts`",
         "cron": "a schedule, for example `08:00 weekdays`",
         "task_id": "a slug-like task id",

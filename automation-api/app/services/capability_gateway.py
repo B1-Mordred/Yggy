@@ -67,7 +67,7 @@ class CapabilityDefinition(BaseModel):
     @field_validator("id")
     @classmethod
     def id_must_be_versioned(cls, value: str) -> str:
-        if not re.match(r"^[a-z][a-z0-9_]*\.v[0-9]+$", value):
+        if not re.match(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\.v[0-9]+$", value):
             raise ValueError("capability id must look like name.v1")
         return value
 
@@ -97,8 +97,8 @@ class CapabilityDefinition(BaseModel):
     def validate_definition(self) -> "CapabilityDefinition":
         if self.default_approval_level not in self.allowed_approval_levels:
             raise ValueError("default_approval_level must be allowed")
-        if self.deterministic_action != "draft_task_from_template":
-            raise ValueError("only draft_task_from_template is supported in capability registry v1")
+        if self.deterministic_action not in {"draft_task_from_template", "propose_task_change"}:
+            raise ValueError("unsupported deterministic_action in capability registry v1")
         return self
 
     def summary(self) -> dict[str, Any]:
@@ -255,6 +255,8 @@ def missing_slots(intent: CanonicalIntent, capability: CapabilityDefinition) -> 
         value = intent.slots.get(slot_name)
         if value in (None, "", []):
             missing.append(slot_name)
+    if capability.deterministic_action == "propose_task_change" and not has_topic_digest_subject_change(intent.slots):
+        missing.append("subject_change")
     return missing
 
 
@@ -272,8 +274,10 @@ def unsafe_intent_reasons(intent: CanonicalIntent, capability: CapabilityDefinit
         reasons.append("allow_docker_socket is forbidden")
     if intent.slots.get("webhook_url"):
         reasons.append("arbitrary webhook URLs are forbidden; use approved webhook_id")
-    if intent.capability_id == "topic_digest.v1" and (intent.slots.get("web_query") or intent.slots.get("query")):
-        reasons.append("topic_digest.v1 requires approved source_ids, not web_query/query slots")
+    if capability.maps_to_task_type == "topic_digest" and (intent.slots.get("web_query") or intent.slots.get("query")):
+        reasons.append(f"{capability.id} requires approved source IDs and filter terms, not web_query/query slots")
+    if capability.maps_to_task_type == "topic_digest" and intent.slots.get("url"):
+        reasons.append(f"{capability.id} does not accept arbitrary URLs; use approved source IDs")
     return reasons
 
 
@@ -299,7 +303,7 @@ def validate_slots(intent: CanonicalIntent, capability: CapabilityDefinition) ->
     if approval_level not in {level.value for level in capability.allowed_approval_levels}:
         errors.append(f"approval level {approval_level} is not allowed for {capability.id}")
     errors.extend(validate_capability_specific_slots(slots, capability))
-    if not errors:
+    if not errors and capability.deterministic_action == "draft_task_from_template":
         try:
             TaskTemplateRenderRequest.model_validate(template_values_from_slots(intent, capability))
         except Exception as exc:
@@ -314,6 +318,17 @@ def validate_capability_specific_slots(slots: dict[str, Any], capability: Capabi
         for source_id in source_ids:
             if source_id not in capability.allowed_source_ids:
                 errors.append(f"source_id {source_id} is not allowed for {capability.id}")
+    if capability.id == "topic_digest.modify_subjects.v1":
+        for slot_name in ("add_source_ids", "remove_source_ids"):
+            for source_id in list_slot(slots.get(slot_name)):
+                if source_id not in capability.allowed_source_ids:
+                    errors.append(f"{slot_name} entry {source_id} is not allowed for {capability.id}")
+        for slot_name in ("add_include", "remove_include"):
+            for term in list_slot(slots.get(slot_name)):
+                if len(term) > 120:
+                    errors.append(f"{slot_name} entries must be 120 characters or shorter")
+                if find_secret_paths({slot_name: term}):
+                    errors.append(f"{slot_name} contains secret-like material")
     if capability.id == "server_health.v1":
         check_ids = list_slot(slots.get("check_ids"))
         for check_id in check_ids:
@@ -329,6 +344,21 @@ def validate_capability_specific_slots(slots: dict[str, Any], capability: Capabi
 
 
 def build_yggdrasil_request(intent: CanonicalIntent, capability: CapabilityDefinition) -> dict[str, Any]:
+    if capability.deterministic_action == "propose_task_change":
+        return {
+            "action": capability.deterministic_action,
+            "capability_id": capability.id,
+            "task_id": intent.slots.get("task_id"),
+            "change_type": "topic_digest_subjects",
+            "change": {
+                "add_source_ids": list_slot(intent.slots.get("add_source_ids")),
+                "remove_source_ids": list_slot(intent.slots.get("remove_source_ids")),
+                "add_include": list_slot(intent.slots.get("add_include")),
+                "remove_include": list_slot(intent.slots.get("remove_include")),
+                **({"output_target": str(intent.slots["output_target"])} if intent.slots.get("output_target") else {}),
+            },
+            "confirmation_summary": confirmation_summary(intent, capability),
+        }
     return {
         "action": capability.deterministic_action,
         "capability_id": capability.id,
@@ -368,6 +398,24 @@ def template_values_from_slots(intent: CanonicalIntent, capability: CapabilityDe
 
 def confirmation_summary(intent: CanonicalIntent, capability: CapabilityDefinition) -> dict[str, Any]:
     slots = intent.slots
+    if capability.deterministic_action == "propose_task_change":
+        return {
+            "capability_id": capability.id,
+            "purpose": capability.purpose,
+            "task_id": slots.get("task_id"),
+            "name": slots.get("name") or slots.get("task_id"),
+            "change_type": "topic_digest_subjects",
+            "add_source_ids": list_slot(slots.get("add_source_ids")),
+            "remove_source_ids": list_slot(slots.get("remove_source_ids")),
+            "add_include": list_slot(slots.get("add_include")),
+            "remove_include": list_slot(slots.get("remove_include")),
+            "output_target": slots.get("output_target"),
+            "dry_run": None,
+            "approval_level": str(slots.get("approval_level") or capability.default_approval_level.value),
+            "worst_case_failure_mode": worst_case_failure_mode(capability),
+            "rollback_disable_method": "Reject the pending task-change proposal, or pause/revert through the local /ops UI.",
+            "safety_rules": capability.safety_rules,
+        }
     schedule = {
         "cron": slots.get("cron"),
         "timezone": slots.get("timezone"),
@@ -395,6 +443,8 @@ def worst_case_failure_mode(capability: CapabilityDefinition) -> str:
         return "A noisy or incomplete alert could be sent to the whitelisted alerts target after approval."
     if capability.id == "topic_digest.v1":
         return "A noisy, incomplete, or incorrect digest could be sent to a whitelisted Discord target after approval."
+    if capability.id == "topic_digest.modify_subjects.v1":
+        return "The existing digest could become noisy, incomplete, or less relevant after the approved change is applied."
     if capability.id == "n8n_webhook.v1":
         return "An approved internal n8n workflow could receive an incorrect but bounded payload after approval."
     return "The task could produce incorrect output or fail within its configured policy."
@@ -408,6 +458,13 @@ def list_slot(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()] if str(value).strip() else []
+
+
+def has_topic_digest_subject_change(slots: dict[str, Any]) -> bool:
+    for slot_name in ("add_source_ids", "remove_source_ids", "add_include", "remove_include"):
+        if list_slot(slots.get(slot_name)):
+            return True
+    return bool(slots.get("output_target"))
 
 
 def truthy(value: Any) -> bool:

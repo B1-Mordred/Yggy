@@ -81,11 +81,13 @@ Use Bragi for natural requests:
 ```text
 Bragi, can you keep an eye on my AI server and tell me if something breaks?
 Bragi, draft a weekday 08:00 local AI security briefing to Discord, but keep it disabled.
+Bragi, add Docker security updates to the daily brief.
 ```
 
 Bragi will ask for confirmation, send only canonical intents to Heimdal, and
 forward only accepted deterministic actions to Yggdrasil. User confirmation is
-not Yggy approval.
+not Yggy approval. Existing-brief changes become Yggy task-change proposals;
+Bragi does not approve or apply them and does not expose approval nonces.
 
 Ordinary chat, such as greetings or general questions, stays inside Bragi's
 no-tool chat fallback. Bragi should not describe normal conversation as a

@@ -99,11 +99,24 @@ Milestone-one capabilities:
 
 - `server_health.v1`
 - `topic_digest.v1`
+- `topic_digest.modify_subjects.v1`
 - `n8n_webhook.v1`
 
 Bragi may ask for user confirmation before forwarding a request. That
 confirmation only confirms understanding. It does not approve or enable the
 automation; the Yggy approval path still applies.
+
+For existing briefs, Bragi can propose bounded subject/source changes:
+
+```text
+add Docker security updates to the daily brief
+remove n8n releases from the daily brief
+include Open WebUI release notes in the daily local AI security briefing
+```
+
+These requests become canonical `propose_task_change` intents. They may only
+use approved source IDs and filter terms, then Yggdrasil creates a pending Yggy
+task-change proposal. Bragi does not approve, apply, enable, or run the change.
 
 Useful runtime settings:
 
