@@ -60,6 +60,7 @@ RUN_DETAIL_SECRET_KEY_MARKERS = (
     "webhook",
 )
 RUN_DETAIL_NON_SECRET_KEYS = {"webhook_id"}
+PROPOSAL_CHANGE_TYPES = {"draft", "update", "revert_draft", "approval_request"}
 
 
 class OpsApprovalDecision(BaseModel):
@@ -175,6 +176,17 @@ def ops_status(
     )
     worker = heartbeat_to_dict(session.get(HeartbeatModel, "automation-worker")) if database["connected"] else {"ok": False}
 
+    pending_approval_summaries = []
+    pending_proposals = []
+    pending_general_approvals = []
+    for approval in pending_approvals:
+        summary = _approval_summary(approval, session.get(TaskModel, approval.task_id), session=session)
+        pending_approval_summaries.append(summary)
+        if _approval_is_config_proposal(session, approval):
+            pending_proposals.append(summary)
+        else:
+            pending_general_approvals.append(summary)
+
     return {
         "generated_at": now,
         "service": {
@@ -186,14 +198,15 @@ def ops_status(
             "tasks": len(tasks),
             "enabled_tasks": sum(1 for task in tasks if task.enabled),
             "pending_approvals": len(pending_approvals),
+            "pending_proposals": len(pending_proposals),
+            "pending_general_approvals": len(pending_general_approvals),
             "active_runs": len(active_runs),
         },
         "tasks": [_task_summary(task, latest_by_task.get(task.id)) for task in tasks],
         "recent_runs": [_run_summary(run) for run in recent_runs[:10]],
-        "pending_approvals": [
-            _approval_summary(approval, session.get(TaskModel, approval.task_id), session=session)
-            for approval in pending_approvals
-        ],
+        "pending_approvals": pending_approval_summaries,
+        "pending_proposals": pending_proposals,
+        "pending_general_approvals": pending_general_approvals,
         "retention": {
             "policy": {
                 "run_retention_days": get_settings().run_retention_days,
@@ -874,6 +887,11 @@ def _approval_history_summary(approval: ApprovalModel) -> dict:
     }
 
 
+def _approval_is_config_proposal(session: Session, approval: ApprovalModel) -> bool:
+    version = task_config_version_for_approval(session, approval.id)
+    return bool(version and version.change_type in PROPOSAL_CHANGE_TYPES)
+
+
 def _approval_summary(
     approval: ApprovalModel,
     task: TaskModel | None = None,
@@ -1207,6 +1225,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     <button class="tab-button active" type="button" data-view-target="overview">Overview</button>
     <button class="tab-button" type="button" data-view-target="tasks">Tasks <span class="tab-count" data-count="tasks"></span></button>
     <button class="tab-button" type="button" data-view-target="runs">Runs <span class="tab-count" data-count="runs"></span></button>
+    <button class="tab-button" type="button" data-view-target="proposals">Proposals <span class="tab-count" data-count="proposals"></span></button>
     <button class="tab-button" type="button" data-view-target="approvals">Approvals <span class="tab-count" data-count="approvals"></span></button>
     <button class="tab-button" type="button" data-view-target="audit">Audit</button>
     <button class="tab-button" type="button" data-view-target="retention">Retention</button>
@@ -1276,6 +1295,9 @@ DASHBOARD_HTML = f"""<!doctype html>
     </section>
     <section class="view" data-view="approvals">
       <section class="section panel" id="approvals"></section>
+    </section>
+    <section class="view" data-view="proposals">
+      <section class="section panel" id="proposals"></section>
     </section>
     <section class="view" data-view="audit">
       <section class="section panel">
@@ -1773,48 +1795,59 @@ DASHBOARD_HTML = f"""<!doctype html>
         panel.innerHTML = `<h2>Run Detail</h2><div class="bad">Unable to load run detail: ${{esc(error.message)}}</div>`;
       }}
     }}
-    function renderApprovals(approvals) {{
-      const container = document.getElementById('approvals');
-      container.innerHTML = '<h2>Pending Approvals</h2>' + (
-        approvals.length ? approvals.map(item => {{
-          const review = item.review || {{}};
-          const task = item.task || {{}};
-          const actions = review.actions || [];
-          return `<div class="approval">
-            <div class="approval-head">
-              <div>
-                <code>${{esc(item.id)}}</code> for <code>${{esc(item.task_id)}}</code>
-                <span class="pill">${{esc(item.approval_level)}}</span>
-              </div>
-              <span class="meta">requested by ${{esc(item.requested_by)}} at ${{esc(item.created_at)}}</span>
+    function approvalCards(approvals, emptyText) {{
+      return approvals.length ? approvals.map(item => {{
+        const review = item.review || {{}};
+        const task = item.task || {{}};
+        const actions = review.actions || [];
+        return `<div class="approval">
+          <div class="approval-head">
+            <div>
+              <code>${{esc(item.id)}}</code> for <code>${{esc(item.task_id)}}</code>
+              <span class="pill">${{esc(item.approval_level)}}</span>
+              ${{review.config_diff?.change_type ? `<span class="pill">${{esc(review.config_diff.change_type)}}</span>` : ''}}
             </div>
-            <div class="meta">${{esc(item.summary)}}</div>
-            <div><strong>Actions</strong><br>${{actions.map(action => `- ${{esc(action)}}`).join('<br>') || '<span class="meta">n/a</span>'}}</div>
-            <div><strong>Worst-case failure mode</strong><br>${{esc(review.failure_mode)}}</div>
-            <div><strong>Config change</strong><br>
-              <span class="meta">enabled before approval: ${{esc(review.config_change?.enabled_before_approval)}}; enabled after approval: ${{esc(review.config_change?.enabled_after_approval)}}</span>
-            </div>
-            ${{review.config_diff ? `<div><strong>Config diff</strong><br>
-              <span class="meta">version ${{esc(review.config_diff.version)}}; ${{configDiffSummary(review.config_diff.diff)}}</span>
-              ${{configDiffList(review.config_diff.diff)}}
-            </div>` : ''}}
-            <details>
-              <summary>Task config</summary>
-              ${{jsonBlock(task.config)}}
-            </details>
-            <div class="approval-actions">
-              <input type="password" autocomplete="off" placeholder="Approval nonce" aria-label="Approval nonce">
-              <button type="button" data-approval-action="approve" data-approval-id="${{esc(item.id)}}">Approve</button>
-              <button type="button" class="danger" data-approval-action="reject" data-approval-id="${{esc(item.id)}}">Reject</button>
-              <span class="meta approval-message"></span>
-            </div>
-          </div>`;
-        }}).join('<hr>')
-        : '<div class="empty">No pending approvals.</div>'
-      );
+            <span class="meta">requested by ${{esc(item.requested_by)}} at ${{esc(item.created_at)}}</span>
+          </div>
+          <div class="meta">${{esc(item.summary)}}</div>
+          <div><strong>Actions</strong><br>${{actions.map(action => `- ${{esc(action)}}`).join('<br>') || '<span class="meta">n/a</span>'}}</div>
+          <div><strong>Worst-case failure mode</strong><br>${{esc(review.failure_mode)}}</div>
+          <div><strong>Config change</strong><br>
+            <span class="meta">enabled before approval: ${{esc(review.config_change?.enabled_before_approval)}}; enabled after approval: ${{esc(review.config_change?.enabled_after_approval)}}</span>
+          </div>
+          ${{review.config_diff ? `<div><strong>Config diff</strong><br>
+            <span class="meta">version ${{esc(review.config_diff.version)}}; ${{configDiffSummary(review.config_diff.diff)}}</span>
+            ${{configDiffList(review.config_diff.diff)}}
+          </div>` : ''}}
+          <details>
+            <summary>Task config</summary>
+            ${{jsonBlock(task.config)}}
+          </details>
+          <div class="approval-actions">
+            <input type="password" autocomplete="off" placeholder="Approval nonce" aria-label="Approval nonce">
+            <button type="button" data-approval-action="approve" data-approval-id="${{esc(item.id)}}">Approve</button>
+            <button type="button" class="danger" data-approval-action="reject" data-approval-id="${{esc(item.id)}}">Reject</button>
+            <span class="meta approval-message"></span>
+          </div>
+        </div>`;
+      }}).join('<hr>') : `<div class="empty">${{esc(emptyText)}}</div>`;
+    }}
+    function wireApprovalButtons(container) {{
       container.querySelectorAll('[data-approval-action]').forEach(button => {{
         button.addEventListener('click', () => decideApproval(button));
       }});
+    }}
+    function renderProposals(proposals) {{
+      const container = document.getElementById('proposals');
+      container.innerHTML = '<h2>Pending Proposals</h2><div class="meta">Draft, update, and revert approvals with config diffs.</div>'
+        + approvalCards(proposals, 'No pending config proposals.');
+      wireApprovalButtons(container);
+    }}
+    function renderApprovals(approvals) {{
+      const container = document.getElementById('approvals');
+      container.innerHTML = '<h2>General Approvals</h2><div class="meta">Pending approvals that are not config proposals.</div>'
+        + approvalCards(approvals, 'No pending general approvals.');
+      wireApprovalButtons(container);
     }}
     async function decideApproval(button) {{
       const approvalId = button.dataset.approvalId;
@@ -1858,12 +1891,13 @@ DASHBOARD_HTML = f"""<!doctype html>
       document.getElementById('generated').textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}`;
       setTabCount('tasks', data.counts.tasks);
       setTabCount('runs', data.recent_runs.length);
-      setTabCount('approvals', data.counts.pending_approvals);
+      setTabCount('proposals', data.counts.pending_proposals || 0);
+      setTabCount('approvals', data.counts.pending_general_approvals || 0);
       document.getElementById('metrics').innerHTML = [
         metric('Service', statusLabel(data.service.status), `worker age ${{text(data.service.worker.age_seconds)}}s`),
         metric('Tasks', data.counts.tasks, `${{data.counts.enabled_tasks}} enabled`),
         metric('Active Runs', data.counts.active_runs, 'queued or running'),
-        metric('Pending Approvals', data.counts.pending_approvals, 'local approval only'),
+        metric('Pending Reviews', data.counts.pending_approvals, `${{data.counts.pending_proposals || 0}} proposals; ${{data.counts.pending_general_approvals || 0}} general`),
       ].join('');
       document.getElementById('service').innerHTML = `
         <h2>Service Health</h2>
@@ -1875,7 +1909,8 @@ DASHBOARD_HTML = f"""<!doctype html>
       renderRuns();
       if (selectedTaskId && activeView === 'tasks') loadTaskDetail(selectedTaskId);
       if (selectedRunId && activeView === 'runs') loadRunDetail(selectedRunId);
-      renderApprovals(data.pending_approvals);
+      renderProposals(data.pending_proposals || []);
+      renderApprovals(data.pending_general_approvals || []);
       const latestRetention = data.retention.latest;
       document.getElementById('retention').innerHTML = `
         <h2>Retention</h2>

@@ -23,6 +23,8 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "Yggy Operations" in allowed.text
     assert "data-view-target=\"audit\"" in allowed.text
     assert "data-view=\"tasks\"" in allowed.text
+    assert "data-view=\"proposals\"" in allowed.text
+    assert "data-count=\"proposals\"" in allowed.text
     assert "task-detail" in allowed.text
     assert "data-task-detail-id" in allowed.text
     assert "data-task-version-revert" in allowed.text
@@ -104,9 +106,13 @@ def test_ops_status_summarizes_without_logs_or_nonces(client, monkeypatch):
     assert body["counts"]["tasks"] == 1
     assert body["counts"]["enabled_tasks"] == 1
     assert body["counts"]["pending_approvals"] == 1
+    assert body["counts"]["pending_proposals"] == 0
+    assert body["counts"]["pending_general_approvals"] == 1
     assert body["tasks"][0]["latest_run"]["id"] == run_id
     assert body["recent_runs"][0]["notification"]["sent"] is True
     assert body["pending_approvals"][0]["review"]["actions"]
+    assert body["pending_general_approvals"][0]["id"] == "approval-ops-test"
+    assert body["pending_proposals"] == []
     assert body["pending_approvals"][0]["review"]["failure_mode"]
     assert body["pending_approvals"][0]["review"]["config_change"]["enabled_after_approval"] is True
     assert "nonce" not in response.text.lower()
@@ -1041,6 +1047,11 @@ def test_ops_task_version_revert_creates_disabled_approval_gated_draft(client, m
         assert audit is not None
         assert audit.detail["source_version"] == 1
         assert audit.detail["new_version"] == 3
+
+    status_response = client.get("/ops/status", auth=("operator", "test-dashboard-password"))
+    assert status_response.status_code == 200
+    proposal = next(item for item in status_response.json()["pending_proposals"] if item["id"] == approval["id"])
+    assert proposal["review"]["config_diff"]["change_type"] == "revert_draft"
 
     approve_response = client.post(
         f"/ops/approvals/{approval['id']}/approve",

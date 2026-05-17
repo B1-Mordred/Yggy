@@ -152,9 +152,9 @@ The API serves a local operations and approval dashboard at:
 http://127.0.0.1:8088/ops
 ```
 
-It is split into views for overview, tasks, runs, approvals, audit, and
-retention so routine checks do not require scanning every table. It shows task
-state, latest runs, pending approvals, worker heartbeat, and retention status.
+It is split into views for overview, tasks, runs, proposals, approvals, audit,
+and retention so routine checks do not require scanning every table. It shows
+task state, latest runs, pending reviews, worker heartbeat, and retention status.
 The task and run views include browser-side filters for quick narrowing by text,
 state, type, or run status.
 Pending approvals include actions, worst-case failure mode, and the redacted task
@@ -175,6 +175,11 @@ when one exists. The dashboard displays the structured diff for that approval so
 the operator can review the proposed config change before entering the approval
 nonce. Config snapshots are stored redacted and are not exposed in the OpenAPI
 tool schema.
+
+The `Proposals` view contains pending draft, update, approval-request, and
+revert approvals with config diffs. The `Approvals` view is reserved for pending
+approvals that are not config proposals. This keeps routine config review
+separate from broader operational approvals as the queue grows.
 
 Prior config versions can be reverted from the task-detail panel. A revert does
 not immediately enable or run the task. It creates a new disabled

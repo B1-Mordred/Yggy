@@ -30,9 +30,15 @@ def test_draft_task_creates_approval_linked_config_version(client):
     ops_response = client.get("/ops/status", headers=ADMIN_HEADERS)
 
     assert ops_response.status_code == 200
-    pending = ops_response.json()["pending_approvals"][0]
+    status = ops_response.json()
+    assert status["counts"]["pending_approvals"] == 1
+    assert status["counts"]["pending_proposals"] == 1
+    assert status["counts"]["pending_general_approvals"] == 0
+    assert status["pending_general_approvals"] == []
+    pending = status["pending_proposals"][0]
     assert pending["id"] == approval["id"]
     assert pending["review"]["config_diff"]["version"] == 1
+    assert pending["review"]["config_diff"]["change_type"] == "draft"
     assert pending["review"]["config_diff"]["diff"]["counts"]["added"] > 0
 
 
@@ -71,7 +77,9 @@ def test_update_then_request_approval_links_latest_version_with_diff(client):
     ops_response = client.get("/ops/status", headers=ADMIN_HEADERS)
 
     assert ops_response.status_code == 200
-    approval = next(item for item in ops_response.json()["pending_approvals"] if item["id"] == approval_id)
+    status = ops_response.json()
+    approval = next(item for item in status["pending_proposals"] if item["id"] == approval_id)
+    assert approval["review"]["config_diff"]["change_type"] == "update"
     changed_paths = {item["path"] for item in approval["review"]["config_diff"]["diff"]["changed"]}
     assert "trigger.cron" in changed_paths
     assert "filters.include[1]" in {item["path"] for item in approval["review"]["config_diff"]["diff"]["added"]}
