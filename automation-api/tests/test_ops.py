@@ -5,7 +5,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.database import get_engine
-from app.models import ApprovalModel, AuditEventModel, RunModel, TaskModel, utcnow
+from app.models import ApprovalModel, AuditEventModel, RunModel, TaskConfigVersionModel, TaskModel, utcnow
 from app.services.task_version_service import record_task_config_version
 from conftest import ADMIN_HEADERS, TOOL_HEADERS, sample_task
 
@@ -25,6 +25,7 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "data-view=\"tasks\"" in allowed.text
     assert "task-detail" in allowed.text
     assert "data-task-detail-id" in allowed.text
+    assert "data-task-version-revert" in allowed.text
     assert "task-filter-text" in allowed.text
     assert "run-filter-status" in allowed.text
     assert "audit-filter-action" in allowed.text
@@ -959,6 +960,135 @@ def test_ops_approval_invalid_nonce_fails(client, monkeypatch):
         assert task.enabled is False
 
 
+def test_ops_task_version_revert_requires_action_header(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    create_response = client.post(
+        "/tasks/draft",
+        headers=TOOL_HEADERS,
+        json=sample_task("ops_revert_header", "L0_READ_ONLY"),
+    )
+    assert create_response.status_code == 201
+
+    response = client.post(
+        "/ops/tasks/ops_revert_header/versions/1/revert",
+        auth=("operator", "test-dashboard-password"),
+        json={"reason": "missing header"},
+    )
+
+    assert response.status_code == 403
+    assert "missing ops version revert action header" in response.text
+
+
+def test_ops_task_version_revert_creates_disabled_approval_gated_draft(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task_id = "ops_revert_version"
+    create_response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=sample_task(task_id, "L0_READ_ONLY"))
+    assert create_response.status_code == 201
+    updated = sample_task(
+        task_id,
+        "L0_READ_ONLY",
+        enabled=True,
+        trigger={"cron": "15 8 * * 1-5"},
+        filters={"include": ["Open WebUI", "Ollama"]},
+    )
+    update_response = client.put(f"/tasks/{task_id}", headers=ADMIN_HEADERS, json=updated)
+    assert update_response.status_code == 200
+    assert update_response.json()["enabled"] is True
+
+    response = client.post(
+        f"/ops/tasks/{task_id}/versions/1/revert",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "version-revert"},
+        json={"reason": "test revert"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    approval = body["approval"]
+    assert body["message"].startswith("revert draft created")
+    assert body["task"]["enabled"] is False
+    assert body["task"]["status"] == "pending_approval"
+    assert body["source_version"]["version"] == 1
+    assert body["new_version"]["version"] == 3
+    assert body["new_version"]["change_type"] == "revert_draft"
+    assert body["new_version"]["approval_id"] == approval["id"]
+    assert body["new_version"]["diff"]["counts"]["changed"] > 0
+    assert body["approval_nonce"]
+
+    with Session(get_engine()) as session:
+        task = session.get(TaskModel, task_id)
+        versions = (
+            session.query(TaskConfigVersionModel)
+            .filter(TaskConfigVersionModel.task_id == task_id)
+            .order_by(TaskConfigVersionModel.version)
+            .all()
+        )
+        audit = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.action == "task.config.revert")
+            .filter(AuditEventModel.resource_id == task_id)
+            .first()
+        )
+        assert task is not None
+        assert task.enabled is False
+        assert task.status == "pending_approval"
+        assert task.config["enabled"] is False
+        assert task.config["trigger"]["cron"] == "0 8 * * 1-5"
+        assert [version.version for version in versions] == [1, 2, 3]
+        assert versions[-1].approval_id == approval["id"]
+        assert audit is not None
+        assert audit.detail["source_version"] == 1
+        assert audit.detail["new_version"] == 3
+
+    approve_response = client.post(
+        f"/ops/approvals/{approval['id']}/approve",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "approval-decision"},
+        json={"nonce": body["approval_nonce"]},
+    )
+
+    assert approve_response.status_code == 200
+    with Session(get_engine()) as session:
+        task = session.get(TaskModel, task_id)
+        latest = (
+            session.query(TaskConfigVersionModel)
+            .filter(TaskConfigVersionModel.task_id == task_id)
+            .order_by(TaskConfigVersionModel.version.desc())
+            .first()
+        )
+        assert task is not None
+        assert task.enabled is True
+        assert task.status == "enabled"
+        assert task.config["enabled"] is True
+        assert task.config["trigger"]["cron"] == "0 8 * * 1-5"
+        assert latest is not None
+        assert latest.version == 4
+        assert latest.change_type == "approval_approve"
+
+
+def test_ops_task_version_revert_rejects_current_version(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    create_response = client.post(
+        "/tasks/draft",
+        headers=TOOL_HEADERS,
+        json=sample_task("ops_revert_current", "L0_READ_ONLY"),
+    )
+    assert create_response.status_code == 201
+
+    response = client.post(
+        "/ops/tasks/ops_revert_current/versions/1/revert",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "version-revert"},
+        json={"reason": "current version"},
+    )
+
+    assert response.status_code == 409
+    assert "current version" in response.text
+
+
 def test_ops_routes_are_not_in_openapi(client):
     response = client.get("/openapi.json")
 
@@ -972,5 +1102,6 @@ def test_ops_routes_are_not_in_openapi(client):
     assert "/ops/tasks/{task_id}/run" not in paths
     assert "/ops/tasks/{task_id}/pause" not in paths
     assert "/ops/tasks/{task_id}/resume" not in paths
+    assert "/ops/tasks/{task_id}/versions/{version}/revert" not in paths
     assert "/ops/approvals/{approval_id}/approve" not in paths
     assert "/ops/approvals/{approval_id}/reject" not in paths

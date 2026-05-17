@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import secrets
 from html import escape
 from typing import Annotated, Any, Literal
@@ -7,7 +8,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
@@ -16,13 +17,15 @@ from app.auth import ApiRole, classify_api_key
 from app.config import get_settings
 from app.database import get_session
 from app.models import ApprovalModel, AuditEventModel, HeartbeatModel, RunModel, TaskModel, utcnow
+from app.policy import PolicyViolation, load_policy, validate_task_policy
 from app.routers.health import WORKER_HEARTBEAT_MAX_AGE_SECONDS, heartbeat_to_dict
 from app.routers.tasks import queue_task_run
-from app.schemas import ApprovalLevel, approval_at_least
-from app.services.approval_service import approve_request, reject_request, verify_nonce
+from app.schemas import ApprovalLevel, TaskConfig, approval_at_least
+from app.services.approval_service import create_approval_request, approve_request, reject_request, verify_nonce
 from app.services.task_version_service import (
     config_diff,
     record_task_config_version,
+    task_config_version_by_number,
     task_config_version_for_approval,
     task_config_version_to_dict,
     task_config_versions,
@@ -34,6 +37,7 @@ basic_security = HTTPBasic(auto_error=False)
 OPS_ACTION_HEADER = "approval-decision"
 OPS_RUN_ACTION_HEADER = "manual-run"
 OPS_TASK_STATE_ACTION_HEADER = "task-state"
+OPS_VERSION_REVERT_ACTION_HEADER = "version-revert"
 MAX_RUN_DETAIL_ITEMS = 10
 MAX_RUN_DETAIL_ERRORS = 10
 MAX_RUN_DETAIL_TEXT = 6000
@@ -68,6 +72,10 @@ class OpsApprovalRejection(BaseModel):
 
 class OpsTaskRunRequest(BaseModel):
     mode: Literal["dry_run", "live"] = "dry_run"
+
+
+class OpsTaskVersionRevertRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
 
 
 def require_ops_access(
@@ -118,6 +126,13 @@ def require_ops_task_state_action_header(
 ) -> None:
     if x_yggy_ops_action != OPS_TASK_STATE_ACTION_HEADER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops task state action header")
+
+
+def require_ops_version_revert_action_header(
+    x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
+) -> None:
+    if x_yggy_ops_action != OPS_VERSION_REVERT_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops version revert action header")
 
 
 @router.get("/ops", response_class=HTMLResponse, include_in_schema=False)
@@ -379,6 +394,88 @@ def ops_resume_task(
     return _task_summary(task, None)
 
 
+@router.post("/ops/tasks/{task_id}/versions/{version}/revert", include_in_schema=False)
+def ops_revert_task_config_version(
+    task_id: str,
+    version: int,
+    payload: OpsTaskVersionRevertRequest | None = None,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_version_revert_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    task = session.get(TaskModel, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    source_version = task_config_version_by_number(session, task.id, version)
+    if not source_version:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task config version not found")
+    latest_version = task_config_versions(session, task.id, limit=1)
+    if latest_version and source_version.version == latest_version[0].version:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="cannot revert to the current version")
+    pending_approval = (
+        session.query(ApprovalModel)
+        .filter(ApprovalModel.task_id == task.id)
+        .filter(ApprovalModel.status == "pending")
+        .first()
+    )
+    if pending_approval:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="resolve pending approval before reverting config",
+        )
+
+    restored_config = copy.deepcopy(source_version.config if isinstance(source_version.config, dict) else {})
+    restored_config["id"] = task.id
+    restored_config["enabled"] = False
+    task_config = _validated_revert_task_config(restored_config)
+
+    old_version_number = latest_version[0].version if latest_version else None
+    task.name = task_config.name
+    task.type = task_config.type
+    task.enabled = False
+    task.owner = task_config.owner
+    task.created_by = task_config.created_by
+    task.approval_level = task_config.policy.approval_level.value
+    task.status = "pending_approval"
+    task.config = task_config.model_dump(mode="json")
+    session.flush()
+
+    approval, nonce = create_approval_request(session, task, requested_by="ops_dashboard")
+    session.flush()
+    new_version = record_task_config_version(
+        session,
+        task,
+        actor_role="ops_dashboard",
+        change_type="revert_draft",
+        approval_id=approval.id,
+        summary=f"Reverted draft from config version {source_version.version}; task remains disabled pending approval.",
+    )
+    audit_event(
+        session,
+        "ops_dashboard",
+        "task.config.revert",
+        "task",
+        task.id,
+        {
+            "surface": "ops_ui",
+            "source_version": source_version.version,
+            "previous_latest_version": old_version_number,
+            "new_version": new_version.version,
+            "approval_id": approval.id,
+            "reason": payload.reason if payload else "",
+        },
+    )
+    session.commit()
+    return {
+        "task": _task_summary(task, None),
+        "source_version": task_config_version_to_dict(session, source_version, include_config=False),
+        "new_version": task_config_version_to_dict(session, new_version, include_config=False),
+        "approval": _approval_summary(approval, task, session=session),
+        "approval_nonce": nonce,
+        "message": "revert draft created; task remains disabled until approval is accepted",
+    }
+
+
 @router.post("/ops/approvals/{approval_id}/approve", include_in_schema=False)
 def ops_approve_approval(
     approval_id: str,
@@ -551,6 +648,17 @@ def _task_action_eligibility(session: Session, task: TaskModel) -> dict:
         resume = _allowed_action(True, "available")
 
     return {"dry_run": dry_run, "live_run": live_run, "pause": pause, "resume": resume}
+
+
+def _validated_revert_task_config(config: dict) -> TaskConfig:
+    try:
+        task_config = TaskConfig.model_validate(config)
+        validate_task_policy(task_config, load_policy())
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors(include_context=False)) from exc
+    except PolicyViolation as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors) from exc
+    return task_config
 
 
 def _allowed_action(allowed: bool, reason: str) -> dict:
@@ -1074,6 +1182,9 @@ DASHBOARD_HTML = f"""<!doctype html>
     .state-actions {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }}
     .state-actions button {{ padding: 6px 9px; }}
     .state-actions button:disabled {{ cursor: not-allowed; opacity: 0.55; }}
+    .version-actions {{ margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }}
+    .version-actions button {{ padding: 6px 9px; }}
+    .version-actions button:disabled {{ cursor: not-allowed; opacity: 0.55; }}
     @media (max-width: 860px) {{
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -1191,6 +1302,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="approval.reject">approval.reject</option>
             <option value="approval.request">approval.request</option>
             <option value="task.draft">task.draft</option>
+            <option value="task.config.revert">task.config.revert</option>
             <option value="task.update">task.update</option>
             <option value="task.pause">task.pause</option>
             <option value="task.resume">task.resume</option>
@@ -1324,6 +1436,11 @@ DASHBOARD_HTML = f"""<!doctype html>
         button.addEventListener('click', () => setTaskState(button));
       }});
     }}
+    function wireTaskVersionRevertButtons() {{
+      document.querySelectorAll('[data-task-version-revert]').forEach(button => {{
+        button.addEventListener('click', () => revertTaskVersion(button));
+      }});
+    }}
     async function runTask(button) {{
       const taskId = button.dataset.taskId;
       const mode = button.dataset.runMode;
@@ -1375,6 +1492,36 @@ DASHBOARD_HTML = f"""<!doctype html>
         const body = await response.json();
         status.textContent = `${{action === 'pause' ? 'Paused' : 'Resumed'}} ${{body.id || taskId}}.`;
         await refresh();
+      }} catch (error) {{
+        status.textContent = error.message;
+        status.className = 'meta bad';
+      }} finally {{
+        button.disabled = false;
+      }}
+    }}
+    async function revertTaskVersion(button) {{
+      const taskId = button.dataset.taskId;
+      const version = button.dataset.version;
+      const status = document.getElementById('task-action-status');
+      if (!window.confirm(`Create a disabled revert draft for ${{taskId}} from config version ${{version}}?`)) return;
+      button.disabled = true;
+      status.textContent = `revert request pending for ${{taskId}} from v${{version}}...`;
+      status.className = 'meta';
+      try {{
+        const response = await fetch(`/ops/tasks/${{encodeURIComponent(taskId)}}/versions/${{encodeURIComponent(version)}}/revert`, {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'Content-Type': 'application/json', 'X-Yggy-Ops-Action': 'version-revert'}},
+          body: JSON.stringify({{reason: 'Reverted from ops dashboard'}}),
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const body = await response.json();
+        status.textContent = `Revert draft created as v${{body.new_version?.version}}. Approval ${{shortId(body.approval?.id)}} created. Nonce shown once: ${{body.approval_nonce}}`;
+        await refresh();
+        await loadTaskDetail(taskId);
       }} catch (error) {{
         status.textContent = error.message;
         status.className = 'meta bad';
@@ -1459,6 +1606,11 @@ DASHBOARD_HTML = f"""<!doctype html>
           <div class="meta">approval ${{esc(version.approval_id)}}; diff ${{configDiffSummary(version.diff)}}</div>
           ${{version.summary ? `<div>${{esc(version.summary)}}</div>` : ''}}
           ${{configDiffList(version.diff)}}
+          ${{index === 0 ? '<div class="meta">Current version cannot be reverted to itself.</div>' : `
+            <div class="version-actions">
+              <button type="button" class="danger" data-task-version-revert="true" data-task-id="${{esc(version.task_id)}}" data-version="${{esc(version.version)}}" title="Create disabled draft from this version">Revert to v${{esc(version.version)}}</button>
+            </div>
+          `}}
         </details>
       `).join('<hr>') : '<div class="empty">No config version snapshots recorded for this task.</div>';
     }}
@@ -1510,6 +1662,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         </div>
       `;
       wireRunLinks();
+      wireTaskVersionRevertButtons();
     }}
     async function loadTaskDetail(taskId) {{
       selectedTaskId = taskId;

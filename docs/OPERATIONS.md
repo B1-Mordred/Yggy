@@ -176,6 +176,14 @@ the operator can review the proposed config change before entering the approval
 nonce. Config snapshots are stored redacted and are not exposed in the OpenAPI
 tool schema.
 
+Prior config versions can be reverted from the task-detail panel. A revert does
+not immediately enable or run the task. It creates a new disabled
+`revert_draft` version from the selected snapshot, sets the task to
+`pending_approval`, records `task.config.revert` in the audit log, and creates a
+fresh approval request. The new approval nonce is shown once in the local
+dashboard response for the operator. The task remains disabled until that
+approval is accepted through the local approval flow.
+
 Recent run ids in the dashboard are clickable. The run-detail panel is backed by
 the hidden `/ops/runs/{run_id}` endpoint and shows a bounded, redacted projection
 of the run: topic digest message and items, n8n normalizer response, notification

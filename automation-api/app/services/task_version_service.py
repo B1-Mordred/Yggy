@@ -100,6 +100,19 @@ def task_config_versions(
     )
 
 
+def task_config_version_by_number(
+    session: Session,
+    task_id: str,
+    version: int,
+) -> TaskConfigVersionModel | None:
+    return (
+        session.query(TaskConfigVersionModel)
+        .filter(TaskConfigVersionModel.task_id == task_id)
+        .filter(TaskConfigVersionModel.version == version)
+        .first()
+    )
+
+
 def task_config_version_for_approval(
     session: Session,
     approval_id: str,
