@@ -65,3 +65,27 @@ def test_invalid_failure_collapse_window_fails():
         assert "failure_collapse_window_minutes" in str(exc)
     else:
         raise AssertionError("invalid failure collapse window was accepted")
+
+
+def test_n8n_webhook_requires_n8n_config():
+    data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_n8n_webhook.yaml").read_text(encoding="utf-8"))
+    data["id"] = "missing_n8n_config"
+    data.pop("n8n")
+    try:
+        TaskConfig.model_validate(data)
+    except Exception as exc:
+        assert "n8n_webhook task requires n8n config" in str(exc)
+    else:
+        raise AssertionError("n8n_webhook task without n8n config was accepted")
+
+
+def test_n8n_webhook_rejects_absolute_url_path():
+    data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_n8n_webhook.yaml").read_text(encoding="utf-8"))
+    data["id"] = "bad_n8n_absolute_url"
+    data["n8n"]["path"] = "https://example.com/webhook"
+    try:
+        TaskConfig.model_validate(data)
+    except Exception as exc:
+        assert "path must start" in str(exc) or "absolute URL" in str(exc)
+    else:
+        raise AssertionError("absolute n8n webhook URL was accepted")

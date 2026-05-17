@@ -83,6 +83,10 @@ The API rejects tasks when:
 - notification quiet-hour times are not `HH:MM`
 - notification quiet-hour timezone is invalid
 - `failure_collapse_window_minutes` is outside the allowed range
+- `n8n_webhook` tasks omit `n8n.webhook_id`
+- `n8n_webhook` tasks reference a webhook that is not listed in `configs/n8n/webhooks.yaml`
+- `n8n_webhook` paths are absolute URLs or do not start with `/webhook/` or `/webhook-test/`
+- `n8n_webhook` method is not `POST`
 
 ## Approved Sources
 
@@ -111,6 +115,30 @@ handler completes or fails:
 
 Every run log includes a `notification_decision` object with the classification
 and suppression reason.
+
+## n8n Webhook Tasks
+
+n8n is an execution backend, not the policy authority. `n8n_webhook` tasks are
+approved by the automation API like any other task. The task config may reference
+only an approved webhook ID and internal webhook path:
+
+```yaml
+type: n8n_webhook
+output:
+  channel: internal
+  target: n8n
+  format: "bounded webhook dispatch status"
+n8n:
+  webhook_id: daily_briefing_stub
+  path: /webhook/yggy/daily-briefing
+  method: POST
+  payload:
+    purpose: daily_briefing_stub
+```
+
+The shared webhook secret is read from `N8N_WEBHOOK_SHARED_SECRET` by the worker.
+Do not place webhook secrets, URLs with credentials, n8n credentials, or API
+tokens in task YAML.
 
 ## Secret References
 

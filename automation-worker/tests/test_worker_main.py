@@ -223,6 +223,39 @@ def test_process_server_health_suppresses_discord_when_notify_false(monkeypatch)
     assert client.completed_calls[0]["log"]["notification_decision"]["reason"] == "handler_suppressed"
 
 
+def test_process_n8n_webhook_records_internal_decision(monkeypatch):
+    client = FakeClient()
+
+    def fake_n8n(config: dict, run_id: str) -> dict:
+        return {"status": "dry_run", "notify": False, "webhook_id": "daily_briefing_stub"}
+
+    monkeypatch.setattr("worker.main.run_n8n_webhook", fake_n8n)
+
+    result = process_task(
+        client,
+        {
+            "enabled": True,
+            "config": {
+                "id": "daily_briefing_n8n_stub",
+                "name": "Daily Briefing n8n Webhook Stub",
+                "type": "n8n_webhook",
+                "runtime": {"dry_run": True},
+                "output": {"channel": "internal", "target": "n8n"},
+                "n8n": {
+                    "webhook_id": "daily_briefing_stub",
+                    "path": "/webhook/yggy/daily-briefing",
+                    "method": "POST",
+                },
+            },
+        },
+    )
+
+    assert result["status"] == "completed_dry_run"
+    assert client.discord_calls == []
+    assert client.completed_calls[0]["log"]["result"]["webhook_id"] == "daily_briefing_stub"
+    assert client.completed_calls[0]["log"]["notification_decision"]["reason"] == "non_discord_output"
+
+
 def test_success_notification_can_be_disabled(monkeypatch):
     client = FakeClient()
 

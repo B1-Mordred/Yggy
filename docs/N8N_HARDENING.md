@@ -13,3 +13,14 @@
 - Store credentials in n8n, not task YAML.
 
 n8n is an execution backend. The automation API owns approval state.
+
+## Yggy Webhook Dispatch
+
+- Keep approved webhook IDs in `configs/n8n/webhooks.yaml`.
+- Task YAML may reference only `webhook_id`, internal path, method, and bounded payload.
+- Do not put webhook secrets in task YAML, prompts, Knowledge, docs, or logs.
+- Set `N8N_WEBHOOK_SHARED_SECRET` in `.env` or another local secret store.
+- The worker sends the secret as `X-Yggy-Webhook-Token`.
+- Configure n8n workflows to verify that header before doing any work.
+- Keep n8n webhooks internal-only where possible; do not expose unauthenticated public webhooks.
+- Automation API approval state remains authoritative even when n8n executes the workflow.

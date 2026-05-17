@@ -5,6 +5,7 @@ from typing import Any
 
 
 SECRET_KEY_MARKERS = ("password", "secret", "token", "api_key", "apikey", "private_key", "cookie", "webhook")
+NON_SECRET_KEY_EXACT = {"webhook_id"}
 SECRET_VALUE_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
@@ -20,7 +21,7 @@ def find_secret_paths(value: Any, path: str = "$") -> list[str]:
         for key, child in value.items():
             child_path = f"{path}.{key}"
             key_lower = str(key).lower()
-            if any(marker in key_lower for marker in SECRET_KEY_MARKERS) and _has_plain_value(child):
+            if _key_is_secret_like(key_lower) and _has_plain_value(child):
                 findings.append(child_path)
             findings.extend(find_secret_paths(child, child_path))
     elif isinstance(value, list):
@@ -39,7 +40,7 @@ def redact_secrets(value: Any) -> Any:
         result = {}
         for key, child in value.items():
             key_lower = str(key).lower()
-            if any(marker in key_lower for marker in SECRET_KEY_MARKERS) and _has_plain_value(child):
+            if _key_is_secret_like(key_lower) and _has_plain_value(child):
                 result[key] = "[REDACTED]"
             else:
                 result[key] = redact_secrets(child)
@@ -66,3 +67,9 @@ def _has_plain_value(value: Any) -> bool:
     if isinstance(value, dict):
         return any(_has_plain_value(item) for item in value.values())
     return True
+
+
+def _key_is_secret_like(key_lower: str) -> bool:
+    if key_lower in NON_SECRET_KEY_EXACT:
+        return False
+    return any(marker in key_lower for marker in SECRET_KEY_MARKERS)

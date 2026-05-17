@@ -1,0 +1,50 @@
+id: daily_briefing_n8n_stub
+name: Daily Briefing n8n Webhook Stub
+type: n8n_webhook
+enabled: false
+owner: local_user
+created_by: yggdrasil
+
+trigger:
+  kind: schedule
+  cron: "15 8 * * 1-5"
+  timezone: Europe/Berlin
+
+output:
+  channel: internal
+  target: n8n
+  format: "bounded webhook dispatch status"
+
+policy:
+  approval_level: L1_NOTIFY_ONLY
+  max_items: 1
+  require_sources: false
+  allow_external_side_effects: false
+  allow_shell: false
+  allow_docker_socket: false
+  allow_filesystem_write: false
+
+runtime:
+  dry_run: true
+  timeout_seconds: 60
+  retry_count: 1
+
+notifications:
+  on_success: false
+  on_failure: true
+  on_empty_result: false
+  quiet_hours:
+    enabled: false
+    start: "22:00"
+    end: "07:00"
+    timezone: Europe/Berlin
+  collapse_repeated_failures: true
+  failure_collapse_window_minutes: 120
+
+n8n:
+  webhook_id: daily_briefing_stub
+  path: /webhook/yggy/daily-briefing
+  method: POST
+  payload:
+    purpose: daily_briefing_stub
+    delivery_target: briefings

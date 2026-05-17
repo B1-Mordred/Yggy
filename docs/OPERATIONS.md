@@ -65,6 +65,25 @@ quiet_hours
 repeated_failure_collapsed
 ```
 
+## n8n Webhook Backend
+
+n8n webhooks are approved execution backends. The automation API validates
+`n8n_webhook` task configs against `configs/n8n/webhooks.yaml`, and the worker
+calls only those internal paths. Live dispatch requires
+`N8N_WEBHOOK_SHARED_SECRET`; dry-run dispatch does not call n8n.
+
+Example dry-run task:
+
+```text
+configs/tasks/example_n8n_webhook.yaml
+```
+
+Approved webhook registry:
+
+```text
+configs/n8n/webhooks.yaml
+```
+
 ## Run Locking
 
 Manual and scheduled task runs use a guarded lifecycle:

@@ -177,6 +177,41 @@ class NotificationPreferencesConfig(BaseModel):
     failure_collapse_window_minutes: int = Field(default=360, ge=1, le=10080)
 
 
+class N8nWebhookConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    webhook_id: str | None = None
+    path: str | None = None
+    method: str = "POST"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("webhook_id")
+    @classmethod
+    def webhook_id_must_be_slug(cls, value: str | None) -> str | None:
+        if value is not None and not SLUG_RE.match(value):
+            raise ValueError("webhook_id must be slug-like")
+        return value
+
+    @field_validator("method")
+    @classmethod
+    def method_must_be_post(cls, value: str) -> str:
+        if value.upper() != "POST":
+            raise ValueError("n8n webhook method must be POST")
+        return value.upper()
+
+    @field_validator("path")
+    @classmethod
+    def path_must_be_internal_webhook_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.startswith(("/webhook/", "/webhook-test/")):
+            raise ValueError("n8n webhook path must start with /webhook/ or /webhook-test/")
+        parsed = urlparse(value)
+        if parsed.scheme or parsed.netloc:
+            raise ValueError("n8n webhook path must not be an absolute URL")
+        return value
+
+
 class TaskConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -194,6 +229,7 @@ class TaskConfig(BaseModel):
     policy: PolicyConfig
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     notifications: NotificationPreferencesConfig = Field(default_factory=NotificationPreferencesConfig)
+    n8n: N8nWebhookConfig | None = None
 
     @field_validator("id")
     @classmethod
@@ -201,6 +237,12 @@ class TaskConfig(BaseModel):
         if not SLUG_RE.match(value):
             raise ValueError("id must be slug-like")
         return value
+
+    @model_validator(mode="after")
+    def validate_type_specific_config(self) -> "TaskConfig":
+        if self.type == "n8n_webhook" and self.n8n is None:
+            raise ValueError("n8n_webhook task requires n8n config")
+        return self
 
 
 class TopicConfig(BaseModel):
@@ -274,6 +316,49 @@ def _source_identity(source: SourceConfig | ApprovedSourceConfig) -> tuple[str, 
     if source.type == "web_query":
         return source.type, source.query or ""
     return source.type, source.url or source.query or ""
+
+
+class ApprovedN8nWebhookConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    path: str
+    method: str = "POST"
+    enabled: bool = True
+    max_payload_keys: int = Field(default=20, ge=1, le=100)
+    description: str = ""
+
+    @field_validator("id")
+    @classmethod
+    def id_must_be_slug(cls, value: str) -> str:
+        if not SLUG_RE.match(value):
+            raise ValueError("id must be slug-like")
+        return value
+
+    @model_validator(mode="after")
+    def validate_webhook(self) -> "ApprovedN8nWebhookConfig":
+        N8nWebhookConfig(webhook_id=self.id, path=self.path, method=self.method)
+        return self
+
+
+class N8nWebhookRegistryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 1
+    webhooks: list[ApprovedN8nWebhookConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_registry(self) -> "N8nWebhookRegistryConfig":
+        if self.version != 1:
+            raise ValueError("n8n_webhooks.yaml version must be 1")
+        ids = [webhook.id for webhook in self.webhooks]
+        if len(ids) != len(set(ids)):
+            raise ValueError("approved n8n webhook ids must be unique")
+        paths = [webhook.path for webhook in self.webhooks]
+        if len(paths) != len(set(paths)):
+            raise ValueError("approved n8n webhook paths must be unique")
+        return self
 
 
 class ApprovalDecision(BaseModel):

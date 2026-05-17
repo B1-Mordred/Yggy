@@ -44,3 +44,9 @@ source_policy:
     - topic_digest
   require_source_ids: true
   allow_web_query_sources: false
+
+n8n_policy:
+  approved_webhooks_file: n8n/webhooks.yaml
+  require_approved_webhooks_for_task_types:
+    - n8n_webhook
+  require_webhook_ids: true
