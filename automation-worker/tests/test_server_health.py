@@ -94,3 +94,31 @@ def test_server_health_ollama_tags_requires_models():
 
     assert result["status"] == "degraded"
     assert result["checks"][0]["model_count"] == 0
+
+
+def test_server_health_service_metrics_detects_failed_services():
+    def metrics_get(*args, **kwargs):
+        return Response(
+            200,
+            {
+                "status": "degraded",
+                "summary": {"enabled_count": 3, "ok_count": 2, "failed_count": 1},
+                "services": [
+                    {"id": "automation_api", "ok": True},
+                    {"id": "open_webui", "ok": False},
+                ],
+            },
+        )
+
+    result = run_server_health(
+        {
+            "checks": [{"type": "service_metrics", "name": "metrics", "url": "http://metrics-exporter:8090/metrics/services"}],
+            "output": {"format": "anomalies only"},
+            "runtime": {"timeout_seconds": 1},
+        },
+        http_get=metrics_get,
+    )
+
+    assert result["status"] == "degraded"
+    assert result["checks"][0]["metrics_failed_count"] == 1
+    assert result["checks"][0]["metrics_failed_services"] == ["open_webui"]

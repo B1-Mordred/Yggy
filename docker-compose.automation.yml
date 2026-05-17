@@ -62,6 +62,37 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
+  metrics-exporter:
+    build:
+      context: ./metrics-exporter
+      network: host
+    container_name: yggy-metrics-exporter
+    environment:
+      YGGY_METRICS_CONFIG: /app/configs/metrics/services.yaml
+    networks:
+      - automation_net
+      - notify_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      automation-api:
+        condition: service_healthy
+    volumes:
+      - ./configs:/app/configs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   automation-mysql:
     image: mysql:8.4
     container_name: automation-mysql

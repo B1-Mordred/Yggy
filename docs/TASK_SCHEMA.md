@@ -133,6 +133,21 @@ handler completes or fails:
 Every run log includes a `notification_decision` object with the classification
 and suppression reason.
 
+## Server Health Checks
+
+`server_health` tasks can check bounded HTTP endpoints. Supported check types
+include:
+
+- `http_health`: status-code health check.
+- `worker_heartbeat`: automation API health plus worker heartbeat freshness.
+- `ollama_tags`: Ollama model inventory check.
+- `service_metrics`: internal metrics exporter summary from
+  `http://metrics-exporter:8090/metrics/services`.
+
+The `service_metrics` check reports failed configured services from the
+metrics-exporter allowlist without exposing Docker, process, filesystem, or
+secret data.
+
 ## Run Safety Limits
 
 Task policies can bound how often a task may be queued:

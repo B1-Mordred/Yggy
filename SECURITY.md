@@ -14,6 +14,11 @@ Forbidden model-facing capabilities:
 - unchecked external posting or SaaS modification
 - secret storage in prompts, chat, Knowledge, YAML configs, Git, or logs
 
+Local service health visibility is provided by the internal metrics exporter,
+which performs only allowlisted HTTP GET checks from static YAML. It does not
+run shell commands, mount host filesystems, use host networking, or access the
+Docker socket.
+
 Allowed model-facing pattern:
 
 ```text

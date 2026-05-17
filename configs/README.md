@@ -15,3 +15,8 @@ Any task with an `n8n:` block must use webhook IDs from `configs/n8n/webhooks.ya
 Task YAML may include the approved path and bounded static payload metadata, but
 never webhook secrets or n8n credentials. For topic digests, the worker builds
 dynamic digest payload fields at runtime from the approved digest result.
+
+Service health metrics are configured in `configs/metrics/services.yaml`. This
+file is a static allowlist for the internal metrics exporter. Add only local
+HTTP health or inventory endpoints that are safe to read and do not require
+secrets.

@@ -779,6 +779,10 @@ def format_health_run(run: dict[str, Any], result: dict[str, Any]) -> str:
                 details.append(f"worker age `{check.get('worker_age_seconds')}s`")
             if check.get('model_count') is not None:
                 details.append(f"models `{check.get('model_count')}`")
+            if check.get('metrics_failed_count') is not None:
+                details.append(f"metrics failed `{check.get('metrics_failed_count')}`")
+            if check.get('metrics_failed_services'):
+                details.append(f"failed services: {', '.join(str(item) for item in check.get('metrics_failed_services')[:5])}")
             if check.get('error'):
                 details.append(f"error: {check.get('error')}")
             suffix = f" ({', '.join(details)})" if details else ''

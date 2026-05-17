@@ -182,10 +182,17 @@ def test_show_server_health_uses_latest_run(monkeypatch):
                 "status": "ok",
                 "notify": False,
                 "ok_count": 2,
-                "failed_count": 0,
+                    "failed_count": 1,
                 "checks": [
                     {"name": "automation_api", "type": "http_health", "ok": True, "status_code": 200, "latency_ms": 8},
                     {"name": "automation_worker", "type": "worker_heartbeat", "ok": True, "worker_age_seconds": 0},
+                    {
+                        "name": "yggy_metrics_exporter",
+                        "type": "service_metrics",
+                        "ok": False,
+                        "metrics_failed_count": 1,
+                        "metrics_failed_services": ["open_webui"],
+                    },
                 ],
             },
         },
@@ -205,5 +212,6 @@ def test_show_server_health_uses_latest_run(monkeypatch):
     assert "Run `22222222-2222-2222-2222-222222222222`" in answer
     assert "morning_server_health_check" in answer
     assert "Health: `ok`" in answer
-    assert "Checks: `2/2 ok`, failed `0`" in answer
+    assert "Checks: `2/3 ok`, failed `1`" in answer
+    assert "failed services: open_webui" in answer
     assert "Items:" not in answer

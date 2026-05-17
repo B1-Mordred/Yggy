@@ -9,6 +9,7 @@ Yggy turns Hermes/yggdrasil into a coordinator for bounded local automations.
 - automation-api: policy authority and OpenAPI tool server.
 - MySQL: durable storage for tasks, approvals, run logs, and audit events.
 - automation-worker: bounded executor for approved tasks.
+- metrics-exporter: internal-only read-only HTTP health inventory adapter.
 - n8n: optional workflow backend. It is never approval authority.
 - Discord bridge: notification output through whitelisted targets.
 - Ollama: optional summarizer adapter, disabled by default.
@@ -21,6 +22,7 @@ automation-api -> validate schema and policy
 automation-api -> create disabled draft and approval request
 local admin CLI/UI -> approve with nonce
 automation-worker -> execute approved bounded handler
+automation-worker -> read bounded metrics-exporter health data when configured
 automation-worker -> record run and optionally notify Discord
 ```
 
@@ -29,6 +31,8 @@ automation-worker -> record run and optionally notify Discord
 The automation API is the policy boundary. Workers and n8n execute only bounded task types and only after the API says a task is enabled and approved.
 
 Open WebUI Tools/Functions are not used for broad Python execution. Open WebUI should ingest only the automation API OpenAPI spec and should receive only the low-privilege tool key.
+
+The metrics exporter is intentionally not a host-management agent. It performs only allowlisted HTTP GET checks from `configs/metrics/services.yaml`; it has no Docker socket, shell, host networking, or broad host filesystem access.
 
 ## MySQL
 

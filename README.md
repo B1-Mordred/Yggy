@@ -20,6 +20,7 @@ Open WebUI
       -> versioned YAML configs
       -> audit log
       -> automation-worker
+          -> metrics-exporter
           -> n8n webhooks
           -> Discord dry-run or whitelisted webhooks
           -> RSS / HTTP sources
@@ -36,7 +37,7 @@ cp .env.example .env
 # edit .env manually; do not commit it
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e "automation-api[test]" -e "automation-worker[test]"
+python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]"
 python scripts/validate_configs.py
 docker compose -f docker-compose.automation.yml config
 ```
@@ -44,14 +45,14 @@ docker compose -f docker-compose.automation.yml config
 Run tests locally:
 
 ```bash
-pytest automation-api/tests automation-worker/tests
+pytest automation-api/tests automation-worker/tests metrics-exporter/tests yggdrasil/tests
 python scripts/validate_configs.py
 ```
 
 When ready, bring up only the new automation scaffold:
 
 ```bash
-docker compose -f docker-compose.automation.yml up -d automation-mysql automation-api automation-worker
+docker compose -f docker-compose.automation.yml up -d automation-mysql automation-api metrics-exporter automation-worker
 curl http://127.0.0.1:8088/health
 ```
 
@@ -84,6 +85,7 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
 - n8n: optional execution backend, not approval authority
 - Ollama summarizer: disabled by default
 - Topic digest sources: explicit approved-source registry
+- Metrics exporter: internal-only read-only HTTP service inventory checks
 
 ## Safety Model
 
@@ -101,6 +103,8 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
   success, failure, empty results, quiet hours, and repeated-failure collapse.
 - Task execution is bounded by per-task run limits, active-run locks, worker
   leases, and stale-run recovery before new runs are queued.
+- Service health visibility uses a narrow metrics exporter with static
+  allowlisted HTTP checks, not Docker socket or shell access.
 - Secrets stay in `.env`, Docker secrets, n8n credentials, or a local secret manager.
 - Task YAML, Open WebUI Knowledge, prompts, chat history, and logs must not contain secrets.
 

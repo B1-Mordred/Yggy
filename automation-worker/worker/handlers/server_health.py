@@ -34,6 +34,21 @@ def check_http(check: dict, timeout: int, http_get: Callable[..., httpx.Response
             models = payload.get("models") if isinstance(payload, dict) else []
             result["model_count"] = len(models) if isinstance(models, list) else 0
             result["ok"] = bool(result["ok"] and result["model_count"] > 0)
+        if check.get("type") == "service_metrics":
+            payload = response.json()
+            summary = payload.get("summary") if isinstance(payload, dict) else {}
+            services = payload.get("services") if isinstance(payload, dict) else []
+            failed_count = int(summary.get("failed_count") or 0) if isinstance(summary, dict) else 0
+            enabled_count = int(summary.get("enabled_count") or 0) if isinstance(summary, dict) else 0
+            result["metrics_status"] = payload.get("status") if isinstance(payload, dict) else None
+            result["metrics_enabled_count"] = enabled_count
+            result["metrics_failed_count"] = failed_count
+            result["metrics_failed_services"] = [
+                service.get("id") or service.get("name")
+                for service in services
+                if isinstance(service, dict) and service.get("ok") is not True
+            ][:10]
+            result["ok"] = bool(result["ok"] and enabled_count > 0 and failed_count == 0)
     except Exception as exc:
         result["latency_ms"] = int((time.monotonic() - started) * 1000)
         result["error"] = exc.__class__.__name__

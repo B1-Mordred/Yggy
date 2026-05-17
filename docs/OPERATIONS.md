@@ -20,6 +20,28 @@ logs include `source_health`, `approved_source_count`, and per-item trust
 metadata so source failures are audit-visible without trusting source content as
 instructions.
 
+## Local Metrics Exporter
+
+Yggy includes an internal-only `metrics-exporter` service for read-only service
+health visibility. It reads:
+
+```text
+configs/metrics/services.yaml
+```
+
+and exposes:
+
+```text
+GET http://metrics-exporter:8090/health
+GET http://metrics-exporter:8090/metrics/services
+```
+
+The exporter performs only bounded HTTP GET checks against the configured
+allowlist. It does not mount the Docker socket, run shell commands, use host
+network mode, inspect containers, write host files, or expose credentials. The
+`morning_server_health_check` task reads the exporter through a `service_metrics`
+check and can alert on failed configured services.
+
 Notification preferences are stored in each task config. The worker records a
 `notification_decision` in every run log so you can see whether a message was
 sent, skipped for quiet hours, skipped because the result was empty, or collapsed

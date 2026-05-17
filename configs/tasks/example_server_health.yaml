@@ -27,6 +27,9 @@ checks:
   - type: ollama_tags
     name: ollama
     url: http://host.docker.internal:11434/api/tags
+  - type: service_metrics
+    name: yggy_metrics_exporter
+    url: http://metrics-exporter:8090/metrics/services
 
 output:
   channel: discord

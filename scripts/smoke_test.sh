@@ -15,7 +15,7 @@ if [[ ! -x "${PYTEST_BIN}" ]]; then
   PYTEST_BIN="pytest"
 fi
 
-"${PYTEST_BIN}" automation-api/tests automation-worker/tests yggdrasil/tests
+"${PYTEST_BIN}" automation-api/tests automation-worker/tests metrics-exporter/tests yggdrasil/tests
 "${PYTHON_BIN}" scripts/validate_configs.py
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then

@@ -13,9 +13,11 @@ if sys.prefix == sys.base_prefix and VENV_PYTHON.exists():
     os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), *sys.argv])
 
 sys.path.insert(0, str(ROOT / "automation-api"))
+sys.path.insert(0, str(ROOT / "metrics-exporter"))
 
 from app.policy import PolicyViolation, load_policy, validate_policy_config, validate_task_policy  # noqa: E402
 from app.schemas import TaskConfig, TopicConfig  # noqa: E402
+from exporter.config import load_config as load_metrics_config  # noqa: E402
 
 
 def validate_tasks() -> list[str]:
@@ -50,8 +52,18 @@ def validate_policies() -> list[str]:
     return []
 
 
+def validate_metrics() -> list[str]:
+    errors: list[str] = []
+    for path in sorted((ROOT / "configs" / "metrics").glob("*.yaml")):
+        try:
+            load_metrics_config(path)
+        except Exception as exc:
+            errors.append(f"{path}: {exc}")
+    return errors
+
+
 def main() -> int:
-    errors = validate_policies() + validate_topics() + validate_tasks()
+    errors = validate_policies() + validate_topics() + validate_tasks() + validate_metrics()
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
