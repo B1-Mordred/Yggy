@@ -110,14 +110,29 @@ Bragi can also collect details across a natural multi-turn conversation for a
 new topic digest. For example, if the user gradually describes a daily morning
 security briefing, then later provides sources such as Ubuntu security notices,
 Ollama release notes, vulnerability announcements, patch notes, and NVD records,
-Bragi should stop conversationally once enough slots are present and show a
-canonical `topic_digest.v1` intent. Even phrases like `so be it` only close the
-intake enough to display that canonical intent; they do not forward anything to
-Yggdrasil until the user replies `confirm` to the shown intent.
+Bragi should stop conversationally once enough slots are present and store a
+short-lived intake session. The reply shows a canonical `topic_digest.v1` intent
+and an intake ID such as `bragi_intake_20260518_001122_abcd1234`. Even phrases
+like `so be it` only close the intake enough to display that canonical intent;
+they do not forward anything to Yggdrasil until the user replies
+`confirm intake <id>` or `confirm` while the intake is still visible in the
+conversation.
 
 Bragi must not claim that it has contacted Yggdrasil, scheduled a briefing, or
 that the user can expect future delivery unless a canonical Yggdrasil action
 actually returned that result.
+
+Intake commands:
+
+```text
+show pending intakes
+show intake bragi_intake_...
+confirm intake bragi_intake_...
+cancel intake bragi_intake_...
+```
+
+Intakes are pre-execution state. They contain only non-secret canonical draft
+intent material and expire by default after `BRAGI_INTAKE_TTL_SECONDS`.
 
 For existing briefs, Bragi can propose bounded subject/source changes:
 
@@ -152,6 +167,7 @@ BRAGI_DEFAULT_USER_ID=local_user
 BRAGI_CONFIG_ROOT=/app/configs
 BRAGI_MEMORY_FILE=/app/configs/bragi/memory.yaml
 BRAGI_MEMORY_DATABASE_URL=mysql+pymysql://automation:...@automation-mysql:3306/automation
+BRAGI_INTAKE_TTL_SECONDS=86400
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 DISCORD_HOME_CHANNEL=...
 DISCORD_ALLOWED_USER_IDS=...

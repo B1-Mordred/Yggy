@@ -175,15 +175,38 @@ conversation must contain automation/briefing context and security or component
 context, and the latest user message must advance the setup with details such as
 daily/morning schedule, approved-source hints, vulnerability/patch/NVD scope, or
 an explicit confirmation phrase like `so be it`. Once enough information exists,
-Bragi must generate a canonical intent and call Heimdal validation. It must not
-continue with a general-chat promise such as "I'll pass this to Yggdrasil" or
-"you can expect this tomorrow."
+Bragi must generate a canonical intent, call Heimdal validation, and store a
+short-lived Bragi intake record. It must not continue with a general-chat
+promise such as "I'll pass this to Yggdrasil" or "you can expect this tomorrow."
 
 Confirmation phrases that close this conversational intake do not authorize
-execution. They only trigger the first canonical intent display. The normal
-`confirm` response to that visible canonical intent is still required before
-Yggdrasil receives a deterministic request, and Yggy approval still controls
-whether the resulting disabled draft can become active.
+execution. They only trigger the first canonical intent display and an intake ID.
+The normal `confirm intake <id>` response, or `confirm` while that intake remains
+visible in the current conversation, is still required before Yggdrasil receives
+a deterministic request. Yggy approval still controls whether the resulting
+disabled draft can become active.
+
+The intake store is not task authority. It holds only non-secret pre-execution
+draft state:
+
+```text
+collecting
+awaiting_confirmation
+confirmed
+forwarded_to_yggdrasil
+cancelled
+expired
+failed
+```
+
+Supported intake commands:
+
+```text
+show pending intakes
+show intake bragi_intake_...
+confirm intake bragi_intake_...
+cancel intake bragi_intake_...
+```
 
 For brief-change requests that name sources naturally, such as:
 

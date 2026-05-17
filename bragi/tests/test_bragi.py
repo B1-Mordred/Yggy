@@ -4,13 +4,20 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bragi"))
 
 from bragi import main as bragi  # noqa: E402
+from bragi import intake_store  # noqa: E402
 from bragi import memory_store  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def reset_bragi_stores():
+    intake_store.reset_intake_store_for_tests()
 
 
 def gateway_response_for(payload: dict) -> dict:
@@ -471,6 +478,94 @@ def test_conversational_confirmation_without_pending_intent_shows_intent_first(m
     assert calls[1][0:2] == ("POST", "/capabilities/validate-intent")
     assert "Canonical intent pending confirmation" in answer
     assert "Reply `confirm`" in answer
+
+
+def test_intake_id_confirmation_reloads_stored_intent(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    def fake_yggdrasil(payload):
+        calls.append(("POST", "/v1/yggdrasil/canonical-actions", payload))
+        return {"status": "ok", "answer": "Draft task `daily_security_threat_briefing` was created."}
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", fake_yggdrasil)
+
+    answer = bragi.route_chat(
+        [
+            {"role": "user", "content": "I want a daily morning briefing about Ubuntu 26, Hermes, Ollama security threats"},
+            {"role": "assistant", "content": "Should I use official sources?"},
+            {"role": "user", "content": "official blog posts, vulnerability announcements, patch notes, nvd records, no gossip"},
+        ]
+    )
+    intake_id = bragi.intake_id_from_text(answer)
+
+    assert intake_id is not None
+    assert f"confirm intake {intake_id}" in answer
+
+    confirm_answer = bragi.route_chat([{"role": "user", "content": f"confirm intake {intake_id}"}])
+
+    assert calls[-2][0:2] == ("POST", "/capabilities/prepare-yggdrasil-request")
+    assert calls[-2][2]["user_confirmation_obtained"] is True
+    assert calls[-1][0:2] == ("POST", "/v1/yggdrasil/canonical-actions")
+    assert "user_request" not in json.dumps(calls[-1][2])
+    assert "Draft task" in confirm_answer
+    stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
+    assert stored["status"] == "forwarded_to_yggdrasil"
+
+
+def test_intake_list_show_and_cancel(monkeypatch):
+    monkeypatch.setattr(bragi, "api_request", lambda method, path, payload=None: source_catalog_fixture(method, path, payload))
+
+    answer = bragi.route_chat(
+        [
+            {"role": "user", "content": "I want a daily morning briefing about Ubuntu 26 and Ollama security threats"},
+            {"role": "assistant", "content": "Any source preferences?"},
+            {"role": "user", "content": "use vulnerability announcements and nvd records"},
+        ]
+    )
+    intake_id = bragi.intake_id_from_text(answer)
+
+    listing = bragi.route_chat([{"role": "user", "content": "show pending intakes"}])
+    detail = bragi.route_chat([{"role": "user", "content": f"show intake {intake_id}"}])
+    cancelled = bragi.route_chat([{"role": "user", "content": f"cancel intake {intake_id}"}])
+    confirm_after_cancel = bragi.route_chat([{"role": "user", "content": f"confirm intake {intake_id}"}])
+
+    assert intake_id in listing
+    assert "Canonical intent" in detail
+    assert "Cancelled intake" in cancelled
+    assert "because it is `cancelled`" in confirm_after_cancel
+
+
+def test_intake_endpoints_require_key_and_redact(monkeypatch):
+    monkeypatch.setattr(bragi, "API_KEY", "test-bragi-key")
+    client = TestClient(bragi.app)
+    intake = intake_store.create_intake(
+        user_id="local_user",
+        intent=bragi.topic_digest_intent("Draft a weekday 08:00 local AI security briefing"),
+        summary={"task_id": "daily_local_ai_security_briefing"},
+    )
+
+    unauthorized = client.post("/intakes/query", json={"user_id": "local_user"})
+    authorized = client.post(
+        "/intakes/query",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"user_id": "local_user"},
+    )
+    detail = client.post(
+        "/intakes/get",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"user_id": "local_user", "intake_id": intake["id"]},
+    )
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert authorized.json()["records"][0]["id"] == intake["id"]
+    assert detail.status_code == 200
+    assert detail.json()["record"]["id"] == intake["id"]
 
 
 def test_freeform_yggdrasil_message_is_refused_without_forwarding(monkeypatch):

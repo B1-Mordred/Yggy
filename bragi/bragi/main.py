@@ -27,6 +27,16 @@ from .memory_store import (
     query_memory,
     safe_identifier,
 )
+from .intake_store import (
+    cancel_intake,
+    create_intake,
+    get_intake,
+    intake_store_status,
+    list_intakes,
+    mark_intake_failed,
+    mark_intake_forwarded,
+    mark_intake_confirmed,
+)
 
 MODEL_ID = os.getenv("BRAGI_MODEL_ID", "bragi")
 DISPLAY_NAME = "Bragi"
@@ -46,6 +56,7 @@ CHAT_NUM_CTX = int(os.getenv("BRAGI_CHAT_NUM_CTX", "4096"))
 CHAT_MAX_TOKENS = int(os.getenv("BRAGI_CHAT_MAX_TOKENS", "512"))
 MEMORY_FILE = os.getenv("BRAGI_MEMORY_FILE", "/app/configs/bragi/memory.yaml").strip()
 CONFIG_ROOT = os.getenv("BRAGI_CONFIG_ROOT", "/app/configs").strip()
+INTAKE_TTL_SECONDS = int(os.getenv("BRAGI_INTAKE_TTL_SECONDS", "86400"))
 CONTEXT_CATEGORIES = {
     "tasks",
     "pending_reviews",
@@ -172,6 +183,17 @@ class MemoryForgetRequest(BaseModel):
     key: str | None = Field(default=None, max_length=128)
     search: str | None = Field(default=None, max_length=500)
     limit: int = Field(default=50, ge=1, le=100)
+
+
+class IntakeQueryRequest(BaseModel):
+    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
+    include_inactive: bool = False
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class IntakeDetailRequest(BaseModel):
+    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
+    intake_id: str = Field(min_length=1, max_length=96)
 
 
 class DiscordMessageRequest(BaseModel):
@@ -437,6 +459,8 @@ def channel_required_capability(diagnostic: dict[str, Any]) -> str:
     route = diagnostic.get("route")
     if route in {"bragi_memory_commit", "bragi_memory_propose", "bragi_memory_forget", "bragi_memory_query"}:
         return "memory"
+    if route == "bragi_intake_management":
+        return "draft_task"
     if route == "general_chat_with_context":
         return "context"
     if route in {"heimdal_validate_intent", "heimdal_prepare_yggdrasil_request"}:
@@ -1196,22 +1220,58 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
             }
         )
         return diagnostic
+    explicit_intake_id = intake_id_from_text(user_text)
+    if explicit_intake_id and (is_intake_show_request(user_text) or is_intake_cancel_request(user_text)):
+        diagnostic.update(
+            {
+                "mode": "intake_management",
+                "route": "bragi_intake_management",
+                "reason": "Request inspects or cancels Bragi pre-execution intake state.",
+                "intake_id": explicit_intake_id,
+            }
+        )
+        return diagnostic
+    if is_intake_list_request(user_text):
+        diagnostic.update(
+            {
+                "mode": "intake_management",
+                "route": "bragi_intake_management",
+                "reason": "Request lists Bragi pre-execution intake state.",
+                "intake_id": None,
+            }
+        )
+        return diagnostic
+    if is_intake_confirm_request(user_text):
+        diagnostic.update(
+            {
+                "mode": "intake_confirmation",
+                "route": "heimdal_prepare_yggdrasil_request",
+                "reason": "Request confirms a stored Bragi intake; Heimdal must prepare a deterministic Yggdrasil request.",
+                "intake_id": explicit_intake_id or pending_intake_id_from_prior(prior),
+            }
+        )
+        return diagnostic
     if is_confirmation(user_text):
         source_selection = pending_source_selection_from_prior(prior)
         pending = pending_intent_from_prior(prior)
         conversational_intent = conversational_topic_digest_intent(messages, resolve_sources=False)
+        prior_intake_id = pending_intake_id_from_prior(prior)
         diagnostic.update(
             {
                 "mode": "confirmation",
                 "route": (
-                    "heimdal_validate_intent"
+                    "heimdal_prepare_yggdrasil_request"
+                    if prior_intake_id and not source_selection
+                    else "heimdal_validate_intent"
                     if source_selection or conversational_intent
                     else "heimdal_prepare_yggdrasil_request"
                     if pending
                     else "none"
                 ),
                 "reason": (
-                    "Confirmation with pending approved-source selection."
+                    "Confirmation with a stored intake ID from the prior assistant message."
+                    if prior_intake_id and not source_selection
+                    else "Confirmation with pending approved-source selection."
                     if source_selection
                     else
                     "Confirmation closes a conversational topic-digest intake; Bragi must show a canonical intent first."
@@ -1222,6 +1282,7 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
                     else "Confirmation phrase without a pending canonical intent."
                 ),
                 "pending_source_selection_found": bool(source_selection),
+                "pending_intake_found": bool(prior_intake_id),
                 "pending_intent_found": bool(pending),
                 "candidate_intent": diagnostic_intent(pending or conversational_intent),
             }
@@ -2280,7 +2341,8 @@ def merge_intent_slots(intent: dict[str, Any], user_text: str) -> dict[str, Any]
     return merged
 
 
-def format_confirmation(summary: dict[str, Any], intent: dict[str, Any]) -> str:
+def format_confirmation(summary: dict[str, Any], intent: dict[str, Any], intake: dict[str, Any] | None = None) -> str:
+    intake_id = str((intake or {}).get("id") or "")
     if summary.get("change_type") == "topic_digest_subjects":
         lines = [
             "I can map that to a supported Yggy task-change proposal. No axes, no direct mutation, just paperwork with teeth.",
@@ -2301,10 +2363,23 @@ def format_confirmation(summary: dict[str, Any], intent: dict[str, Any]) -> str:
             lines.append(f"- Remove subject/filter terms: {', '.join(f'`{item}`' for item in summary['remove_include'])}")
         if summary.get("output_target"):
             lines.append(f"- Output target: `{summary.get('output_target')}`")
+        if intake_id:
+            lines.extend(
+                [
+                    f"- Intake: `{intake_id}`",
+                    f"- Intake expires: `{intake.get('expires_at')}`",
+                ]
+            )
         lines.extend(
             [
                 "",
-                "Reply `confirm` if this is what you meant. Confirmation only proves I understood you; Yggy approval still controls whether the task changes.",
+                (
+                    f"Reply `confirm intake {intake_id}` if this is what you meant. "
+                    "Reply `confirm` also works while this intake remains in the current conversation. "
+                    "Confirmation only proves I understood you; Yggy approval still controls whether the task changes."
+                    if intake_id
+                    else "Reply `confirm` if this is what you meant. Confirmation only proves I understood you; Yggy approval still controls whether the task changes."
+                ),
                 "",
                 "Canonical intent pending confirmation:",
                 f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```",
@@ -2337,10 +2412,23 @@ def format_confirmation(summary: dict[str, Any], intent: dict[str, Any]) -> str:
         )
     if summary.get("webhook_id"):
         lines.append(f"- Webhook ID: `{summary['webhook_id']}`")
+    if intake_id:
+        lines.extend(
+            [
+                f"- Intake: `{intake_id}`",
+                f"- Intake expires: `{intake.get('expires_at')}`",
+            ]
+        )
     lines.extend(
         [
             "",
-            "Reply `confirm` if this is what you meant. Confirmation only proves I understood you; Yggy approval still controls execution.",
+            (
+                f"Reply `confirm intake {intake_id}` if this is what you meant. "
+                "Reply `confirm` also works while this intake remains in the current conversation. "
+                "Confirmation only proves I understood you; Yggy approval still controls execution."
+                if intake_id
+                else "Reply `confirm` if this is what you meant. Confirmation only proves I understood you; Yggy approval still controls execution."
+            ),
             "",
             "Canonical intent pending confirmation:",
             f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```",
@@ -2349,12 +2437,16 @@ def format_confirmation(summary: dict[str, Any], intent: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_gateway_result(result: dict[str, Any], intent: dict[str, Any] | None = None) -> str:
+def format_gateway_result(
+    result: dict[str, Any],
+    intent: dict[str, Any] | None = None,
+    intake: dict[str, Any] | None = None,
+) -> str:
     outcome = result.get("outcome")
     if outcome == "ASK_CLARIFICATION":
         missing = result.get("missing_slots") or []
         if missing == ["user_confirmation"] and result.get("confirmation_summary") and intent:
-            return format_confirmation(result["confirmation_summary"], intent)
+            return format_confirmation(result["confirmation_summary"], intent, intake=intake)
         lines = [
             "I can probably map that to a known Yggy capability, but I need a few details first:",
             *(f"- `{slot}`: {slot_hint(slot)}" for slot in missing),
@@ -2408,6 +2500,163 @@ def slot_hint(slot: str) -> str:
     return hints.get(slot, "provide this value explicitly")
 
 
+def validate_intent_for_reply(
+    intent: dict[str, Any],
+    *,
+    user_id: str,
+    channel: str = "chat",
+    source: str = "bragi_route",
+) -> str:
+    result = api_request("POST", "/capabilities/validate-intent", intent)
+    intake = maybe_create_intake_for_result(result, intent, user_id=user_id, channel=channel, source=source)
+    return format_gateway_result(result, intent, intake=intake)
+
+
+def maybe_create_intake_for_result(
+    result: dict[str, Any],
+    intent: dict[str, Any],
+    *,
+    user_id: str,
+    channel: str,
+    source: str,
+) -> dict[str, Any] | None:
+    missing = result.get("missing_slots") or []
+    if result.get("outcome") != "ASK_CLARIFICATION" or missing != ["user_confirmation"]:
+        return None
+    try:
+        return create_intake(
+            user_id=user_id,
+            channel=channel,
+            status="awaiting_confirmation",
+            intent=intent,
+            summary=result.get("confirmation_summary") if isinstance(result.get("confirmation_summary"), dict) else {},
+            source=source,
+            ttl_seconds=INTAKE_TTL_SECONDS,
+        )
+    except MemoryValidationError as exc:
+        print(f"bragi intake creation rejected: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"bragi intake creation failed: {exc.__class__.__name__}", file=sys.stderr)
+    return None
+
+
+def intake_id_from_text(text: str) -> str | None:
+    match = re.search(r"\b(bragi_intake_[a-z0-9_]{8,64})\b", text.lower())
+    return match.group(1) if match else None
+
+
+def pending_intake_id_from_prior(text: str) -> str | None:
+    matches = re.findall(r"\bbragi_intake_[a-z0-9_]{8,64}\b", text.lower())
+    return matches[-1] if matches else None
+
+
+def is_intake_confirm_request(text: str) -> bool:
+    lowered = text.lower()
+    return bool(re.search(r"\bconfirm(?:\s+that|\s+the)?\s+intake\b", lowered) or re.search(r"\bconfirm\b", lowered) and intake_id_from_text(lowered))
+
+
+def is_intake_cancel_request(text: str) -> bool:
+    lowered = text.lower()
+    return bool(re.search(r"\b(cancel|discard|forget)\b.*\bintake\b", lowered) or re.search(r"\b(cancel|discard)\b", lowered) and intake_id_from_text(lowered))
+
+
+def is_intake_list_request(text: str) -> bool:
+    return bool(re.search(r"\b(show|list|what)\b.*\b(pending\s+)?intakes?\b", text.lower()))
+
+
+def is_intake_show_request(text: str) -> bool:
+    lowered = text.lower()
+    return bool(re.search(r"\b(show|inspect|view|get)\b.*\bintake\b", lowered) and intake_id_from_text(lowered))
+
+
+def confirm_intake_response(intake_id: str, *, user_id: str) -> str:
+    try:
+        intake = get_intake(intake_id=intake_id, user_id=user_id)
+    except MemoryValidationError as exc:
+        return f"I cannot confirm that intake: {exc}."
+    status = intake.get("status")
+    if status != "awaiting_confirmation":
+        return f"I cannot confirm intake `{intake_id}` because it is `{status}`."
+    intent = json.loads(json.dumps(intake.get("intent") or {}))
+    intent["user_confirmation_obtained"] = True
+    result = api_request("POST", "/capabilities/prepare-yggdrasil-request", intent)
+    if result.get("outcome") != "ACCEPT":
+        try:
+            mark_intake_failed(intake_id=intake_id, user_id=user_id, detail={"outcome": result.get("outcome")})
+        except Exception:
+            pass
+        return format_gateway_result(result, intent, intake=intake)
+    try:
+        mark_intake_confirmed(intake_id=intake_id, user_id=user_id)
+    except Exception:
+        pass
+    yggdrasil = yggdrasil_canonical_request(result["yggdrasil_request"])
+    try:
+        mark_intake_forwarded(
+            intake_id=intake_id,
+            user_id=user_id,
+            detail={"yggdrasil_status": yggdrasil.get("status"), "has_answer": bool(yggdrasil.get("answer"))},
+        )
+    except Exception:
+        pass
+    return yggdrasil.get("answer") or json.dumps(yggdrasil, indent=2)
+
+
+def cancel_intake_response(intake_id: str, *, user_id: str) -> str:
+    try:
+        intake = cancel_intake(intake_id=intake_id, user_id=user_id)
+    except MemoryValidationError as exc:
+        return f"I cannot cancel that intake: {exc}."
+    return f"Cancelled intake `{intake['id']}`. Nothing was sent to Yggdrasil."
+
+
+def format_intake_summary(intake: dict[str, Any], *, include_intent: bool = False) -> str:
+    summary = intake.get("summary") if isinstance(intake.get("summary"), dict) else {}
+    intent = intake.get("intent") if isinstance(intake.get("intent"), dict) else {}
+    slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
+    lines = [
+        f"- Intake: `{intake.get('id')}`",
+        f"  Status: `{intake.get('status')}`",
+        f"  Capability: `{intake.get('capability_id')}`",
+        f"  Task: `{slots.get('task_id') or summary.get('task_id')}`",
+        f"  Expires: `{intake.get('expires_at')}`",
+    ]
+    sources = slots.get("source_ids") or summary.get("sources")
+    if isinstance(sources, list) and sources:
+        lines.append(f"  Sources: {', '.join(f'`{item}`' for item in sources[:8])}")
+    checks = slots.get("check_ids") or summary.get("checks")
+    if isinstance(checks, list) and checks:
+        lines.append(f"  Checks: {', '.join(f'`{item}`' for item in checks[:8])}")
+    if include_intent:
+        lines.extend(["", "Canonical intent:", f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```"])
+    return "\n".join(lines)
+
+
+def list_intakes_response(*, user_id: str) -> str:
+    try:
+        intakes = list_intakes(user_id=user_id, include_inactive=False, limit=20)
+    except MemoryValidationError as exc:
+        return f"I cannot list intakes: {exc}."
+    if not intakes:
+        return "There are no pending Bragi intakes."
+    lines = ["Pending Bragi intakes:", ""]
+    for intake in intakes:
+        lines.append(format_intake_summary(intake))
+    lines.extend(["", "Use `show intake <id>`, `confirm intake <id>`, or `cancel intake <id>`."])
+    return "\n".join(lines)
+
+
+def show_intake_response(intake_id: str, *, user_id: str) -> str:
+    try:
+        intake = get_intake(intake_id=intake_id, user_id=user_id)
+    except MemoryValidationError as exc:
+        return f"I cannot show that intake: {exc}."
+    lines = ["Bragi intake:", "", format_intake_summary(intake, include_intent=True)]
+    if intake.get("status") == "awaiting_confirmation":
+        lines.append(f"\nReply `confirm intake {intake.get('id')}` to continue, or `cancel intake {intake.get('id')}` to discard it.")
+    return "\n".join(lines)
+
+
 def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:
     user_text = latest_user_request(messages)
     if not user_text:
@@ -2435,18 +2684,31 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     if re.search(r"\bwhat do you remember\b|\bwhat.*memory\b|\bshow.*memory\b", user_text, re.IGNORECASE):
         return format_memory_query_answer(user_id)
 
+    explicit_intake_id = intake_id_from_text(user_text)
+    if explicit_intake_id and is_intake_show_request(user_text):
+        return show_intake_response(explicit_intake_id, user_id=user_id)
+    if explicit_intake_id and is_intake_cancel_request(user_text):
+        return cancel_intake_response(explicit_intake_id, user_id=user_id)
+    if is_intake_list_request(user_text):
+        return list_intakes_response(user_id=user_id)
+    if is_intake_confirm_request(user_text):
+        intake_id = explicit_intake_id or pending_intake_id_from_prior(prior)
+        if intake_id:
+            return confirm_intake_response(intake_id, user_id=user_id)
+
     if is_confirmation(user_text):
+        prior_intake_id = pending_intake_id_from_prior(prior)
+        if prior_intake_id and not pending_source_selection_from_prior(prior):
+            return confirm_intake_response(prior_intake_id, user_id=user_id)
         source_selection = pending_source_selection_from_prior(prior)
         if source_selection:
             intent = source_selection_to_intent(source_selection)
-            result = api_request("POST", "/capabilities/validate-intent", intent)
-            return format_gateway_result(result, intent)
+            return validate_intent_for_reply(intent, user_id=user_id, source="bragi_source_selection")
         pending = pending_intent_from_prior(prior)
         if not pending:
             conversational_intent = conversational_topic_digest_intent(messages)
             if conversational_intent is not None:
-                result = api_request("POST", "/capabilities/validate-intent", conversational_intent)
-                return format_gateway_result(result, conversational_intent)
+                return validate_intent_for_reply(conversational_intent, user_id=user_id, source="bragi_conversational_intake")
             return "I do not have a pending canonical intent to confirm."
         pending["user_confirmation_obtained"] = True
         result = api_request("POST", "/capabilities/prepare-yggdrasil-request", pending)
@@ -2459,8 +2721,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     if pending and result_needs_details(prior):
         intent = merge_intent_slots(pending, user_text)
         intent = enrich_topic_digest_intent_with_research(intent, user_text)
-        result = api_request("POST", "/capabilities/validate-intent", intent)
-        return format_gateway_result(result, intent)
+        return validate_intent_for_reply(intent, user_id=user_id, source="bragi_slot_fill")
 
     freeform_yggdrasil = yggdrasil_freeform_message_response(user_text)
     if freeform_yggdrasil is not None:
@@ -2468,8 +2729,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
 
     conversational_intent = conversational_topic_digest_intent(messages)
     if conversational_intent is not None:
-        result = api_request("POST", "/capabilities/validate-intent", conversational_intent)
-        return format_gateway_result(result, conversational_intent)
+        return validate_intent_for_reply(conversational_intent, user_id=user_id, source="bragi_conversational_intake")
 
     context_categories = context_categories_for_text(user_text)
     if context_categories:
@@ -2489,8 +2749,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     if intent is None:
         return general_chat_answer(messages, user_id=user_id)
     intent = enrich_topic_digest_intent_with_research(intent, user_text)
-    result = api_request("POST", "/capabilities/validate-intent", intent)
-    return format_gateway_result(result, intent)
+    return validate_intent_for_reply(intent, user_id=user_id, source="bragi_direct_intent")
 
 
 def result_needs_details(prior: str) -> bool:
@@ -2512,6 +2771,7 @@ def health() -> dict[str, Any]:
         "memory_file": MEMORY_FILE,
         "memory_loaded": bool(load_memory()),
         "memory_store": memory_store_status(),
+        "intake_store": intake_store_status(),
         "channel_registry": channel_registry_status(),
     }
 
@@ -2595,6 +2855,10 @@ def discord_channel_message(payload: DiscordMessageRequest, authorization: str |
         }
 
     reply = route_chat(messages, user_id=user_id)
+    forwarded_to_yggdrasil = diagnostic.get("route") == "yggdrasil_canonical_action" or (
+        diagnostic.get("route") == "heimdal_prepare_yggdrasil_request"
+        and diagnostic.get("mode") in {"confirmation", "intake_confirmation"}
+    )
     return {
         "service": "bragi",
         "channel": "discord",
@@ -2604,7 +2868,7 @@ def discord_channel_message(payload: DiscordMessageRequest, authorization: str |
         "classification": {
             **context_redact(diagnostic),
             "required_capability": required_capability,
-            "forwarded_to_yggdrasil": diagnostic.get("route") == "yggdrasil_canonical_action",
+            "forwarded_to_yggdrasil": forwarded_to_yggdrasil,
         },
         "allowed_mentions": [],
         "requires_followup": "Canonical intent" in reply or "Reply `remember`" in reply,
@@ -2636,6 +2900,44 @@ def memory_query(payload: MemoryQueryRequest, authorization: str | None = Header
         "read_only": True,
         "user_id": payload.user_id,
         "records": context_redact(records),
+        "redaction": {"secrets": "redacted", "approval_nonces": "omitted"},
+    }
+
+
+@app.post("/intakes/query")
+def intakes_query(payload: IntakeQueryRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        records = list_intakes(
+            user_id=payload.user_id,
+            include_inactive=payload.include_inactive,
+            limit=payload.limit,
+        )
+    except MemoryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "service": "bragi",
+        "read_only": True,
+        "user_id": payload.user_id,
+        "records": context_redact(records),
+        "redaction": {"secrets": "redacted", "approval_nonces": "omitted"},
+    }
+
+
+@app.post("/intakes/get")
+def intake_get(payload: IntakeDetailRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        record = get_intake(user_id=payload.user_id, intake_id=payload.intake_id)
+    except MemoryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "service": "bragi",
+        "read_only": True,
+        "user_id": payload.user_id,
+        "record": context_redact(record),
         "redaction": {"secrets": "redacted", "approval_nonces": "omitted"},
     }
 
