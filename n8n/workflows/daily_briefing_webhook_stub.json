@@ -6,7 +6,14 @@
       "parameters": {
         "path": "yggy-daily-briefing",
         "httpMethod": "POST",
-        "responseMode": "responseNode"
+        "responseMode": "responseNode",
+        "authentication": "headerAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yggyWebhookHeaderAuth01",
+          "name": "Yggy Webhook Header Auth"
+        }
       },
       "id": "stub-webhook",
       "name": "Yggy Daily Briefing Webhook",

@@ -72,6 +72,11 @@ n8n webhooks are approved execution backends. The automation API validates
 calls only those internal paths. Live dispatch requires
 `N8N_WEBHOOK_SHARED_SECRET`; dry-run dispatch does not call n8n.
 
+The n8n workflow should also authenticate the inbound webhook before running any
+workflow body. The starter workflow uses n8n Webhook Header Auth with a
+credential named `Yggy Webhook Header Auth`; that credential stores the
+`X-Yggy-Webhook-Token` value in n8n's credential store, not in Git or YAML.
+
 Example dry-run task:
 
 ```text

@@ -32,12 +32,31 @@ shape but does not call n8n.
 ## Stub Workflow
 
 `workflows/daily_briefing_webhook_stub.json` is a minimal importable starting
-point. After importing it, configure the Webhook node path to:
+point. It uses n8n's built-in Header Auth on the Webhook node, so requests with
+missing or wrong `X-Yggy-Webhook-Token` values are rejected before the workflow
+body runs.
+
+Before activating the workflow, create an n8n credential named:
+
+```text
+Yggy Webhook Header Auth
+```
+
+Use credential type `Header Auth` with:
+
+```text
+Name: X-Yggy-Webhook-Token
+Value: value from N8N_WEBHOOK_SHARED_SECRET
+```
+
+Store that credential in n8n's credential store only. Do not commit the value or
+place it in task YAML, prompts, Open WebUI Knowledge, or Markdown docs.
+
+The imported Webhook node path is:
 
 ```text
 yggy-daily-briefing
 ```
 
-Then add an IF or Code node that checks header `x-yggy-webhook-token` against an
-n8n credential or environment-backed value. Avoid Execute Command and filesystem
-nodes. Keep any n8n credentials in n8n's credential store.
+Avoid Execute Command and filesystem nodes. Keep any n8n credentials in n8n's
+credential store.

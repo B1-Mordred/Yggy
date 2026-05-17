@@ -136,8 +136,10 @@ n8n:
     purpose: daily_briefing_stub
 ```
 
-The shared webhook secret is read from `N8N_WEBHOOK_SHARED_SECRET` by the worker.
-Do not place webhook secrets, URLs with credentials, n8n credentials, or API
+The shared webhook secret is read from `N8N_WEBHOOK_SHARED_SECRET` by the
+worker. n8n should validate the same header through its credential store, for
+example with a Header Auth credential named `Yggy Webhook Header Auth`. Do not
+place webhook secrets, URLs with credentials, n8n credential values, or API
 tokens in task YAML.
 
 ## Secret References
