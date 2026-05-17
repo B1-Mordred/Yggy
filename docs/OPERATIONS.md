@@ -167,6 +167,8 @@ Task rows include manual run controls:
 ```text
 Dry run
 Live run
+Pause
+Resume
 ```
 
 `Dry run` queues `queued_dry_run` and overrides the task runtime for that single
@@ -175,6 +177,12 @@ live run only for enabled L0/L1 tasks. L2+ live runs still require the admin API
 or a narrower future approval flow, and L4 remains manual-only. Manual run
 actions use the same active-run lock and recent-live dedupe window as the
 OpenAPI task run endpoint.
+
+`Pause` disables an enabled L0/L1 task and mirrors `enabled: false` into the
+stored task config. `Resume` re-enables L0 tasks directly and re-enables L1
+tasks only when an approved approval record already exists for the same task and
+approval level. Pending, rejected, L2+, L3, and L4 tasks are not resumed through
+the dashboard.
 
 Configure it with separate local credentials:
 

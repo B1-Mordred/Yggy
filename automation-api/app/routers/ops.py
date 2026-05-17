@@ -26,6 +26,7 @@ router = APIRouter(tags=["ops"])
 basic_security = HTTPBasic(auto_error=False)
 OPS_ACTION_HEADER = "approval-decision"
 OPS_RUN_ACTION_HEADER = "manual-run"
+OPS_TASK_STATE_ACTION_HEADER = "task-state"
 MAX_RUN_DETAIL_ITEMS = 10
 MAX_RUN_DETAIL_ERRORS = 10
 MAX_RUN_DETAIL_TEXT = 6000
@@ -100,6 +101,13 @@ def require_ops_run_action_header(
 ) -> None:
     if x_yggy_ops_action != OPS_RUN_ACTION_HEADER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops run action header")
+
+
+def require_ops_task_state_action_header(
+    x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
+) -> None:
+    if x_yggy_ops_action != OPS_TASK_STATE_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops task state action header")
 
 
 @router.get("/ops", response_class=HTMLResponse, include_in_schema=False)
@@ -221,6 +229,55 @@ def ops_run_task(
     }
 
 
+@router.post("/ops/tasks/{task_id}/pause", include_in_schema=False)
+def ops_pause_task(
+    task_id: str,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_task_state_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    task = session.get(TaskModel, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    level = ApprovalLevel(task.approval_level)
+    if approval_at_least(level, ApprovalLevel.L2_LOCAL_WRITE):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin API required to pause L2+ task")
+    task.enabled = False
+    task.status = "paused"
+    task.config = {**task.config, "enabled": False}
+    audit_event(session, "ops_dashboard", "task.pause", "task", task.id, {"surface": "ops_ui"})
+    session.commit()
+    return _task_summary(task, None)
+
+
+@router.post("/ops/tasks/{task_id}/resume", include_in_schema=False)
+def ops_resume_task(
+    task_id: str,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_task_state_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    task = session.get(TaskModel, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    level = ApprovalLevel(task.approval_level)
+    if approval_at_least(level, ApprovalLevel.L2_LOCAL_WRITE):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin API required to resume L2+ task")
+    if task.status == "rejected":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="rejected task requires a new approval")
+    if task.status == "pending_approval":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="task is still pending approval")
+    if level == ApprovalLevel.L1_NOTIFY_ONLY and not _has_approved_task_approval(session, task):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="approved L1 task required to resume")
+
+    task.enabled = True
+    task.status = "enabled"
+    task.config = {**task.config, "enabled": True}
+    audit_event(session, "ops_dashboard", "task.resume", "task", task.id, {"surface": "ops_ui"})
+    session.commit()
+    return _task_summary(task, None)
+
+
 @router.post("/ops/approvals/{approval_id}/approve", include_in_schema=False)
 def ops_approve_approval(
     approval_id: str,
@@ -307,6 +364,17 @@ def _task_summary(task: TaskModel, latest_run: RunModel | None) -> dict:
         "latest_run": _run_summary(latest_run) if latest_run else None,
         "updated_at": task.updated_at,
     }
+
+
+def _has_approved_task_approval(session: Session, task: TaskModel) -> bool:
+    return (
+        session.query(ApprovalModel)
+        .filter(ApprovalModel.task_id == task.id)
+        .filter(ApprovalModel.approval_level == task.approval_level)
+        .filter(ApprovalModel.status == "approved")
+        .first()
+        is not None
+    )
 
 
 def _run_summary(run: RunModel | None) -> dict | None:
@@ -694,6 +762,9 @@ DASHBOARD_HTML = f"""<!doctype html>
     .run-actions {{ display: flex; gap: 6px; flex-wrap: wrap; }}
     .run-actions button {{ padding: 6px 9px; }}
     .run-actions button:disabled {{ cursor: not-allowed; opacity: 0.55; }}
+    .state-actions {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }}
+    .state-actions button {{ padding: 6px 9px; }}
+    .state-actions button:disabled {{ cursor: not-allowed; opacity: 0.55; }}
     @media (max-width: 860px) {{
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -718,7 +789,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     <section class="section">
       <h2>Tasks</h2>
       <div class="table-wrap"><table id="tasks"></table></div>
-      <div class="meta" id="run-action-status"></div>
+      <div class="meta" id="task-action-status"></div>
     </section>
     <section class="section">
       <h2>Recent Runs</h2>
@@ -770,15 +841,33 @@ DASHBOARD_HTML = f"""<!doctype html>
         <button type="button" data-task-run="true" data-task-id="${{esc(task.id)}}" data-run-mode="live" title="${{esc(liveTitle)}}"${{liveBlocked ? ' disabled' : ''}}>Live run</button>
       </div>`;
     }}
+    function taskStateButtons(task) {{
+      const stateBlocked = l2Plus.has(task.approval_level);
+      if (task.enabled) {{
+        const title = stateBlocked ? 'L2+ pauses require the admin API' : 'Pause task';
+        return `<div class="state-actions"><button type="button" data-task-state="true" data-task-id="${{esc(task.id)}}" data-state-action="pause" title="${{esc(title)}}"${{stateBlocked ? ' disabled' : ''}}>Pause</button></div>`;
+      }}
+      const resumeBlocked = stateBlocked || task.status === 'pending_approval' || task.status === 'rejected';
+      const title = stateBlocked ? 'L2+ resumes require the admin API'
+        : task.status === 'pending_approval' ? 'Task is still pending approval'
+        : task.status === 'rejected' ? 'Rejected task requires a new approval'
+        : 'Resume task';
+      return `<div class="state-actions"><button type="button" data-task-state="true" data-task-id="${{esc(task.id)}}" data-state-action="resume" title="${{esc(title)}}"${{resumeBlocked ? ' disabled' : ''}}>Resume</button></div>`;
+    }}
     function wireTaskRunButtons() {{
       document.querySelectorAll('[data-task-run]').forEach(button => {{
         button.addEventListener('click', () => runTask(button));
       }});
     }}
+    function wireTaskStateButtons() {{
+      document.querySelectorAll('[data-task-state]').forEach(button => {{
+        button.addEventListener('click', () => setTaskState(button));
+      }});
+    }}
     async function runTask(button) {{
       const taskId = button.dataset.taskId;
       const mode = button.dataset.runMode;
-      const status = document.getElementById('run-action-status');
+      const status = document.getElementById('task-action-status');
       button.disabled = true;
       status.textContent = `${{mode.replace('_', '-')}} request pending for ${{taskId}}...`;
       status.className = 'meta';
@@ -799,6 +888,33 @@ DASHBOARD_HTML = f"""<!doctype html>
           : `Queued ${{mode.replace('_', '-')}} run ${{shortId(body.run_id)}}.`;
         await refresh();
         if (body.run_id) await loadRunDetail(body.run_id);
+      }} catch (error) {{
+        status.textContent = error.message;
+        status.className = 'meta bad';
+      }} finally {{
+        button.disabled = false;
+      }}
+    }}
+    async function setTaskState(button) {{
+      const taskId = button.dataset.taskId;
+      const action = button.dataset.stateAction;
+      const status = document.getElementById('task-action-status');
+      button.disabled = true;
+      status.textContent = `${{action}} request pending for ${{taskId}}...`;
+      status.className = 'meta';
+      try {{
+        const response = await fetch(`/ops/tasks/${{encodeURIComponent(taskId)}}/${{action}}`, {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'X-Yggy-Ops-Action': 'task-state'}},
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const body = await response.json();
+        status.textContent = `${{action === 'pause' ? 'Paused' : 'Resumed'}} ${{body.id || taskId}}.`;
+        await refresh();
       }} catch (error) {{
         status.textContent = error.message;
         status.className = 'meta bad';
@@ -967,7 +1083,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         `<code>${{esc(task.trigger.cron)}}</code><br><span class="meta">${{esc(task.trigger.timezone)}}</span>`,
         `${{esc(task.output.channel)}}<br><span class="meta">${{esc(task.output.target)}}</span>`,
         task.latest_run ? `${{runButton(task.latest_run)}} ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
-        taskRunButtons(task),
+        `${{taskRunButtons(task)}}${{taskStateButtons(task)}}`,
       ]));
       renderTable('runs', ['Run', 'Task', 'Status', 'Result', 'Notification', 'Completed'], data.recent_runs.map(run => [
         runButton(run),
@@ -979,6 +1095,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       ]));
       wireRunLinks();
       wireTaskRunButtons();
+      wireTaskStateButtons();
       if (selectedRunId) loadRunDetail(selectedRunId);
       renderApprovals(data.pending_approvals);
       const latestRetention = data.retention.latest;

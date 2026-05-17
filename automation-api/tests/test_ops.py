@@ -404,6 +404,255 @@ def test_ops_task_live_run_preserves_recent_completion_dedupe(client, monkeypatc
     assert body["reason"] == "recent_completed_run"
 
 
+def test_ops_task_pause_requires_action_header(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_pause_header", enabled=True)
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=True,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="enabled",
+                config=task,
+            )
+        )
+        session.commit()
+
+    response = client.post("/ops/tasks/ops_pause_header/pause", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 403
+    assert "missing ops task state action header" in response.text
+
+
+def test_ops_task_pause_updates_task_state_and_config(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_pause_task", enabled=True)
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=True,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="enabled",
+                config=task,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/ops/tasks/ops_pause_task/pause",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-state"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is False
+    assert body["status"] == "paused"
+    with Session(get_engine()) as session:
+        task_model = session.get(TaskModel, "ops_pause_task")
+        audit = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.resource_id == "ops_pause_task")
+            .order_by(AuditEventModel.created_at.desc())
+            .first()
+        )
+        assert task_model is not None
+        assert task_model.enabled is False
+        assert task_model.status == "paused"
+        assert task_model.config["enabled"] is False
+        assert audit is not None
+        assert audit.actor_role == "ops_dashboard"
+        assert audit.action == "task.pause"
+
+
+def test_ops_task_resume_requires_l1_approved_approval(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_resume_unapproved", enabled=False)
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=False,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="paused",
+                config=task,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/ops/tasks/ops_resume_unapproved/resume",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-state"},
+    )
+
+    assert response.status_code == 403
+    assert "approved L1 task required" in response.text
+
+
+def test_ops_task_resume_reenables_approved_l1_task(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_resume_approved", enabled=False)
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=False,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="paused",
+                config=task,
+            )
+        )
+        session.flush()
+        session.add(
+            ApprovalModel(
+                id="approval-resume-approved",
+                task_id=task["id"],
+                approval_level=task["policy"]["approval_level"],
+                requested_by="yggdrasil",
+                status="approved",
+                summary="Approved before pause",
+                risk=task["policy"]["approval_level"],
+                nonce_hash="nonce-hash",
+                created_at=utcnow(),
+                decided_at=utcnow(),
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/ops/tasks/ops_resume_approved/resume",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-state"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is True
+    assert body["status"] == "enabled"
+    with Session(get_engine()) as session:
+        task_model = session.get(TaskModel, "ops_resume_approved")
+        audit = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.resource_id == "ops_resume_approved")
+            .order_by(AuditEventModel.created_at.desc())
+            .first()
+        )
+        assert task_model is not None
+        assert task_model.enabled is True
+        assert task_model.status == "enabled"
+        assert task_model.config["enabled"] is True
+        assert audit is not None
+        assert audit.actor_role == "ops_dashboard"
+        assert audit.action == "task.resume"
+
+
+def test_ops_task_resume_rejects_pending_rejected_and_l2_tasks(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    pending = sample_task("ops_resume_pending", enabled=False)
+    rejected = sample_task("ops_resume_rejected", enabled=False)
+    l2 = sample_task("ops_resume_l2", "L2_LOCAL_WRITE", enabled=False)
+    with Session(get_engine()) as session:
+        for task, status_value in ((pending, "pending_approval"), (rejected, "rejected"), (l2, "paused")):
+            session.add(
+                TaskModel(
+                    id=task["id"],
+                    name=task["name"],
+                    type=task["type"],
+                    enabled=False,
+                    owner=task["owner"],
+                    created_by=task["created_by"],
+                    approval_level=task["policy"]["approval_level"],
+                    status=status_value,
+                    config=task,
+                )
+            )
+        session.commit()
+
+    pending_response = client.post(
+        "/ops/tasks/ops_resume_pending/resume",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-state"},
+    )
+    rejected_response = client.post(
+        "/ops/tasks/ops_resume_rejected/resume",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-state"},
+    )
+    l2_resume_response = client.post(
+        "/ops/tasks/ops_resume_l2/resume",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-state"},
+    )
+    l2_pause_response = client.post(
+        "/ops/tasks/ops_resume_l2/pause",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-state"},
+    )
+
+    assert pending_response.status_code == 403
+    assert "pending approval" in pending_response.text
+    assert rejected_response.status_code == 403
+    assert "new approval" in rejected_response.text
+    assert l2_resume_response.status_code == 403
+    assert "resume L2+" in l2_resume_response.text
+    assert l2_pause_response.status_code == 403
+    assert "pause L2+" in l2_pause_response.text
+
+
+def test_ops_task_resume_allows_l0_without_approval(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_resume_l0", "L0_READ_ONLY", enabled=False)
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=False,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="paused",
+                config=task,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/ops/tasks/ops_resume_l0/resume",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-state"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is True
+
+
 def test_ops_approval_requires_action_header(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
@@ -506,5 +755,7 @@ def test_ops_routes_are_not_in_openapi(client):
     assert "/ops/status" not in paths
     assert "/ops/runs/{run_id}" not in paths
     assert "/ops/tasks/{task_id}/run" not in paths
+    assert "/ops/tasks/{task_id}/pause" not in paths
+    assert "/ops/tasks/{task_id}/resume" not in paths
     assert "/ops/approvals/{approval_id}/approve" not in paths
     assert "/ops/approvals/{approval_id}/reject" not in paths

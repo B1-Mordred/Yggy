@@ -180,6 +180,7 @@ def pause_task(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin required to pause L2+ task")
     task.enabled = False
     task.status = "paused"
+    task.config = {**task.config, "enabled": False}
     audit_event(session, role, "task.pause", "task", task.id)
     session.commit()
     return task_to_dict(task)
