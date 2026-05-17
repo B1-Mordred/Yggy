@@ -21,6 +21,10 @@ fi
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   docker compose -f docker-compose.automation.yml config >/dev/null
   echo "Compose config validation passed"
+  AUTOMATION_API_LAN_PUBLISHED_HOST=127.0.0.1 docker compose -f docker-compose.automation.yml -f docker-compose.lan.yml config >/dev/null
+  echo "LAN compose config validation passed"
+  YGGY_HTTPS_PUBLISHED_HOST=127.0.0.1 docker compose -f docker-compose.automation.yml -f docker-compose.https.yml config >/dev/null
+  echo "HTTPS compose config validation passed"
 else
   echo "Docker Compose unavailable; skipped compose validation"
 fi

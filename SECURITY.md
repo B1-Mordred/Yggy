@@ -68,3 +68,5 @@ Security expectations for LAN exposure:
 - Do not expose `8088` through router port forwarding or a public reverse proxy.
 - Treat `/docs` and `/openapi.json` as visible to LAN clients on that interface.
 - Never place `AUTOMATION_ADMIN_API_KEY` or other API keys in browser bookmarks, chat, Open WebUI Knowledge, or task YAML.
+
+For HTTPS LAN access, use the dedicated `8443` reverse proxy rather than changing Technitium's `80/443` listeners. Caddy's internal CA encrypts traffic but is not automatically trusted by browsers; trust the exported root CA only on devices you control.

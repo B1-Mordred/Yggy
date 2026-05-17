@@ -1,0 +1,25 @@
+services:
+  yggy-https-proxy:
+    image: caddy:2.8-alpine
+    container_name: yggy-https-proxy
+    networks:
+      - automation_net
+      - notify_net
+    ports:
+      - "${YGGY_HTTPS_PUBLISHED_HOST:?set YGGY_HTTPS_PUBLISHED_HOST to the host LAN IP}:${YGGY_HTTPS_PUBLISHED_PORT:-8443}:8443"
+    environment:
+      YGGY_HTTPS_HOST: "${YGGY_HTTPS_HOST:-yggy.b1.germering}"
+    volumes:
+      - ./ops-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - yggy_caddy_data:/data
+      - yggy_caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  yggy_caddy_data:
+  yggy_caddy_config:

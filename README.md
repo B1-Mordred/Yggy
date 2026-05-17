@@ -63,6 +63,14 @@ docker compose -f docker-compose.automation.yml -f docker-compose.lan.yml up -d 
 
 Then open `http://<lan-ip>:8088/ops`.
 
+For encrypted LAN access without touching Technitium's `80/443` listeners, use the HTTPS override:
+
+```bash
+docker compose -f docker-compose.automation.yml -f docker-compose.https.yml up -d yggy-https-proxy
+```
+
+The default HTTPS dashboard URL is `https://yggy.b1.germering:8443/ops`.
+
 Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_INTEGRATION.md](docs/OPENWEBUI_HERMES_INTEGRATION.md).
 
 ## Defaults

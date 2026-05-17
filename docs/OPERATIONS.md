@@ -143,3 +143,50 @@ scripts/configure_lan_firewall.sh --apply --enable-ufw --lan-cidr 192.168.2.25/3
 ```
 
 Use `--default-deny-incoming` only after adding allow rules for every other service that must remain reachable.
+
+## HTTPS Dashboard Proxy
+
+Technitium uses ports `80` and `443` on this host, so Yggy HTTPS is exposed on a dedicated LAN port:
+
+```text
+https://yggy.b1.germering:8443/ops
+```
+
+The HTTPS proxy is a Caddy container that joins the internal automation network and proxies to `automation-api:8088`. It uses Caddy's internal CA, so the connection is encrypted but browsers will warn until the Caddy local root CA is trusted on the client device.
+
+Configure:
+
+```text
+YGGY_HTTPS_HOST=yggy.b1.germering
+YGGY_HTTPS_PUBLISHED_HOST=192.168.2.2
+YGGY_HTTPS_PUBLISHED_PORT=8443
+YGGY_HTTPS_ALLOWED_CIDR=192.168.2.0/24
+```
+
+Deploy:
+
+```bash
+docker compose -f docker-compose.automation.yml -f docker-compose.https.yml up -d yggy-https-proxy
+```
+
+Add or update the Technitium DNS record:
+
+```bash
+scripts/configure_technitium_yggy_dns.sh --apply
+```
+
+Scope the HTTPS port in UFW:
+
+```bash
+scripts/configure_lan_firewall.sh --apply --enable-ufw --lan-cidr 192.168.2.0/24 --port 8443
+```
+
+After the proxy is verified, direct LAN access to `8088` can be removed by deploying without `docker-compose.lan.yml` and keeping only `127.0.0.1:8088` plus `192.168.2.2:8443`.
+
+Export the Caddy local root CA if you want to trust it on LAN browsers:
+
+```bash
+docker cp yggy-https-proxy:/data/caddy/pki/authorities/local/root.crt ./yggy-caddy-root.crt
+```
+
+Install that certificate as a trusted root CA only on devices you control.
