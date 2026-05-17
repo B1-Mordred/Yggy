@@ -141,9 +141,21 @@ def test_process_topic_digest_optionally_normalizes_with_n8n_before_discord(monk
                     "link": "https://example.com/open-webui",
                     "published": "2026-05-17",
                     "type": "rss",
+                    "source_id": "open_webui_releases",
+                    "source_name": "Open WebUI releases",
+                    "source_trust_level": "official_project_release_feed",
                 }
             ],
             "errors": [],
+            "source_health": [
+                {
+                    "source": "open_webui_releases",
+                    "source_id": "open_webui_releases",
+                    "status": "ok",
+                    "item_count": 1,
+                    "trust_level": "official_project_release_feed",
+                }
+            ],
             "summary_mode": "deterministic",
         }
 
@@ -199,7 +211,10 @@ def test_process_topic_digest_optionally_normalizes_with_n8n_before_discord(monk
     assert n8n_calls[0]["payload"]["title"] == "Daily Local AI Security Briefing"
     assert n8n_calls[0]["payload"]["summary"] == "live digest body"
     assert n8n_calls[0]["payload"]["items"][0]["url"] == "https://example.com/open-webui"
+    assert n8n_calls[0]["payload"]["items"][0]["source_id"] == "open_webui_releases"
+    assert n8n_calls[0]["payload"]["items"][0]["source_trust_level"] == "official_project_release_feed"
     assert n8n_calls[0]["payload"]["sources"] == ["https://example.com/open-webui"]
+    assert n8n_calls[0]["payload"]["source_health"][0]["source_id"] == "open_webui_releases"
     assert client.discord_calls == [{"target": "briefings", "content": "live digest body", "dry_run": False}]
     assert client.completed_calls[0]["log"]["result"]["n8n"]["response"]["action"] == "normalize_digest_payload"
 

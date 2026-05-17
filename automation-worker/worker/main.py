@@ -51,6 +51,9 @@ def topic_digest_n8n_payload(config: dict, result: dict) -> dict:
                 "url": truncate_text(source, 1000),
                 "published": truncate_text(item.get("published"), 200),
                 "type": truncate_text(item.get("type"), 100),
+                "source_id": truncate_text(item.get("source_id"), 128),
+                "source_name": truncate_text(item.get("source_name"), 300),
+                "source_trust_level": truncate_text(item.get("source_trust_level"), 128),
             }
         )
 
@@ -68,6 +71,7 @@ def topic_digest_n8n_payload(config: dict, result: dict) -> dict:
             for error in errors[:MAX_TOPIC_N8N_ERRORS]
             if isinstance(error, dict)
         ],
+        "source_health": result.get("source_health") if isinstance(result.get("source_health"), list) else [],
         "summary_mode": truncate_text(result.get("summary_mode"), 100),
     }
     return payload

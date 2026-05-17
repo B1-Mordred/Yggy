@@ -14,6 +14,12 @@ Topic digest source selection is controlled by the automation API policy. The
 deployed policy requires `source_id` entries from `configs/sources/approved_sources.yaml`
 and disables generic `web_query` sources for topic digests.
 
+The worker also enforces the approved-source registry at execution time. It does
+not fetch unapproved, disabled, or identity-mismatched sources even if an older
+stored task config contains them. Digest run logs include `source_health`,
+`approved_source_count`, and per-item source trust metadata so downstream n8n
+payloads and Discord summaries can show where each item came from.
+
 ## Notification Preferences
 
 Each task can declare `notifications` preferences. The worker classifies each

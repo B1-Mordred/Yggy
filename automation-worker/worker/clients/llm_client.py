@@ -103,6 +103,9 @@ class OllamaSummarizer:
                 [
                     f"[{index}] Title: {item.get('title', 'Untitled item')}",
                     f"Published: {item.get('published', '')}",
+                    f"Source ID: {item.get('source_id') or 'unknown'}",
+                    f"Source name: {item.get('source_name') or 'unknown'}",
+                    f"Source trust: {item.get('source_trust_level') or 'unclassified'}",
                     f"Source: {item.get('link') or item.get('source') or 'no source'}",
                     f"Summary: {summary}",
                     "",

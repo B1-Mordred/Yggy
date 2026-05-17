@@ -41,6 +41,8 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      AUTOMATION_SOURCE_REGISTRY_FILE: /app/configs/sources/approved_sources.yaml
     networks:
       - automation_net
       - notify_net
@@ -49,6 +51,8 @@ services:
     depends_on:
       automation-api:
         condition: service_healthy
+    volumes:
+      - ./configs:/app/configs:ro
     read_only: true
     tmpfs:
       - /tmp

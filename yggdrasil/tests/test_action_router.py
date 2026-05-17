@@ -16,6 +16,13 @@ def sample_run(**overrides):
                 "summary_mode": "llm",
                 "items": [{"title": "Item"} for _ in range(10)],
                 "source_count": 5,
+                "approved_source_count": 4,
+                "source_health": [
+                    {"source": "open_webui_releases", "status": "ok"},
+                    {"source": "ollama_releases", "status": "ok"},
+                    {"source": "n8n_releases", "status": "error"},
+                    {"source": "old_source", "status": "blocked"},
+                ],
                 "errors": [],
             },
         },
@@ -93,6 +100,8 @@ def test_show_latest_daily_brief_run(monkeypatch):
     assert "Delivery: sent via bot" in answer
     assert "Summary mode: `llm`" in answer
     assert "Items: `10`" in answer
+    assert "Approved sources: `4`" in answer
+    assert "Source health: 2 ok, 1 failed, 1 blocked" in answer
 
 
 def test_did_daily_brief_send(monkeypatch):

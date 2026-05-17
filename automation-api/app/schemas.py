@@ -288,6 +288,21 @@ class ApprovedSourceConfig(BaseModel):
             raise ValueError("id must be slug-like")
         return value
 
+    @field_validator("categories")
+    @classmethod
+    def categories_must_be_slug_like(cls, value: list[str]) -> list[str]:
+        for category in value:
+            if not SLUG_RE.match(category):
+                raise ValueError("source categories must be slug-like")
+        return value
+
+    @field_validator("trust_level")
+    @classmethod
+    def trust_level_must_be_slug_like(cls, value: str) -> str:
+        if not SLUG_RE.match(value):
+            raise ValueError("source trust_level must be slug-like")
+        return value
+
     @model_validator(mode="after")
     def validate_source(self) -> "ApprovedSourceConfig":
         SourceConfig(type=self.type, url=self.url, query=self.query)

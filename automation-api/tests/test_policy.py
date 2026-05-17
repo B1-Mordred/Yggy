@@ -86,6 +86,61 @@ def test_topic_digest_source_id_must_match_registry_entry(client):
     assert "does not match the configured source identity" in response.text
 
 
+def test_topic_digest_disabled_source_is_rejected(client, tmp_path, monkeypatch):
+    sources = tmp_path / "sources.yaml"
+    sources.write_text(
+        """
+version: 1
+sources:
+  - id: disabled_feed
+    name: Disabled feed
+    type: rss
+    url: https://example.com/feed.xml
+    categories:
+      - local_ai
+    trust_level: approved_test_feed
+    enabled: false
+    max_items: 5
+""",
+        encoding="utf-8",
+    )
+    policy = tmp_path / "policies.yaml"
+    policy.write_text(
+        f"""
+version: 1
+allowed_discord_targets:
+  - briefings
+approval_thresholds:
+  auto_allow:
+    - L0_READ_ONLY
+  initial_approval_required:
+    - L1_NOTIFY_ONLY
+  admin_required:
+    - L2_LOCAL_WRITE
+    - L3_EXTERNAL_SIDE_EFFECT
+  manual_only:
+    - L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE
+source_policy:
+  approved_sources_file: {sources}
+  require_approved_sources_for_task_types:
+    - topic_digest
+  require_source_ids: true
+  allow_web_query_sources: false
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AUTOMATION_POLICY_FILE", str(policy))
+
+    task = sample_task(
+        "disabled_source",
+        sources=[{"source_id": "disabled_feed", "type": "rss", "url": "https://example.com/feed.xml"}],
+    )
+    response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
+
+    assert response.status_code == 422
+    assert "disabled in the approved source registry" in response.text
+
+
 def n8n_task(task_id: str, **overrides):
     task = sample_task(
         task_id,

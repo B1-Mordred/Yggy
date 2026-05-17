@@ -711,6 +711,10 @@ def run_summary_values(run: dict[str, Any]) -> dict[str, Any]:
     notification = log.get('notification') if isinstance(log.get('notification'), dict) else {}
     items = result.get('items') if isinstance(result.get('items'), list) else []
     errors = result.get('errors') if isinstance(result.get('errors'), list) else []
+    source_health = result.get('source_health') if isinstance(result.get('source_health'), list) else []
+    healthy_sources = sum(1 for health in source_health if isinstance(health, dict) and health.get('status') == 'ok')
+    blocked_sources = sum(1 for health in source_health if isinstance(health, dict) and health.get('status') == 'blocked')
+    failed_sources = sum(1 for health in source_health if isinstance(health, dict) and health.get('status') == 'error')
     dry_run = notification.get('dry_run')
     if dry_run is None:
         dry_run = str(run.get('status', '')).endswith('dry_run') or bool(log.get('dry_run', False))
@@ -721,6 +725,11 @@ def run_summary_values(run: dict[str, Any]) -> dict[str, Any]:
         'summary_error': result.get('summary_error') or 'none',
         'item_count': len(items),
         'source_count': result.get('source_count', 'n/a'),
+        'approved_source_count': result.get('approved_source_count', 'n/a'),
+        'source_health': source_health,
+        'source_health_text': (
+            'n/a' if not source_health else f'{healthy_sources} ok, {failed_sources} failed, {blocked_sources} blocked'
+        ),
         'errors': errors,
         'failure': log.get('message') or log.get('error') or 'none',
     }
@@ -799,6 +808,8 @@ def format_run(run: dict[str, Any]) -> str:
         f"- Summary error: `{values['summary_error']}`",
         f"- Items: `{values['item_count']}`",
         f"- Sources: `{values['source_count']}`",
+        f"- Approved sources: `{values['approved_source_count']}`",
+        f"- Source health: {values['source_health_text']}",
         f"- Source errors: {source_error_text}",
         f"- Created: `{run.get('created_at')}`",
         f"- Completed: `{run.get('completed_at') or 'not completed'}`",

@@ -162,6 +162,7 @@ def validate_task_sources(task: TaskConfig, policy: dict[str, Any]) -> list[str]
     allow_web_query = bool(source_policy.get("allow_web_query_sources", True))
     require_source_ids = bool(source_policy.get("require_source_ids", False))
     registry = load_source_registry(policy)
+    all_by_id = {source.id: source for source in registry.sources}
     approved_by_id = {source.id: source for source in registry.sources if source.enabled}
     approved_by_identity = {
         _source_identity(SourceConfig(type=source.type, url=source.url, query=source.query)): source
@@ -178,6 +179,10 @@ def validate_task_sources(task: TaskConfig, policy: dict[str, Any]) -> list[str]
             errors.append(f"{location}: source_id is required by source policy")
             continue
         if source.source_id:
+            registered = all_by_id.get(source.source_id)
+            if registered is not None and not registered.enabled:
+                errors.append(f"{location}: source_id {source.source_id} is disabled in the approved source registry")
+                continue
             approved = approved_by_id.get(source.source_id)
         else:
             approved = approved_by_identity.get(_source_identity(source))

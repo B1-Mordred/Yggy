@@ -14,6 +14,12 @@ scheduled for weekdays at 08:00 Europe/Berlin and sends to the whitelisted
 `configs/sources/approved_sources.yaml`; broad `web_query` sources are blocked
 for topic digests by policy.
 
+The worker re-checks that registry during execution. Unapproved, disabled, or
+identity-mismatched sources are marked blocked and are not fetched. Digest run
+logs include `source_health`, `approved_source_count`, and per-item trust
+metadata so source failures are audit-visible without trusting source content as
+instructions.
+
 Notification preferences are stored in each task config. The worker records a
 `notification_decision` in every run log so you can see whether a message was
 sent, skipped for quiet hours, skipped because the result was empty, or collapsed

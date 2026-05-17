@@ -100,6 +100,18 @@ source registry is the allowlist for topic digest inputs. A task source must nam
 an enabled `source_id`, and the configured URL/query must match that registry
 entry.
 
+Approved source entries include:
+
+- `trust_level`: a slug-like label such as `official_project_release_feed`.
+- `categories`: slug-like tags used for review and later routing.
+- `enabled`: disabled sources are rejected by the API and blocked by the worker.
+- `max_items`: optional per-source cap within the task-level `policy.max_items`.
+
+The worker enforces the same registry before fetching. Run logs include
+`source_health` records with `ok`, `error`, or `blocked` status, plus
+`approved_source_count`. Each digest item includes `source_id`, `source_name`,
+`source_trust_level`, and `source_categories`.
+
 This keeps source selection declarative and reviewable. Webpages, feeds, release
 notes, and other retrieved content remain untrusted data; they do not gain command
 authority by being approved as data sources.
