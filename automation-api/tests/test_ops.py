@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_engine
 from app.models import ApprovalModel, AuditEventModel, RunModel, TaskModel, utcnow
+from app.services.task_version_service import record_task_config_version
 from conftest import ADMIN_HEADERS, TOOL_HEADERS, sample_task
 
 
@@ -219,20 +220,27 @@ def test_ops_task_detail_redacts_config_and_lists_history_runs_and_actions(clien
     config["api_token"] = "hidden-secret"
     config["nested"] = {"authorization": "Bearer hidden-secret"}
     with Session(get_engine()) as session:
-        session.add(
-            TaskModel(
-                id=task_id,
-                name="Ops Task Detail",
-                type=config["type"],
-                enabled=True,
-                owner=config["owner"],
-                created_by=config["created_by"],
-                approval_level=config["policy"]["approval_level"],
-                status="enabled",
-                config=config,
-            )
+        task_model = TaskModel(
+            id=task_id,
+            name="Ops Task Detail",
+            type=config["type"],
+            enabled=True,
+            owner=config["owner"],
+            created_by=config["created_by"],
+            approval_level=config["policy"]["approval_level"],
+            status="enabled",
+            config=config,
         )
+        session.add(task_model)
         session.flush()
+        record_task_config_version(
+            session,
+            task_model,
+            actor_role="tool",
+            change_type="draft",
+            approval_id="approval-task-detail",
+            summary="Task detail test snapshot.",
+        )
         session.add_all(
             [
                 ApprovalModel(
@@ -270,6 +278,9 @@ def test_ops_task_detail_redacts_config_and_lists_history_runs_and_actions(clien
     assert body["approvals"][0]["status"] == "approved"
     assert "nonce_hash" not in body["approvals"][0]
     assert body["recent_runs"][0]["id"] == run_id
+    assert body["config_versions"][0]["version"] == 1
+    assert body["config_versions"][0]["approval_id"] == "approval-task-detail"
+    assert body["config_versions"][0]["diff"]["counts"]["added"] > 0
     assert body["allowed_actions"]["dry_run"]["allowed"] is True
     assert body["allowed_actions"]["live_run"]["allowed"] is True
     assert body["allowed_actions"]["pause"]["allowed"] is True

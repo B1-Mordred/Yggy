@@ -14,6 +14,7 @@ from app.models import RunModel, TaskModel, utcnow
 from app.policy import PolicyViolation, load_policy, validate_task_policy
 from app.schemas import ApprovalLevel, TaskConfig, TaskRunRequest, approval_at_least
 from app.services.approval_service import create_approval_request, needs_initial_approval
+from app.services.task_version_service import link_latest_task_config_version_to_approval, record_task_config_version
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -102,8 +103,24 @@ def create_draft_task(
     if needs_initial_approval(task_config.policy.approval_level):
         approval, nonce = create_approval_request(session, task, requested_by=task_config.created_by)
         session.flush()
+        record_task_config_version(
+            session,
+            task,
+            actor_role=role,
+            change_type="draft",
+            approval_id=approval.id,
+            summary="Draft task configuration awaiting initial approval.",
+        )
         approval_payload = approval_to_public(approval, nonce=nonce)
         task.status = "pending_approval"
+    else:
+        record_task_config_version(
+            session,
+            task,
+            actor_role=role,
+            change_type="draft",
+            summary="Draft task configuration created without initial approval requirement.",
+        )
     audit_event(session, role, "task.draft", "task", task.id, {"approval_level": task.approval_level})
     session.commit()
     return {"task": task_to_dict(task), "approval": approval_payload}
@@ -136,6 +153,7 @@ def update_task(
         if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin required for this task update")
 
+    old_level_text = task.approval_level
     task.name = payload.name
     task.type = payload.type
     task.enabled = payload.enabled if role == ApiRole.ADMIN else False
@@ -144,6 +162,13 @@ def update_task(
     task.approval_level = payload.policy.approval_level.value
     task.config = payload.model_dump(mode="json")
     task.status = "draft" if not task.enabled else "enabled"
+    record_task_config_version(
+        session,
+        task,
+        actor_role=role,
+        change_type="update",
+        summary=f"Task config updated; approval level {old_level_text} -> {task.approval_level}.",
+    )
     audit_event(session, role, "task.update", "task", task.id, {"approval_level": task.approval_level})
     session.commit()
     return task_to_dict(task)
@@ -160,6 +185,16 @@ def request_approval(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
     approval, nonce = create_approval_request(session, task, requested_by=task.created_by)
     session.flush()
+    linked_version = link_latest_task_config_version_to_approval(session, task, approval_id=approval.id)
+    if not linked_version:
+        record_task_config_version(
+            session,
+            task,
+            actor_role=role,
+            change_type="approval_request",
+            approval_id=approval.id,
+            summary="Approval requested for current task configuration.",
+        )
     task.status = "pending_approval"
     audit_event(session, role, "approval.request", "task", task.id, {"approval_id": approval.id})
     session.commit()
@@ -181,6 +216,13 @@ def pause_task(
     task.enabled = False
     task.status = "paused"
     task.config = {**task.config, "enabled": False}
+    record_task_config_version(
+        session,
+        task,
+        actor_role=role,
+        change_type="pause",
+        summary="Task paused and enabled flag mirrored into task config.",
+    )
     audit_event(session, role, "task.pause", "task", task.id)
     session.commit()
     return task_to_dict(task)

@@ -20,6 +20,13 @@ from app.routers.health import WORKER_HEARTBEAT_MAX_AGE_SECONDS, heartbeat_to_di
 from app.routers.tasks import queue_task_run
 from app.schemas import ApprovalLevel, approval_at_least
 from app.services.approval_service import approve_request, reject_request, verify_nonce
+from app.services.task_version_service import (
+    config_diff,
+    record_task_config_version,
+    task_config_version_for_approval,
+    task_config_version_to_dict,
+    task_config_versions,
+)
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(tags=["ops"])
@@ -169,7 +176,8 @@ def ops_status(
         "tasks": [_task_summary(task, latest_by_task.get(task.id)) for task in tasks],
         "recent_runs": [_run_summary(run) for run in recent_runs[:10]],
         "pending_approvals": [
-            _approval_summary(approval, session.get(TaskModel, approval.task_id)) for approval in pending_approvals
+            _approval_summary(approval, session.get(TaskModel, approval.task_id), session=session)
+            for approval in pending_approvals
         ],
         "retention": {
             "policy": {
@@ -324,6 +332,13 @@ def ops_pause_task(
     task.enabled = False
     task.status = "paused"
     task.config = {**task.config, "enabled": False}
+    record_task_config_version(
+        session,
+        task,
+        actor_role="ops_dashboard",
+        change_type="pause",
+        summary="Task paused from ops dashboard and enabled flag mirrored into task config.",
+    )
     audit_event(session, "ops_dashboard", "task.pause", "task", task.id, {"surface": "ops_ui"})
     session.commit()
     return _task_summary(task, None)
@@ -352,6 +367,13 @@ def ops_resume_task(
     task.enabled = True
     task.status = "enabled"
     task.config = {**task.config, "enabled": True}
+    record_task_config_version(
+        session,
+        task,
+        actor_role="ops_dashboard",
+        change_type="resume",
+        summary="Task resumed from ops dashboard and enabled flag mirrored into task config.",
+    )
     audit_event(session, "ops_dashboard", "task.resume", "task", task.id, {"surface": "ops_ui"})
     session.commit()
     return _task_summary(task, None)
@@ -381,6 +403,14 @@ def ops_approve_approval(
         task.enabled = True
         task.status = "enabled"
         task.config = {**task.config, "enabled": True}
+        record_task_config_version(
+            session,
+            task,
+            actor_role="ops_dashboard",
+            change_type="approval_approve",
+            approval_id=approval.id,
+            summary="Approval accepted from ops dashboard and task enabled.",
+        )
     audit_event(
         session,
         "ops_dashboard",
@@ -390,7 +420,7 @@ def ops_approve_approval(
         {"task_id": approval.task_id, "surface": "ops_ui"},
     )
     session.commit()
-    return _approval_summary(approval, task)
+    return _approval_summary(approval, task, session=session)
 
 
 @router.post("/ops/approvals/{approval_id}/reject", include_in_schema=False)
@@ -413,6 +443,14 @@ def ops_reject_approval(
         task.enabled = False
         task.status = "rejected"
         task.config = {**task.config, "enabled": False}
+        record_task_config_version(
+            session,
+            task,
+            actor_role="ops_dashboard",
+            change_type="approval_reject",
+            approval_id=approval.id,
+            summary="Approval rejected from ops dashboard and task disabled.",
+        )
     audit_event(
         session,
         "ops_dashboard",
@@ -422,7 +460,7 @@ def ops_reject_approval(
         {"task_id": approval.task_id, "surface": "ops_ui", "reason": (payload.reason if payload else "")},
     )
     session.commit()
-    return _approval_summary(approval, task)
+    return _approval_summary(approval, task, session=session)
 
 
 def _task_summary(task: TaskModel, latest_run: RunModel | None) -> dict:
@@ -458,6 +496,10 @@ def _task_detail(
         "config": _redacted_task_config(task),
         "approvals": [_approval_history_summary(approval) for approval in approvals],
         "recent_runs": [_run_summary(run) for run in recent_runs],
+        "config_versions": [
+            task_config_version_to_dict(session, version, include_config=False)
+            for version in task_config_versions(session, task.id)
+        ],
         "allowed_actions": _task_action_eligibility(session, task),
     }
 
@@ -724,7 +766,12 @@ def _approval_history_summary(approval: ApprovalModel) -> dict:
     }
 
 
-def _approval_summary(approval: ApprovalModel, task: TaskModel | None = None) -> dict:
+def _approval_summary(
+    approval: ApprovalModel,
+    task: TaskModel | None = None,
+    *,
+    session: Session | None = None,
+) -> dict:
     payload = {
         "id": approval.id,
         "task_id": approval.task_id,
@@ -743,6 +790,8 @@ def _approval_summary(approval: ApprovalModel, task: TaskModel | None = None) ->
             "failure_mode": _approval_failure_mode(task),
             "config_change": _approval_config_change(task),
         }
+        if session:
+            payload["review"]["config_diff"] = _approval_config_diff(session, approval, task)
     return payload
 
 
@@ -812,6 +861,19 @@ def _approval_config_change(task: TaskModel) -> dict:
         "enabled_before_approval": task.enabled,
         "enabled_after_approval": True,
         "current_config": redact_secrets(config),
+    }
+
+
+def _approval_config_diff(session: Session, approval: ApprovalModel, task: TaskModel) -> dict:
+    version = task_config_version_for_approval(session, approval.id)
+    if version:
+        return task_config_version_to_dict(session, version, include_config=False)
+    return {
+        "version": None,
+        "change_type": "current_task_config",
+        "approval_id": approval.id,
+        "summary": "No approval-linked config version exists; showing diff from empty baseline to current config.",
+        "diff": config_diff(None, task.config if isinstance(task.config, dict) else {}),
     }
 
 
@@ -1002,6 +1064,8 @@ DASHBOARD_HTML = f"""<!doctype html>
     .detail-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
     .detail-block {{ min-width: 0; }}
     .detail-block.wide {{ grid-column: 1 / -1; }}
+    .diff-list {{ margin: 6px 0 0; padding-left: 20px; }}
+    .diff-list li {{ margin: 4px 0; overflow-wrap: anywhere; }}
     .digest-items {{ margin: 0; padding-left: 22px; }}
     .digest-items li {{ margin: 7px 0; }}
     .run-actions {{ display: flex; gap: 6px; flex-wrap: wrap; }}
@@ -1370,11 +1434,40 @@ DASHBOARD_HTML = f"""<!doctype html>
         </div>
       `).join('<hr>') : '<div class="empty">No runs recorded for this task.</div>';
     }}
+    function inlineJson(value) {{
+      return `<code>${{esc(JSON.stringify(value))}}</code>`;
+    }}
+    function configDiffSummary(diff) {{
+      const counts = diff?.counts || {{}};
+      return `added ${{counts.added || 0}}, removed ${{counts.removed || 0}}, changed ${{counts.changed || 0}}${{diff?.truncated ? '; truncated' : ''}}`;
+    }}
+    function configDiffList(diff) {{
+      if (!diff) return '<div class="empty">No config diff recorded.</div>';
+      const rows = [];
+      (diff.added || []).forEach(item => rows.push(`<li><strong>added</strong> <code>${{esc(item.path)}}</code>: ${{inlineJson(item.after)}}</li>`));
+      (diff.removed || []).forEach(item => rows.push(`<li><strong>removed</strong> <code>${{esc(item.path)}}</code>: ${{inlineJson(item.before)}}</li>`));
+      (diff.changed || []).forEach(item => rows.push(`<li><strong>changed</strong> <code>${{esc(item.path)}}</code>: ${{inlineJson(item.before)}} -> ${{inlineJson(item.after)}}</li>`));
+      return rows.length ? `<ul class="diff-list">${{rows.join('')}}</ul>` : '<div class="empty">No config field changes in this version.</div>';
+    }}
+    function configVersionHistory(versions) {{
+      return versions && versions.length ? versions.map((version, index) => `
+        <details ${{index === 0 ? 'open' : ''}}>
+          <summary>
+            v${{esc(version.version)}} ${{esc(version.change_type)}} by ${{esc(version.actor_role)}}
+            <span class="meta">${{esc(version.created_at)}}</span>
+          </summary>
+          <div class="meta">approval ${{esc(version.approval_id)}}; diff ${{configDiffSummary(version.diff)}}</div>
+          ${{version.summary ? `<div>${{esc(version.summary)}}</div>` : ''}}
+          ${{configDiffList(version.diff)}}
+        </details>
+      `).join('<hr>') : '<div class="empty">No config version snapshots recorded for this task.</div>';
+    }}
     function renderTaskDetail(data) {{
       const task = data.task || {{}};
       const actions = data.allowed_actions || {{}};
       const approvals = data.approvals || [];
       const runs = data.recent_runs || [];
+      const versions = data.config_versions || [];
       byId('task-detail').innerHTML = `
         <h2>Task Detail</h2>
         <div class="meta">
@@ -1405,6 +1498,10 @@ DASHBOARD_HTML = f"""<!doctype html>
           <div class="detail-block">
             <h3>Recent Runs</h3>
             ${{taskRecentRuns(runs)}}
+          </div>
+          <div class="detail-block wide">
+            <h3>Config Version History</h3>
+            ${{configVersionHistory(versions)}}
           </div>
           <div class="detail-block wide">
             <h3>Redacted Config</h3>
@@ -1544,6 +1641,10 @@ DASHBOARD_HTML = f"""<!doctype html>
             <div><strong>Config change</strong><br>
               <span class="meta">enabled before approval: ${{esc(review.config_change?.enabled_before_approval)}}; enabled after approval: ${{esc(review.config_change?.enabled_after_approval)}}</span>
             </div>
+            ${{review.config_diff ? `<div><strong>Config diff</strong><br>
+              <span class="meta">version ${{esc(review.config_diff.version)}}; ${{configDiffSummary(review.config_diff.diff)}}</span>
+              ${{configDiffList(review.config_diff.diff)}}
+            </div>` : ''}}
             <details>
               <summary>Task config</summary>
               ${{jsonBlock(task.config)}}

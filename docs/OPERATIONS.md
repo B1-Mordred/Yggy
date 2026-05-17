@@ -123,7 +123,10 @@ AUTOMATION_TEMP_TASK_RETENTION_HOURS=24
 AUTOMATION_RETENTION_INTERVAL_SECONDS=86400
 ```
 
-Cleanup removes only completed old runs, old audit events, and disabled temporary tasks whose ids start with `temporary_` or `test_`. Active/running runs and normal task ids are preserved.
+Cleanup removes only completed old runs, old audit events, disabled temporary
+tasks whose ids start with `temporary_` or `test_`, and config-version snapshots
+belonging to those temporary tasks. Active/running runs and normal task ids are
+preserved.
 
 Admin preview:
 
@@ -162,8 +165,16 @@ hashes, and is not included in the OpenAPI tool schema.
 Task ids in the dashboard are clickable. The task-detail panel is backed by the
 hidden `/ops/tasks/{task_id}` endpoint and shows a bounded, redacted projection
 of the task config, recent approval history, recent runs, and server-computed
-action eligibility for dry-run, live-run, pause, and resume. Approval history in
-this panel excludes nonce hashes and any operator secrets.
+action eligibility for dry-run, live-run, pause, and resume. It also shows
+redacted config version snapshots and structured diffs so proposed changes can
+be reviewed as before/after field changes without widening the task table.
+Approval history in this panel excludes nonce hashes and any operator secrets.
+
+Pending approvals include the config version linked to that approval request
+when one exists. The dashboard displays the structured diff for that approval so
+the operator can review the proposed config change before entering the approval
+nonce. Config snapshots are stored redacted and are not exposed in the OpenAPI
+tool schema.
 
 Recent run ids in the dashboard are clickable. The run-detail panel is backed by
 the hidden `/ops/runs/{run_id}` endpoint and shows a bounded, redacted projection

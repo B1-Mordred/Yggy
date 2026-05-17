@@ -9,6 +9,7 @@ from app.database import get_session
 from app.models import ApprovalModel, TaskModel
 from app.schemas import ApprovalDecision, ApprovalLevel
 from app.services.approval_service import approve_request, reject_request, verify_nonce
+from app.services.task_version_service import record_task_config_version
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
 
@@ -58,6 +59,14 @@ def approve(
         task.enabled = True
         task.status = "enabled"
         task.config = {**task.config, "enabled": True}
+        record_task_config_version(
+            session,
+            task,
+            actor_role=role,
+            change_type="approval_approve",
+            approval_id=approval.id,
+            summary="Approval accepted and task enabled.",
+        )
     audit_event(session, role, "approval.approve", "approval", approval.id, {"task_id": approval.task_id})
     session.commit()
     return approval_to_dict(approval)

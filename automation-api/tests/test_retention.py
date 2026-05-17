@@ -6,7 +6,8 @@ from datetime import timedelta
 from sqlalchemy.orm import Session
 
 from app.database import get_engine
-from app.models import ApprovalModel, AuditEventModel, RunModel, TaskModel, utcnow
+from app.models import ApprovalModel, AuditEventModel, RunModel, TaskConfigVersionModel, TaskModel, utcnow
+from app.services.task_version_service import record_task_config_version
 from conftest import ADMIN_HEADERS, TOOL_HEADERS, WORKER_HEADERS, sample_task
 
 
@@ -92,6 +93,15 @@ def test_admin_retention_deletes_old_runs_audits_and_temporary_tasks(client):
             ]
         )
         session.flush()
+        temp_task = session.get(TaskModel, temp_task_id)
+        assert temp_task is not None
+        record_task_config_version(
+            session,
+            temp_task,
+            actor_role="tool",
+            change_type="draft",
+            summary="Temporary task version for retention cleanup.",
+        )
         session.add_all(
             [
                 RunModel(
@@ -154,6 +164,7 @@ def test_admin_retention_deletes_old_runs_audits_and_temporary_tasks(client):
     assert body["deleted"]["audit_events"] == 1
     assert body["deleted"]["temporary_tasks"] == 1
     assert body["deleted"]["temporary_task_approvals"] == 1
+    assert body["deleted"]["temporary_task_config_versions"] == 1
     assert body["temporary_task_ids"] == [temp_task_id]
 
     with Session(get_engine()) as session:
@@ -163,4 +174,5 @@ def test_admin_retention_deletes_old_runs_audits_and_temporary_tasks(client):
         assert session.get(TaskModel, temp_task_id) is None
         assert session.get(TaskModel, protected_task_id) is not None
         assert session.get(ApprovalModel, "approval-temp-cleanup") is None
+        assert session.query(TaskConfigVersionModel).filter(TaskConfigVersionModel.task_id == temp_task_id).count() == 0
         assert session.query(AuditEventModel).filter(AuditEventModel.action == "maintenance.retention.apply").count() == 1

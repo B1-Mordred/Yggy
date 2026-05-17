@@ -4,7 +4,17 @@ import re
 from typing import Any
 
 
-SECRET_KEY_MARKERS = ("password", "secret", "token", "api_key", "apikey", "private_key", "cookie", "webhook")
+SECRET_KEY_MARKERS = (
+    "authorization",
+    "password",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "private_key",
+    "cookie",
+    "webhook",
+)
 NON_SECRET_KEY_EXACT = {"webhook_id"}
 SECRET_VALUE_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),

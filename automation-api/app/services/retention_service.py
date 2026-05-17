@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import audit_event
 from app.auth import ApiRole
-from app.models import ApprovalModel, AuditEventModel, RunModel, TaskModel, utcnow
+from app.models import ApprovalModel, AuditEventModel, RunModel, TaskConfigVersionModel, TaskModel, utcnow
 
 TEMP_TASK_PREFIXES = ("temporary_", "test_")
 TEMP_TASK_STATUSES = ("paused", "draft", "pending_approval", "rejected")
@@ -42,6 +42,9 @@ def apply_retention(
         "audit_events": audit_query.count(),
         "temporary_tasks": len(temp_task_ids),
         "temporary_task_approvals": _temporary_task_approvals(session, temp_task_ids).count() if temp_task_ids else 0,
+        "temporary_task_config_versions": _temporary_task_config_versions(session, temp_task_ids).count()
+        if temp_task_ids
+        else 0,
     }
 
     deleted = {key: 0 for key in counts}
@@ -52,6 +55,9 @@ def apply_retention(
             deleted["temporary_task_approvals"] = _temporary_task_approvals(session, temp_task_ids).delete(
                 synchronize_session=False
             )
+            deleted["temporary_task_config_versions"] = _temporary_task_config_versions(
+                session, temp_task_ids
+            ).delete(synchronize_session=False)
             deleted["temporary_tasks"] = (
                 session.query(TaskModel).filter(TaskModel.id.in_(temp_task_ids)).delete(synchronize_session=False)
             )
@@ -108,3 +114,7 @@ def _temporary_task_ids(session: Session, cutoff: datetime) -> list[str]:
 
 def _temporary_task_approvals(session: Session, task_ids: list[str]):
     return session.query(ApprovalModel).filter(ApprovalModel.task_id.in_(task_ids))
+
+
+def _temporary_task_config_versions(session: Session, task_ids: list[str]):
+    return session.query(TaskConfigVersionModel).filter(TaskConfigVersionModel.task_id.in_(task_ids))
