@@ -243,7 +243,7 @@ def test_process_n8n_webhook_records_internal_decision(monkeypatch):
                 "output": {"channel": "internal", "target": "n8n"},
                 "n8n": {
                     "webhook_id": "daily_briefing_stub",
-                    "path": "/webhook/yggy/daily-briefing",
+                    "path": "/webhook/yggy-daily-briefing",
                     "method": "POST",
                 },
             },

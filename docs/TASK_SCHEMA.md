@@ -130,7 +130,7 @@ output:
   format: "bounded webhook dispatch status"
 n8n:
   webhook_id: daily_briefing_stub
-  path: /webhook/yggy/daily-briefing
+  path: /webhook/yggy-daily-briefing
   method: POST
   payload:
     purpose: daily_briefing_stub

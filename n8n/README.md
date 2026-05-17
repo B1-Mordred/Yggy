@@ -35,7 +35,7 @@ shape but does not call n8n.
 point. After importing it, configure the Webhook node path to:
 
 ```text
-yggy/daily-briefing
+yggy-daily-briefing
 ```
 
 Then add an IF or Code node that checks header `x-yggy-webhook-token` against an

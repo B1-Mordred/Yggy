@@ -1,9 +1,10 @@
 {
+  "id": "yggyDailyBriefingStub01",
   "name": "Daily Briefing Webhook Stub",
   "nodes": [
     {
       "parameters": {
-        "path": "yggy/daily-briefing",
+        "path": "yggy-daily-briefing",
         "httpMethod": "POST",
         "responseMode": "responseNode"
       },
@@ -11,6 +12,7 @@
       "name": "Yggy Daily Briefing Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
+      "webhookId": "yggy-daily-briefing",
       "position": [300, 300]
     },
     {

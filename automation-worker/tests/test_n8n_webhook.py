@@ -20,7 +20,7 @@ def n8n_config(dry_run: bool = True) -> dict:
         "runtime": {"dry_run": dry_run, "timeout_seconds": 60},
         "n8n": {
             "webhook_id": "daily_briefing_stub",
-            "path": "/webhook/yggy/daily-briefing",
+            "path": "/webhook/yggy-daily-briefing",
             "method": "POST",
             "payload": {"purpose": "daily_briefing_stub"},
         },
@@ -62,7 +62,7 @@ def test_n8n_webhook_live_posts_to_internal_base_url(monkeypatch):
 
     assert result["status"] == "ready"
     assert result["status_code"] == 204
-    assert calls[0]["url"] == "http://n8n:5678/webhook/yggy/daily-briefing"
+    assert calls[0]["url"] == "http://n8n:5678/webhook/yggy-daily-briefing"
     assert calls[0]["headers"]["X-Yggy-Webhook-Token"] == "test-shared-secret"
     assert calls[0]["headers"]["X-Yggy-Run-Id"] == "run-1"
     assert calls[0]["json"]["payload"] == {"purpose": "daily_briefing_stub"}

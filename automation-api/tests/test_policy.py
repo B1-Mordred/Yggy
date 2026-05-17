@@ -97,7 +97,7 @@ def n8n_task(task_id: str, **overrides):
     )
     task["n8n"] = {
         "webhook_id": "daily_briefing_stub",
-        "path": "/webhook/yggy/daily-briefing",
+        "path": "/webhook/yggy-daily-briefing",
         "method": "POST",
         "payload": {"purpose": "test"},
     }
