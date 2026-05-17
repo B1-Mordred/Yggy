@@ -58,36 +58,6 @@ AUTOMATION_TASK_ALIASES = {
     'local ai security briefing': 'daily_local_ai_security_briefing',
     'local ai/security briefing': 'daily_local_ai_security_briefing',
 }
-TASK_TEMPLATE_SUMMARIES = {
-    'topic_digest': {
-        'name': 'Topic Digest',
-        'task_type': 'topic_digest',
-        'approval_level': 'L1_NOTIFY_ONLY',
-        'targets': ['briefings', 'alerts'],
-        'purpose': 'Draft a bounded digest from approved source IDs and deliver it to a whitelisted Discord target.',
-    },
-    'server_health': {
-        'name': 'Server Health Check',
-        'task_type': 'server_health',
-        'approval_level': 'L1_NOTIFY_ONLY',
-        'targets': ['alerts'],
-        'purpose': 'Draft a read-only service health task that alerts only on anomalies.',
-    },
-    'backup_verification': {
-        'name': 'Backup Verification',
-        'task_type': 'backup_verification',
-        'approval_level': 'L1_NOTIFY_ONLY',
-        'targets': ['alerts'],
-        'purpose': 'Draft a read-only backup verification task for recent Yggy backup directories.',
-    },
-    'n8n_webhook': {
-        'name': 'n8n Webhook Dispatch',
-        'task_type': 'n8n_webhook',
-        'approval_level': 'L1_NOTIFY_ONLY',
-        'targets': ['n8n'],
-        'purpose': 'Draft a disabled internal n8n webhook task using an approved webhook ID.',
-    },
-}
 TASK_TEMPLATE_ALIASES = {
     'topic digest': 'topic_digest',
     'digest': 'topic_digest',
@@ -672,6 +642,28 @@ def local_ai_security_briefing_draft(text: str) -> dict[str, Any]:
     }
 
 
+def local_ai_security_template_values(text: str) -> dict[str, Any]:
+    cron, timezone = parse_schedule(text)
+    return {
+        'id': 'daily_local_ai_security_briefing',
+        'name': 'Daily Local AI Security Briefing',
+        'cron': cron,
+        'timezone': timezone,
+        'output_target': 'briefings',
+        'source_ids': [
+            'open_webui_releases',
+            'ollama_releases',
+            'n8n_releases',
+            'docker_blog',
+        ],
+        'include': ['Open WebUI', 'Ollama', 'Hermes', 'Docker', 'n8n', 'local AI security'],
+        'exclude': ['sponsored', 'rumor'],
+        'max_items': 10,
+        'owner': 'local_user',
+        'created_by': 'yggdrasil',
+    }
+
+
 def yaml_scalar(value: Any) -> str:
     if isinstance(value, bool):
         return 'true' if value else 'false'
@@ -750,26 +742,32 @@ def format_task_list(tasks: list[dict[str, Any]]) -> str:
 
 
 def format_task_template(template_id: str, template: dict[str, Any]) -> str:
-    targets = ', '.join(f'`{target}`' for target in template.get('targets', []))
+    targets = template.get('allowed_output_targets') or template.get('targets') or []
+    targets_text = ', '.join(f'`{target}`' for target in targets)
+    approval = template.get('default_approval_level') or template.get('approval_level') or 'n/a'
+    purpose = template.get('description') or template.get('purpose') or 'n/a'
     return (
         f"Task template `{template_id}`\n\n"
         f"- Name: {template.get('name')}\n"
         f"- Task type: `{template.get('task_type')}`\n"
-        f"- Default approval: `{template.get('approval_level')}`\n"
-        f"- Allowed targets: {targets}\n"
-        f"- Purpose: {template.get('purpose')}\n\n"
+        f"- Default approval: `{approval}`\n"
+        f"- Allowed targets: {targets_text}\n"
+        f"- Purpose: {purpose}\n\n"
         "Rendered tasks are disabled and dry-run by default, then must pass automation API validation. "
         "A template does not approve, enable, or run a task."
     )
 
 
-def format_task_template_list() -> str:
+def format_task_template_list(templates: list[dict[str, Any]]) -> str:
+    if not templates:
+        return 'No task templates are registered yet.'
     lines = ['Task templates:']
-    for template_id, template in TASK_TEMPLATE_SUMMARIES.items():
-        targets = ', '.join(template['targets'])
+    for template in templates:
+        targets = ', '.join(template.get('allowed_output_targets') or template.get('targets') or [])
+        approval = template.get('default_approval_level') or template.get('approval_level') or 'n/a'
         lines.append(
-            f"- `{template_id}`: {template['name']} "
-            f"({template['approval_level']}, targets: {targets})"
+            f"- `{template.get('id')}`: {template.get('name')} "
+            f"({approval}, targets: {targets})"
         )
     lines.extend([
         '',
@@ -974,10 +972,12 @@ def query_runs_path(*, task_id: str | None = None, status_value: str | None = No
     return f"/runs?{urllib.parse.urlencode(params)}"
 
 
-def format_draft_response(status_code: int, body: Any, draft: dict[str, Any]) -> str:
+def format_draft_response(status_code: int, body: Any, draft: dict[str, Any], *, template_id: str | None = None) -> str:
     if status_code == 201 and isinstance(body, dict):
         task = body.get('task') or {}
         approval = body.get('approval')
+        rendered = body.get('rendered_config') if isinstance(body.get('rendered_config'), dict) else draft
+        template_text = f" from template `{template_id}`" if template_id else ''
         approval_text = ''
         if approval:
             approval_text = (
@@ -988,11 +988,11 @@ def format_draft_response(status_code: int, body: Any, draft: dict[str, Any]) ->
                 "- Approve only through the local admin CLI/UI. Do not paste admin secrets into chat."
             )
         return (
-            f"Draft task `{task.get('id')}` was created and remains disabled.\n\n"
+            f"Draft task `{task.get('id')}` was created{template_text} and remains disabled.\n\n"
             f"{format_task(task)}"
             f"{approval_text}\n\n"
             "YAML draft:\n"
-            f"```yaml\n{to_yaml(draft)}\n```"
+            f"```yaml\n{to_yaml(rendered)}\n```"
         )
     if status_code == 409:
         task_id = draft['id']
@@ -1039,10 +1039,14 @@ def handle_automation_request(user_text: str) -> str | None:
     if re.search(r'\b(template|templates|scaffold|scaffolds)\b', lowered):
         template_id = automation_template_id_from_text(user_text)
         if template_id and re.search(r'\b(show|get|inspect|details?|describe|explain)\b', lowered):
-            template = TASK_TEMPLATE_SUMMARIES.get(template_id)
-            if template:
-                return format_task_template(template_id, template)
-        return format_task_template_list()
+            status_code, body = automation_request('GET', f'/task-templates/{template_id}')
+            if status_code == 200 and isinstance(body, dict):
+                return format_task_template(template_id, body)
+            return f'Automation API returned status `{status_code}` while showing template `{template_id}`:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+        status_code, body = automation_request('GET', '/task-templates')
+        if status_code == 200 and isinstance(body, list):
+            return format_task_template_list(body)
+        return f'Automation API returned status `{status_code}` while listing task templates:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 
     if re.search(r'\b(list|show all|what .*tasks|tasks\?)\b', lowered) and re.search(r'\b(task|tasks|automation|automations)\b', lowered):
         status_code, body = automation_request('GET', '/tasks')
@@ -1056,9 +1060,9 @@ def handle_automation_request(user_text: str) -> str | None:
                 'I can draft automation tasks through the control plane, but I need the task purpose, trigger, '
                 'sources, output target, and approval level.'
             )
-        draft = local_ai_security_briefing_draft(user_text)
-        status_code, body = automation_request('POST', '/tasks/draft', draft)
-        return format_draft_response(status_code, body, draft)
+        draft = local_ai_security_template_values(user_text)
+        status_code, body = automation_request('POST', '/task-templates/topic_digest/draft', draft)
+        return format_draft_response(status_code, body, draft, template_id='topic_digest')
 
     if re.search(r'\b(request approval|approval request|ask.*approval)\b', lowered):
         task_id = automation_task_id_from_text(user_text)

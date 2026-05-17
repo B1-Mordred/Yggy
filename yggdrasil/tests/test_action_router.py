@@ -109,16 +109,35 @@ def test_local_ai_security_draft_includes_run_safety_limits():
     assert draft["policy"]["min_seconds_between_runs"] == 300
 
 
-def test_list_task_templates_does_not_call_automation_api(monkeypatch):
-    def fail_automation_request(method: str, path: str, payload: dict | None = None):
-        raise AssertionError("template listing should be a local safe response")
+def test_list_task_templates_uses_automation_api(monkeypatch):
+    calls: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fail_automation_request)
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path))
+        return 200, [
+            {
+                "id": "topic_digest",
+                "name": "Topic Digest",
+                "task_type": "topic_digest",
+                "default_approval_level": "L1_NOTIFY_ONLY",
+                "allowed_output_targets": ["briefings", "alerts"],
+            },
+            {
+                "id": "server_health",
+                "name": "Server Health Check",
+                "task_type": "server_health",
+                "default_approval_level": "L1_NOTIFY_ONLY",
+                "allowed_output_targets": ["alerts"],
+            },
+        ]
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
 
     answer = yggdrasil_action_api.route_chat(
         [{"role": "user", "content": "list task templates"}],
     )
 
+    assert calls == [("GET", "/task-templates")]
     assert "Task templates:" in answer
     assert "`topic_digest`" in answer
     assert "`server_health`" in answer
@@ -126,18 +145,73 @@ def test_list_task_templates_does_not_call_automation_api(monkeypatch):
 
 
 def test_show_task_template_details(monkeypatch):
-    def fail_automation_request(method: str, path: str, payload: dict | None = None):
-        raise AssertionError("template details should be a local safe response")
+    calls: list[tuple[str, str]] = []
 
-    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fail_automation_request)
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path))
+        return 200, {
+            "id": "backup_verification",
+            "name": "Backup Verification",
+            "task_type": "backup_verification",
+            "default_approval_level": "L1_NOTIFY_ONLY",
+            "allowed_output_targets": ["alerts"],
+            "description": "Draft a read-only backup verification task.",
+        }
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
 
     answer = yggdrasil_action_api.route_chat(
         [{"role": "user", "content": "show the backup verification template"}],
     )
 
+    assert calls == [("GET", "/task-templates/backup_verification")]
     assert "Task template `backup_verification`" in answer
     assert "Default approval: `L1_NOTIFY_ONLY`" in answer
     assert "does not approve, enable, or run a task" in answer
+
+
+def test_draft_daily_brief_uses_template_endpoint(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path, payload))
+        return 201, {
+            "task": {
+                "id": "daily_local_ai_security_briefing",
+                "name": "Daily Local AI Security Briefing",
+                "type": "topic_digest",
+                "enabled": False,
+                "status": "pending_approval",
+                "approval_level": "L1_NOTIFY_ONLY",
+                "config": {
+                    "trigger": {"cron": "0 8 * * 1-5", "timezone": "Europe/Berlin"},
+                    "output": {"channel": "discord", "target": "briefings"},
+                    "runtime": {"dry_run": True},
+                    "policy": {"allow_shell": False, "allow_docker_socket": False},
+                },
+            },
+            "approval": {"id": "approval-1", "approval_level": "L1_NOTIFY_ONLY", "status": "pending"},
+            "rendered_config": {
+                "id": "daily_local_ai_security_briefing",
+                "name": "Daily Local AI Security Briefing",
+                "type": "topic_digest",
+                "enabled": False,
+                "runtime": {"dry_run": True},
+                "policy": {"allow_shell": False, "allow_docker_socket": False},
+            },
+        }
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    answer = yggdrasil_action_api.route_chat(
+        [{"role": "user", "content": "draft a weekday 08:00 local AI security briefing to Discord"}],
+    )
+
+    assert calls[0][0:2] == ("POST", "/task-templates/topic_digest/draft")
+    assert calls[0][2]["cron"] == "0 8 * * 1-5"
+    assert calls[0][2]["source_ids"] == ["open_webui_releases", "ollama_releases", "n8n_releases", "docker_blog"]
+    assert "from template `topic_digest`" in answer
+    assert "Approval request created" in answer
 
 
 def test_show_latest_daily_brief_run(monkeypatch):

@@ -32,9 +32,9 @@ The helper stores only the model-facing `AUTOMATION_TOOL_API_KEY` in Open WebUI'
 The installed Yggdrasil action endpoint is intentionally scoped to this project only. Open WebUI-facing Yggdrasil requests should not be routed to older Hermes brief-management, profile-management, host-management, or proposal-queue domains.
 
 Yggdrasil may list and explain the local task template catalog for drafting
-help, but templates are not a separate execution path. Rendered templates remain
-disabled/dry-run task YAML and must go through automation API validation,
-approval, and enablement.
+help through the automation API's `/task-templates` endpoints. Templates are not
+a separate execution path. Rendered templates remain disabled/dry-run task YAML
+and must go through automation API validation, approval, and enablement.
 
 ## Workspace Tools Warning
 

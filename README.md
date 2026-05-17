@@ -80,6 +80,8 @@ For registry drift checks between Git YAML and live API state, see
 
 For reusable disabled task scaffolds, see
 [docs/TASK_TEMPLATES.md](docs/TASK_TEMPLATES.md).
+The automation API exposes these as guarded OpenAPI endpoints under
+`/task-templates` for Yggdrasil/Open WebUI.
 
 For Discord notifications about pending approvals, see
 [docs/APPROVAL_NOTIFICATIONS.md](docs/APPROVAL_NOTIFICATIONS.md).

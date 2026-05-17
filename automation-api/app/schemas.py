@@ -144,6 +144,54 @@ class RuntimeConfig(BaseModel):
     retry_count: int = Field(default=1, ge=0, le=10)
 
 
+class TaskTemplateRenderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    cron: str | None = None
+    timezone: str | None = None
+    output_target: str | None = None
+    source_ids: list[str] | None = None
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+    max_items: int | None = Field(default=None, ge=1, le=100)
+    owner: str | None = None
+    created_by: str | None = None
+
+    @field_validator("id")
+    @classmethod
+    def id_must_be_slug(cls, value: str) -> str:
+        if not SLUG_RE.match(value):
+            raise ValueError("id must be slug-like")
+        return value
+
+    @field_validator("source_ids")
+    @classmethod
+    def source_ids_must_be_slug_like(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        for source_id in value:
+            if not SLUG_RE.match(source_id):
+                raise ValueError("source_ids must be slug-like")
+        return value
+
+
+class TaskTemplateSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    description: str
+    task_type: str
+    default_approval_level: ApprovalLevel
+    allowed_output_targets: list[str] = Field(default_factory=list)
+    required_fields: list[str] = Field(default_factory=list)
+    optional_fields: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+    example_prompts: list[str] = Field(default_factory=list)
+
+
 class QuietHoursConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -80,6 +80,16 @@ def create_draft_task(
     role: ApiRole = Depends(require_roles(ApiRole.TOOL, ApiRole.ADMIN)),
     session: Session = Depends(get_session),
 ) -> dict:
+    return create_draft_task_record(payload, role=role, session=session)
+
+
+def create_draft_task_record(
+    payload: TaskConfig,
+    *,
+    role: ApiRole,
+    session: Session,
+    audit_details: dict | None = None,
+) -> dict:
     task_config = payload.model_copy(update={"enabled": False})
     _validate_or_422(task_config)
     if session.get(TaskModel, task_config.id):
@@ -120,7 +130,7 @@ def create_draft_task(
             change_type="draft",
             summary="Draft task configuration created without initial approval requirement.",
         )
-    audit_event(session, role, "task.draft", "task", task.id, {"approval_level": task.approval_level})
+    audit_event(session, role, "task.draft", "task", task.id, {"approval_level": task.approval_level, **(audit_details or {})})
     session.commit()
     return {"task": task_to_dict(task), "approval": approval_payload}
 

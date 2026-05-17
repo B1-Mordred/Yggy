@@ -117,7 +117,22 @@ The approval nonce is local operator material. Do not paste it into Open WebUI o
 
 ## Yggdrasil Usage
 
-Yggdrasil can tell the user what templates are available and what each template is for. It should still draft task YAML through the automation API and normal approval workflow rather than treating a template as permission to enable or run a new recurring task.
+Yggdrasil can ask the automation API what templates are available and what each
+template is for. It should still draft task YAML through the automation API and
+normal approval workflow rather than treating a template as permission to enable
+or run a new recurring task.
+
+OpenAPI endpoints:
+
+```text
+GET /task-templates
+GET /task-templates/{template_id}
+POST /task-templates/{template_id}/draft
+```
+
+The model-facing tool key may call these endpoints. The draft endpoint creates a
+disabled dry-run task and any required approval request through the same code
+path as `POST /tasks/draft`.
 
 Useful prompts:
 

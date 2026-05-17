@@ -10,6 +10,9 @@ Allowed:
 - `GET /tasks`
 - `GET /tasks/{task_id}`
 - `POST /tasks/draft`
+- `GET /task-templates`
+- `GET /task-templates/{template_id}`
+- `POST /task-templates/{template_id}/draft`
 - `POST /tasks/{task_id}/request-approval`
 - `POST /tasks/{task_id}/pause` for L0/L1
 - `POST /tasks/{task_id}/run` for approved L0/L1 or dry-run
