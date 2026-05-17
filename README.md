@@ -94,6 +94,8 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
 - Pending approvals can be handled in the local `/ops` approval UI without
   exposing the admin API key to the browser.
 - Topic digests must use approved `source_id` entries instead of broad generic `web_query` sources.
+- Task notifications are governed by declarative per-task preferences for
+  success, failure, empty results, quiet hours, and repeated-failure collapse.
 - Secrets stay in `.env`, Docker secrets, n8n credentials, or a local secret manager.
 - Task YAML, Open WebUI Knowledge, prompts, chat history, and logs must not contain secrets.
 

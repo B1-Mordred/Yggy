@@ -141,6 +141,42 @@ class RuntimeConfig(BaseModel):
     retry_count: int = Field(default=1, ge=0, le=10)
 
 
+class QuietHoursConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    start: str = "22:00"
+    end: str = "07:00"
+    timezone: str = "Europe/Berlin"
+
+    @field_validator("start", "end")
+    @classmethod
+    def time_must_be_hhmm(cls, value: str) -> str:
+        if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", value):
+            raise ValueError("quiet hour time must be HH:MM")
+        return value
+
+    @field_validator("timezone")
+    @classmethod
+    def timezone_must_exist(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone is invalid") from exc
+        return value
+
+
+class NotificationPreferencesConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    on_success: bool = True
+    on_failure: bool = True
+    on_empty_result: bool = False
+    quiet_hours: QuietHoursConfig = Field(default_factory=QuietHoursConfig)
+    collapse_repeated_failures: bool = True
+    failure_collapse_window_minutes: int = Field(default=360, ge=1, le=10080)
+
+
 class TaskConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -157,6 +193,7 @@ class TaskConfig(BaseModel):
     output: OutputConfig
     policy: PolicyConfig
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    notifications: NotificationPreferencesConfig = Field(default_factory=NotificationPreferencesConfig)
 
     @field_validator("id")
     @classmethod

@@ -31,8 +31,13 @@ class AutomationApiClient:
         response.raise_for_status()
         return response.json()
 
-    def list_runs(self) -> list[dict]:
-        response = httpx.get(f"{self.base_url}/runs", headers=self.headers, timeout=10)
+    def list_runs(self, task_id: str | None = None, status: str | None = None, limit: int = 50) -> list[dict]:
+        params: dict[str, str | int] = {"limit": limit}
+        if task_id:
+            params["task_id"] = task_id
+        if status:
+            params["status"] = status
+        response = httpx.get(f"{self.base_url}/runs", headers=self.headers, params=params, timeout=10)
         response.raise_for_status()
         return response.json()
 

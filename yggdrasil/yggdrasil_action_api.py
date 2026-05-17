@@ -594,6 +594,19 @@ def local_ai_security_briefing_draft(text: str) -> dict[str, Any]:
             'allow_filesystem_write': False,
         },
         'runtime': {'dry_run': True, 'timeout_seconds': 120, 'retry_count': 1},
+        'notifications': {
+            'on_success': True,
+            'on_failure': True,
+            'on_empty_result': False,
+            'quiet_hours': {
+                'enabled': True,
+                'start': '22:00',
+                'end': '07:00',
+                'timezone': 'Europe/Berlin',
+            },
+            'collapse_repeated_failures': True,
+            'failure_collapse_window_minutes': 360,
+        },
     }
 
 

@@ -61,6 +61,19 @@ def sample_task(task_id: str, approval_level: str = "L1_NOTIFY_ONLY", **override
             "allow_filesystem_write": False,
         },
         "runtime": {"dry_run": True, "timeout_seconds": 120, "retry_count": 1},
+        "notifications": {
+            "on_success": True,
+            "on_failure": True,
+            "on_empty_result": False,
+            "quiet_hours": {
+                "enabled": False,
+                "start": "22:00",
+                "end": "07:00",
+                "timezone": "Europe/Berlin",
+            },
+            "collapse_repeated_failures": True,
+            "failure_collapse_window_minutes": 360,
+        },
     }
     for key, value in overrides.items():
         if isinstance(value, dict) and isinstance(task.get(key), dict):

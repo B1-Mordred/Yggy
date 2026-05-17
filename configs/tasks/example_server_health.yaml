@@ -45,3 +45,15 @@ runtime:
   dry_run: true
   timeout_seconds: 60
   retry_count: 1
+
+notifications:
+  on_success: false
+  on_failure: true
+  on_empty_result: false
+  quiet_hours:
+    enabled: false
+    start: "22:00"
+    end: "07:00"
+    timezone: Europe/Berlin
+  collapse_repeated_failures: true
+  failure_collapse_window_minutes: 120

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, time as clock_time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from worker.clients.automation_api import AutomationApiClient
 from worker.handlers.server_health import run_server_health
@@ -15,6 +17,154 @@ def result_message(config: dict, result: dict) -> str:
     if result.get("message"):
         return str(result["message"])
     return f"{config.get('name', config.get('id', 'Automation task'))}: {result}"
+
+
+def failure_message(config: dict, error: Exception) -> str:
+    return "\n".join(
+        [
+            f"**Task failed: {config.get('name', config.get('id', 'Automation task'))}**",
+            "",
+            f"Task: `{config.get('id', 'unknown')}`",
+            f"Error: `{error.__class__.__name__}`",
+            "",
+            "Suggested action: inspect the run log and pause the task if the failure repeats.",
+        ]
+    )
+
+
+def notification_preferences(config: dict) -> dict:
+    prefs = dict(config.get("notifications") or {})
+    quiet_hours = dict(prefs.get("quiet_hours") or {})
+    return {
+        "on_success": prefs.get("on_success", True),
+        "on_failure": prefs.get("on_failure", True),
+        "on_empty_result": prefs.get("on_empty_result", False),
+        "quiet_hours": {
+            "enabled": quiet_hours.get("enabled", False),
+            "start": quiet_hours.get("start", "22:00"),
+            "end": quiet_hours.get("end", "07:00"),
+            "timezone": quiet_hours.get("timezone", config.get("trigger", {}).get("timezone", "Europe/Berlin")),
+        },
+        "collapse_repeated_failures": prefs.get("collapse_repeated_failures", True),
+        "failure_collapse_window_minutes": int(prefs.get("failure_collapse_window_minutes", 360)),
+    }
+
+
+def classify_result(result: dict, failed: bool = False) -> str:
+    if failed:
+        return "failure"
+    status = str(result.get("status", "")).lower()
+    if status in {"failed", "failure", "error", "degraded"} or int(result.get("failed_count") or 0) > 0:
+        return "failure"
+    if result.get("error") or (result.get("errors") and not result.get("items")):
+        return "failure"
+    if "items" in result and not result.get("items"):
+        return "empty"
+    return "success"
+
+
+def quiet_hours_active(preferences: dict, now: datetime | None = None) -> bool:
+    quiet = preferences.get("quiet_hours", {})
+    if not quiet.get("enabled", False):
+        return False
+    zone = ZoneInfo(str(quiet.get("timezone") or "Europe/Berlin"))
+    current = now.astimezone(zone) if now else datetime.now(zone)
+    start = _parse_hhmm(str(quiet.get("start", "22:00")))
+    end = _parse_hhmm(str(quiet.get("end", "07:00")))
+    current_time = current.time().replace(second=0, microsecond=0)
+    if start <= end:
+        return start <= current_time < end
+    return current_time >= start or current_time < end
+
+
+def _parse_hhmm(value: str) -> clock_time:
+    hour, minute = value.split(":", 1)
+    return clock_time(int(hour), int(minute))
+
+
+def notification_decision(
+    client: AutomationApiClient,
+    config: dict,
+    result: dict,
+    *,
+    run_id: str,
+    failed: bool = False,
+    now: datetime | None = None,
+) -> dict:
+    preferences = notification_preferences(config)
+    classification = classify_result(result, failed=failed)
+    decision = {
+        "send": True,
+        "reason": "enabled",
+        "classification": classification,
+        "preferences": preferences,
+        "quiet_hours_active": quiet_hours_active(preferences, now=now),
+    }
+
+    if result.get("notify") is False and classification != "failure":
+        return {**decision, "send": False, "reason": "handler_suppressed"}
+    if classification == "failure" and not preferences["on_failure"]:
+        return {**decision, "send": False, "reason": "failure_notifications_disabled"}
+    if classification == "empty" and not preferences["on_empty_result"]:
+        return {**decision, "send": False, "reason": "empty_result_notifications_disabled"}
+    if classification == "success" and not preferences["on_success"]:
+        return {**decision, "send": False, "reason": "success_notifications_disabled"}
+    if decision["quiet_hours_active"] and classification != "failure":
+        return {**decision, "send": False, "reason": "quiet_hours"}
+    if (
+        classification == "failure"
+        and preferences["collapse_repeated_failures"]
+        and has_recent_failure(client, config["id"], run_id, preferences["failure_collapse_window_minutes"], now=now)
+    ):
+        return {**decision, "send": False, "reason": "repeated_failure_collapsed"}
+    return decision
+
+
+def has_recent_failure(
+    client: AutomationApiClient,
+    task_id: str,
+    current_run_id: str,
+    window_minutes: int,
+    now: datetime | None = None,
+) -> bool:
+    current = now or datetime.now(timezone.utc)
+    cutoff = current.astimezone(timezone.utc) - timedelta(minutes=window_minutes)
+    try:
+        runs = client.list_runs(task_id=task_id, limit=10)
+    except Exception:
+        return False
+    for run in runs:
+        if run.get("id") == current_run_id or not run.get("completed_at"):
+            continue
+        completed_at = parse_datetime(run.get("completed_at"))
+        if not completed_at or completed_at < cutoff:
+            continue
+        if previous_run_failed(run):
+            return True
+    return False
+
+
+def parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def previous_run_failed(run: dict) -> bool:
+    if run.get("status") == "failed":
+        return True
+    log = run.get("log") if isinstance(run.get("log"), dict) else {}
+    decision = log.get("notification_decision") if isinstance(log.get("notification_decision"), dict) else {}
+    if decision.get("classification") == "failure":
+        return True
+    result = log.get("result") if isinstance(log.get("result"), dict) else {}
+    return classify_result(result) == "failure"
 
 
 def execute_task(
@@ -71,8 +221,11 @@ def execute_task(
             result = {"status": "skipped", "reason": f"unsupported task type: {task_type}"}
 
         notification = None
+        decision = {"send": False, "reason": "non_discord_output"}
         output = effective_config.get("output", {})
-        if output.get("channel") == "discord" and result.get("status") != "skipped" and result.get("notify", True):
+        if output.get("channel") == "discord" and result.get("status") != "skipped":
+            decision = notification_decision(client, effective_config, result, run_id=run_id)
+        if decision.get("send"):
             notification = client.send_discord(
                 target=output["target"],
                 content=result_message(effective_config, result),
@@ -83,14 +236,35 @@ def execute_task(
         completed = client.complete_run(
             run_id,
             status,
-            {"task_id": task_id, "result": result, "notification": notification},
+            {"task_id": task_id, "result": result, "notification": notification, "notification_decision": decision},
         )
         return {"task_id": task_id, "run_id": run_id, "status": completed["status"], "result": result}
     except Exception as exc:
+        output = effective_config.get("output", {})
+        failure_result = {"status": "failed", "error": exc.__class__.__name__, "message": str(exc)}
+        notification = None
+        decision = {"send": False, "reason": "non_discord_output", "classification": "failure"}
+        if output.get("channel") == "discord":
+            decision = notification_decision(client, effective_config, failure_result, run_id=run_id, failed=True)
+            if decision.get("send"):
+                try:
+                    notification = client.send_discord(
+                        target=output["target"],
+                        content=failure_message(effective_config, exc),
+                        dry_run=dry_run,
+                    )
+                except Exception as notification_exc:
+                    notification = {"sent": False, "error": notification_exc.__class__.__name__}
         client.complete_run(
             run_id,
             "failed",
-            {"task_id": task_id, "error": exc.__class__.__name__, "message": str(exc)},
+            {
+                "task_id": task_id,
+                "error": exc.__class__.__name__,
+                "message": str(exc),
+                "notification": notification,
+                "notification_decision": decision,
+            },
         )
         raise
 

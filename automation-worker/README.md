@@ -13,3 +13,10 @@ Recommended local default for this host is `granite4.1:8b`, selected from the in
 Topic digest source selection is controlled by the automation API policy. The
 deployed policy requires `source_id` entries from `configs/sources/approved_sources.yaml`
 and disables generic `web_query` sources for topic digests.
+
+## Notification Preferences
+
+Each task can declare `notifications` preferences. The worker classifies each
+result as `success`, `empty`, or `failure`, applies the task toggles, suppresses
+non-failure messages during quiet hours, collapses repeated failures inside the
+configured window, and stores the final `notification_decision` in the run log.

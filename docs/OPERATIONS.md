@@ -14,6 +14,11 @@ scheduled for weekdays at 08:00 Europe/Berlin and sends to the whitelisted
 `configs/sources/approved_sources.yaml`; broad `web_query` sources are blocked
 for topic digests by policy.
 
+Notification preferences are stored in each task config. The worker records a
+`notification_decision` in every run log so you can see whether a message was
+sent, skipped for quiet hours, skipped because the result was empty, or collapsed
+as a repeated failure.
+
 ## Pause A Task
 
 ```bash
@@ -47,6 +52,18 @@ chat, Knowledge, task YAML, or logs.
 ## Logs
 
 Run logs are stored through the API with secret-looking values redacted. Treat logs as potentially sensitive operational data.
+
+Useful notification-decision reasons:
+
+```text
+enabled
+handler_suppressed
+success_notifications_disabled
+failure_notifications_disabled
+empty_result_notifications_disabled
+quiet_hours
+repeated_failure_collapsed
+```
 
 ## Run Locking
 

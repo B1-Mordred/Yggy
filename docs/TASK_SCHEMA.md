@@ -48,6 +48,18 @@ runtime:
   dry_run: false
   timeout_seconds: 120
   retry_count: 1
+
+notifications:
+  on_success: true
+  on_failure: true
+  on_empty_result: false
+  quiet_hours:
+    enabled: true
+    start: "22:00"
+    end: "07:00"
+    timezone: Europe/Berlin
+  collapse_repeated_failures: true
+  failure_collapse_window_minutes: 360
 ```
 
 ## Validation Rules
@@ -68,6 +80,9 @@ The API rejects tasks when:
 - topic digest sources are not listed in `configs/sources/approved_sources.yaml`
 - topic digest sources omit `source_id`
 - topic digest sources use `web_query` while source policy disables web queries
+- notification quiet-hour times are not `HH:MM`
+- notification quiet-hour timezone is invalid
+- `failure_collapse_window_minutes` is outside the allowed range
 
 ## Approved Sources
 
@@ -79,6 +94,23 @@ entry.
 This keeps source selection declarative and reviewable. Webpages, feeds, release
 notes, and other retrieved content remain untrusted data; they do not gain command
 authority by being approved as data sources.
+
+## Notification Preferences
+
+Task notifications are declarative and evaluated by the worker after a bounded
+handler completes or fails:
+
+- `on_success`: send normal successful results.
+- `on_failure`: send failed/degraded results and handler exceptions.
+- `on_empty_result`: send otherwise successful digests with no matching items.
+- `quiet_hours`: suppress non-failure notifications during the configured local
+  time window. Failure notifications still pass through quiet hours.
+- `collapse_repeated_failures`: suppress repeated failure notifications when a
+  previous failure for the same task completed inside
+  `failure_collapse_window_minutes`.
+
+Every run log includes a `notification_decision` object with the classification
+and suppression reason.
 
 ## Secret References
 

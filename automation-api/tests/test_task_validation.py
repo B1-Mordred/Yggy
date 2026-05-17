@@ -41,3 +41,27 @@ def test_invalid_timezone_fails():
         assert "timezone" in str(exc)
     else:
         raise AssertionError("invalid timezone was accepted")
+
+
+def test_invalid_notification_quiet_hour_fails():
+    data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_daily_briefing.yaml").read_text(encoding="utf-8"))
+    data["id"] = "invalid_quiet_hour"
+    data["notifications"]["quiet_hours"]["start"] = "25:00"
+    try:
+        TaskConfig.model_validate(data)
+    except Exception as exc:
+        assert "quiet hour" in str(exc)
+    else:
+        raise AssertionError("invalid quiet hour was accepted")
+
+
+def test_invalid_failure_collapse_window_fails():
+    data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_daily_briefing.yaml").read_text(encoding="utf-8"))
+    data["id"] = "invalid_failure_collapse_window"
+    data["notifications"]["failure_collapse_window_minutes"] = 0
+    try:
+        TaskConfig.model_validate(data)
+    except Exception as exc:
+        assert "failure_collapse_window_minutes" in str(exc)
+    else:
+        raise AssertionError("invalid failure collapse window was accepted")
