@@ -13,6 +13,7 @@ class ApiRole(str, Enum):
     TOOL = "tool"
     ADMIN = "admin"
     WORKER = "worker"
+    CHANNEL_BRIDGE = "channel_bridge"
 
 
 def classify_api_key(api_key: str | None) -> ApiRole:
@@ -24,6 +25,8 @@ def classify_api_key(api_key: str | None) -> ApiRole:
         return ApiRole.ADMIN
     if settings.worker_api_key and secrets.compare_digest(api_key, settings.worker_api_key):
         return ApiRole.WORKER
+    if settings.channel_bridge_api_key and secrets.compare_digest(api_key, settings.channel_bridge_api_key):
+        return ApiRole.CHANNEL_BRIDGE
     if settings.tool_api_key and secrets.compare_digest(api_key, settings.tool_api_key):
         return ApiRole.TOOL
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid API key")

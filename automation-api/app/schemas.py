@@ -584,3 +584,31 @@ class StaleRunRecoveryRequest(BaseModel):
     task_id: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9_\-]{2,127}$")
     stale_after_seconds: int | None = Field(default=None, ge=60, le=86400)
     limit: int = Field(default=100, ge=1, le=500)
+
+
+class ChannelEventStatus(str, Enum):
+    IGNORED = "ignored"
+    BLOCKED = "blocked"
+    REJECTED = "rejected"
+    FAILED = "failed"
+    REPLIED = "replied"
+    FORWARDED = "forwarded"
+
+
+class ChannelEventCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.:\-]{8,128}$")
+    channel_type: Literal["discord", "openwebui", "api"] = "discord"
+    channel_config_id: str | None = Field(default=None, max_length=128)
+    channel_id_hash: str | None = Field(default=None, pattern=r"^sha256:[a-f0-9]{16,64}$")
+    author_id_hash: str | None = Field(default=None, pattern=r"^sha256:[a-f0-9]{16,64}$")
+    message_id: str | None = Field(default=None, max_length=128)
+    request_preview: str | None = Field(default=None, max_length=1000)
+    route: str | None = Field(default=None, max_length=128)
+    required_capability: str | None = Field(default=None, max_length=128)
+    forwarded_to_yggdrasil: bool = False
+    status: ChannelEventStatus
+    blocked_reason: str | None = Field(default=None, max_length=128)
+    reply_preview: str | None = Field(default=None, max_length=1000)
+    metadata: dict[str, Any] = Field(default_factory=dict)

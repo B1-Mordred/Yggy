@@ -173,6 +173,37 @@ For context questions, diagnostics report `general_chat_with_context` and the
 context categories that would be loaded, but the diagnostic itself does not load
 that context.
 
+## Channel Audit Logging
+
+Human-channel adapters such as the Discord channel bridge write redacted channel
+ingress events to:
+
+```text
+POST /channels/events
+```
+
+The bridge uses `AUTOMATION_CHANNEL_BRIDGE_API_KEY`, a dedicated low-privilege
+key separate from the model tool, worker, and admin keys. That role can record
+channel events but cannot approve tasks, mutate task state, claim worker runs,
+or access admin-only approval data.
+
+Channel events are stored in the Yggy `audit_events` table with
+`resource_type=channel_event`. They record hashed channel and author IDs, the
+channel config ID, route, required capability, forwarding decision, blocked
+reason, and short redacted previews. They do not store Discord bot tokens,
+webhook URLs, approval nonces, passwords, full message archives, or attachment
+contents.
+
+Admins can inspect channel ingress with:
+
+```text
+GET /channels/events
+GET /channels/events/{event_id}
+```
+
+These endpoints are intentionally admin-read only. Bragi memory and Open WebUI
+Knowledge are not used as audit stores.
+
 ## Yggdrasil Boundary
 
 Bragi forwards accepted requests to:

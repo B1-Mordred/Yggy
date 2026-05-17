@@ -17,6 +17,7 @@ from app.main import app  # noqa: E402
 TOOL_HEADERS = {"X-Automation-Api-Key": "test-tool-key"}
 ADMIN_HEADERS = {"X-Automation-Api-Key": "test-admin-key"}
 WORKER_HEADERS = {"X-Automation-Api-Key": "test-worker-key"}
+CHANNEL_BRIDGE_HEADERS = {"X-Automation-Api-Key": "test-channel-bridge-key"}
 
 
 @pytest.fixture()
@@ -24,6 +25,7 @@ def client(monkeypatch):
     monkeypatch.setenv("AUTOMATION_TOOL_API_KEY", "test-tool-key")
     monkeypatch.setenv("AUTOMATION_ADMIN_API_KEY", "test-admin-key")
     monkeypatch.setenv("AUTOMATION_WORKER_API_KEY", "test-worker-key")
+    monkeypatch.setenv("AUTOMATION_CHANNEL_BRIDGE_API_KEY", "test-channel-bridge-key")
     monkeypatch.setenv("AUTOMATION_POLICY_FILE", str(ROOT / "configs" / "policies.yaml"))
     monkeypatch.setenv("DISCORD_DRY_RUN", "true")
     reset_engine_for_tests()

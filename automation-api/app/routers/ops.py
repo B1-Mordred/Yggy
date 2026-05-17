@@ -1935,9 +1935,15 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="tool">tool</option>
             <option value="admin">admin</option>
             <option value="worker">worker</option>
+            <option value="channel_bridge">channel_bridge</option>
           </select>
           <select id="audit-filter-action" aria-label="Audit action">
             <option value="">All actions</option>
+            <option value="channel.discord.replied">channel.discord.replied</option>
+            <option value="channel.discord.forwarded">channel.discord.forwarded</option>
+            <option value="channel.discord.blocked">channel.discord.blocked</option>
+            <option value="channel.discord.rejected">channel.discord.rejected</option>
+            <option value="channel.discord.failed">channel.discord.failed</option>
             <option value="approval.approve">approval.approve</option>
             <option value="approval.reject">approval.reject</option>
             <option value="approval.request">approval.request</option>
@@ -1966,6 +1972,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="service">service</option>
             <option value="topic">topic</option>
             <option value="maintenance">maintenance</option>
+            <option value="channel_event">channel_event</option>
           </select>
           <label class="page-size" for="audit-page-size">Per page
             <input id="audit-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Audit events per page">

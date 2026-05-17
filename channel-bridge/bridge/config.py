@@ -58,6 +58,8 @@ class BridgeSettings:
     config_root: Path
     bragi_base_url: str
     bragi_api_key: str
+    automation_api_base_url: str
+    automation_api_key: str
     discord_bot_token: str
     discord_enabled: bool = True
     discord_history_limit: int = 8
@@ -72,6 +74,8 @@ class BridgeSettings:
             config_root=Path(resolver("CHANNEL_BRIDGE_CONFIG_ROOT") or "/app/configs"),
             bragi_base_url=(resolver("CHANNEL_BRIDGE_BRAGI_BASE_URL") or "http://bragi:8650").rstrip("/"),
             bragi_api_key=resolver("CHANNEL_BRIDGE_BRAGI_API_KEY") or resolver("BRAGI_API_KEY") or "",
+            automation_api_base_url=(resolver("CHANNEL_BRIDGE_AUTOMATION_API_BASE_URL") or "http://automation-api:8088").rstrip("/"),
+            automation_api_key=resolver("CHANNEL_BRIDGE_AUTOMATION_API_KEY") or resolver("AUTOMATION_CHANNEL_BRIDGE_API_KEY") or "",
             discord_bot_token=resolver("DISCORD_BOT_TOKEN") or "",
             discord_enabled=env_bool(resolver("CHANNEL_BRIDGE_DISCORD_ENABLED"), True),
             discord_history_limit=clamp_int(resolver("CHANNEL_BRIDGE_DISCORD_HISTORY_LIMIT"), default=8, minimum=0, maximum=20),

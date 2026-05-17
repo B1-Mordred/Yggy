@@ -40,6 +40,7 @@ def test_channel_bridge_compose_environment_is_minimal():
     assert "env_file" not in bridge
     assert "DISCORD_BOT_TOKEN" in environment
     assert "CHANNEL_BRIDGE_BRAGI_API_KEY" in environment
+    assert "CHANNEL_BRIDGE_AUTOMATION_API_KEY" in environment
     assert "DISCORD_HOME_CHANNEL" in environment
     assert "DISCORD_ALLOWED_USER_IDS" in environment
 

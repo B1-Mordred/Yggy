@@ -23,6 +23,10 @@ Use environment-variable references such as `DISCORD_HOME_CHANNEL` and
 keys, approval nonces, or credentials. Model-facing channels must keep
 `allow_approvals: false`.
 
+Channel adapters should use a dedicated low-privilege
+`AUTOMATION_CHANNEL_BRIDGE_API_KEY` for redacted ingress audit events. Do not
+reuse the admin, worker, or model tool keys for channel transport logging.
+
 Reusable task templates live in `configs/task_templates/`. They render disabled,
 dry-run task YAML through `scripts/render_task_template.py` and must still pass
 the normal task schema and policy checks. See `docs/TASK_TEMPLATES.md`.

@@ -97,6 +97,8 @@ def test_bridge_settings_from_env_clamps_values():
                 "CHANNEL_BRIDGE_CONFIG_ROOT": "/tmp/configs",
                 "CHANNEL_BRIDGE_BRAGI_BASE_URL": "http://bragi:8650/",
                 "CHANNEL_BRIDGE_BRAGI_API_KEY": "test-key",
+                "CHANNEL_BRIDGE_AUTOMATION_API_BASE_URL": "http://automation-api:8088/",
+                "CHANNEL_BRIDGE_AUTOMATION_API_KEY": "audit-key",
                 "DISCORD_BOT_TOKEN": "bot-token",
                 "CHANNEL_BRIDGE_DISCORD_HISTORY_LIMIT": "999",
                 "CHANNEL_BRIDGE_DISCORD_REPLY_LIMIT": "99999",
@@ -106,6 +108,8 @@ def test_bridge_settings_from_env_clamps_values():
 
     assert str(settings.config_root) == "/tmp/configs"
     assert settings.bragi_base_url == "http://bragi:8650"
+    assert settings.automation_api_base_url == "http://automation-api:8088"
+    assert settings.automation_api_key == "audit-key"
     assert settings.discord_history_limit == 20
     assert settings.discord_reply_limit == 2000
 

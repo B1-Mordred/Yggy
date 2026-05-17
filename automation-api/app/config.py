@@ -11,6 +11,7 @@ class Settings:
     tool_api_key: str = ""
     admin_api_key: str = ""
     worker_api_key: str = ""
+    channel_bridge_api_key: str = ""
     database_url: str = "sqlite+pysqlite:///:memory:"
     policy_file: str = "configs/policies.yaml"
     discord_dry_run: bool = True
@@ -47,6 +48,7 @@ def get_settings() -> Settings:
         tool_api_key=os.getenv("AUTOMATION_TOOL_API_KEY", ""),
         admin_api_key=os.getenv("AUTOMATION_ADMIN_API_KEY", ""),
         worker_api_key=os.getenv("AUTOMATION_WORKER_API_KEY", ""),
+        channel_bridge_api_key=os.getenv("AUTOMATION_CHANNEL_BRIDGE_API_KEY", ""),
         database_url=os.getenv("DATABASE_URL", "sqlite+pysqlite:///:memory:"),
         policy_file=os.getenv("AUTOMATION_POLICY_FILE", "configs/policies.yaml"),
         discord_dry_run=env_bool("DISCORD_DRY_RUN", True),
