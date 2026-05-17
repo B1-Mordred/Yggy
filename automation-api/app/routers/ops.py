@@ -1,24 +1,37 @@
 from __future__ import annotations
 
 import secrets
-from datetime import timezone
 from html import escape
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.audit import audit_event
 from app.auth import ApiRole, classify_api_key
 from app.config import get_settings
 from app.database import get_session
 from app.models import ApprovalModel, AuditEventModel, HeartbeatModel, RunModel, TaskModel, utcnow
 from app.routers.health import WORKER_HEARTBEAT_MAX_AGE_SECONDS, heartbeat_to_dict
+from app.schemas import ApprovalLevel
+from app.services.approval_service import approve_request, reject_request, verify_nonce
+from app.services.validation_service import redact_secrets
 
 router = APIRouter(tags=["ops"])
 basic_security = HTTPBasic(auto_error=False)
+OPS_ACTION_HEADER = "approval-decision"
+
+
+class OpsApprovalDecision(BaseModel):
+    nonce: str = Field(min_length=8, max_length=256)
+
+
+class OpsApprovalRejection(BaseModel):
+    reason: str = Field(default="", max_length=500)
 
 
 def require_ops_access(
@@ -50,6 +63,11 @@ def require_ops_access(
         detail="ops dashboard credentials required",
         headers={"WWW-Authenticate": "Basic"},
     )
+
+
+def require_ops_action_header(x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action")) -> None:
+    if x_yggy_ops_action != OPS_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops action header")
 
 
 @router.get("/ops", response_class=HTMLResponse, include_in_schema=False)
@@ -107,7 +125,9 @@ def ops_status(
         },
         "tasks": [_task_summary(task, latest_by_task.get(task.id)) for task in tasks],
         "recent_runs": [_run_summary(run) for run in recent_runs[:10]],
-        "pending_approvals": [_approval_summary(approval) for approval in pending_approvals],
+        "pending_approvals": [
+            _approval_summary(approval, session.get(TaskModel, approval.task_id)) for approval in pending_approvals
+        ],
         "retention": {
             "policy": {
                 "run_retention_days": get_settings().run_retention_days,
@@ -117,11 +137,80 @@ def ops_status(
             "latest": _audit_summary(latest_retention),
         },
         "safety": {
-            "read_only": True,
+            "read_only": False,
+            "approval_actions_enabled": True,
             "openapi_exposed": False,
             "worker_heartbeat_max_age_seconds": WORKER_HEARTBEAT_MAX_AGE_SECONDS,
         },
     }
+
+
+@router.post("/ops/approvals/{approval_id}/approve", include_in_schema=False)
+def ops_approve_approval(
+    approval_id: str,
+    payload: OpsApprovalDecision,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    approval = session.get(ApprovalModel, approval_id)
+    if not approval:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="approval not found")
+    if approval.status != "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="approval is not pending")
+    if not verify_nonce(approval, payload.nonce):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid nonce")
+    if ApprovalLevel(approval.approval_level) == ApprovalLevel.L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="L4 approvals are manual only")
+
+    approve_request(approval)
+    task = session.get(TaskModel, approval.task_id)
+    if task:
+        task.enabled = True
+        task.status = "enabled"
+        task.config = {**task.config, "enabled": True}
+    audit_event(
+        session,
+        "ops_dashboard",
+        "approval.approve",
+        "approval",
+        approval.id,
+        {"task_id": approval.task_id, "surface": "ops_ui"},
+    )
+    session.commit()
+    return _approval_summary(approval, task)
+
+
+@router.post("/ops/approvals/{approval_id}/reject", include_in_schema=False)
+def ops_reject_approval(
+    approval_id: str,
+    payload: OpsApprovalRejection | None = None,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    approval = session.get(ApprovalModel, approval_id)
+    if not approval:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="approval not found")
+    if approval.status != "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="approval is not pending")
+
+    reject_request(approval)
+    task = session.get(TaskModel, approval.task_id)
+    if task:
+        task.enabled = False
+        task.status = "rejected"
+        task.config = {**task.config, "enabled": False}
+    audit_event(
+        session,
+        "ops_dashboard",
+        "approval.reject",
+        "approval",
+        approval.id,
+        {"task_id": approval.task_id, "surface": "ops_ui", "reason": (payload.reason if payload else "")},
+    )
+    session.commit()
+    return _approval_summary(approval, task)
 
 
 def _task_summary(task: TaskModel, latest_run: RunModel | None) -> dict:
@@ -168,15 +257,94 @@ def _run_summary(run: RunModel | None) -> dict | None:
     }
 
 
-def _approval_summary(approval: ApprovalModel) -> dict:
-    return {
+def _approval_summary(approval: ApprovalModel, task: TaskModel | None = None) -> dict:
+    payload = {
         "id": approval.id,
         "task_id": approval.task_id,
         "approval_level": approval.approval_level,
         "requested_by": approval.requested_by,
         "risk": approval.risk,
+        "status": approval.status,
         "created_at": approval.created_at,
+        "decided_at": approval.decided_at,
         "summary": approval.summary[:280],
+    }
+    if task:
+        payload["task"] = _approval_task_detail(task)
+        payload["review"] = {
+            "actions": _approval_actions(task),
+            "failure_mode": _approval_failure_mode(task),
+            "config_change": _approval_config_change(task),
+        }
+    return payload
+
+
+def _approval_task_detail(task: TaskModel) -> dict:
+    config = task.config if isinstance(task.config, dict) else {}
+    sources = config.get("sources") if isinstance(config.get("sources"), list) else []
+    policy = config.get("policy") if isinstance(config.get("policy"), dict) else {}
+    runtime = config.get("runtime") if isinstance(config.get("runtime"), dict) else {}
+    return {
+        "id": task.id,
+        "name": task.name,
+        "type": task.type,
+        "enabled": task.enabled,
+        "status": task.status,
+        "approval_level": task.approval_level,
+        "trigger": config.get("trigger") if isinstance(config.get("trigger"), dict) else {},
+        "output": config.get("output") if isinstance(config.get("output"), dict) else {},
+        "policy": redact_secrets(policy),
+        "runtime": redact_secrets(runtime),
+        "sources": redact_secrets(sources),
+        "config": redact_secrets(config),
+    }
+
+
+def _approval_actions(task: TaskModel) -> list[str]:
+    config = task.config if isinstance(task.config, dict) else {}
+    trigger = config.get("trigger") if isinstance(config.get("trigger"), dict) else {}
+    output = config.get("output") if isinstance(config.get("output"), dict) else {}
+    runtime = config.get("runtime") if isinstance(config.get("runtime"), dict) else {}
+    sources = config.get("sources") if isinstance(config.get("sources"), list) else []
+    actions = [f"Enable task {task.id} after approval"]
+    if trigger.get("kind") == "schedule":
+        actions.append(f"Schedule recurring execution with cron {trigger.get('cron')} in {trigger.get('timezone')}")
+    actions.append(f"Run bounded worker handler {task.type}")
+    if task.type == "topic_digest":
+        actions.append(f"Fetch and summarize {len(sources)} configured sources as untrusted data")
+    if output.get("channel") == "discord":
+        mode = "dry-run Discord delivery" if runtime.get("dry_run", True) else "live Discord delivery"
+        actions.append(f"Use {mode} to whitelisted target {output.get('target')}")
+    return actions
+
+
+def _approval_failure_mode(task: TaskModel) -> str:
+    config = task.config if isinstance(task.config, dict) else {}
+    policy = config.get("policy") if isinstance(config.get("policy"), dict) else {}
+    output = config.get("output") if isinstance(config.get("output"), dict) else {}
+    runtime = config.get("runtime") if isinstance(config.get("runtime"), dict) else {}
+    level = task.approval_level
+    if level == "L1_NOTIFY_ONLY" and output.get("channel") == "discord":
+        if runtime.get("dry_run", True):
+            return "Dry-run output may be noisy or misleading, but no Discord message should be sent."
+        return "A noisy, incomplete, or incorrect message could be sent to the whitelisted Discord target."
+    if policy.get("allow_filesystem_write"):
+        return "A bounded local write could create or update the configured file target incorrectly."
+    if policy.get("allow_external_side_effects"):
+        return "The configured external system could receive an incorrect but scoped action."
+    if level == "L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE":
+        return "Manual-only action; the automation API must not execute this approval automatically."
+    return "The task could produce incorrect output or fail, but it remains bounded by its configured policy."
+
+
+def _approval_config_change(task: TaskModel) -> dict:
+    config = task.config if isinstance(task.config, dict) else {}
+    return {
+        "type": "current_task_config",
+        "note": "This approval applies to the task configuration currently stored in the control plane.",
+        "enabled_before_approval": task.enabled,
+        "enabled_after_approval": True,
+        "current_config": redact_secrets(config),
     }
 
 
@@ -242,6 +410,25 @@ DASHBOARD_HTML = f"""<!doctype html>
       cursor: pointer;
     }}
     button:hover {{ border-color: var(--accent); }}
+    input {{
+      width: min(360px, 100%);
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }}
+    pre {{
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: color-mix(in srgb, var(--bg) 70%, var(--panel));
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      max-height: 320px;
+      overflow: auto;
+    }}
+    hr {{ border: 0; border-top: 1px solid var(--line); margin: 14px 0; }}
     .meta {{ color: var(--muted); font-size: 12px; }}
     .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }}
     .section {{ margin: 18px 0; }}
@@ -273,6 +460,11 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     .pill {{ display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; font-size: 12px; }}
     .empty {{ color: var(--muted); padding: 12px 0; }}
+    .approval {{ display: grid; gap: 10px; }}
+    .approval-head {{ display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }}
+    .approval-actions {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
+    .approval-message {{ min-height: 18px; }}
+    .danger {{ border-color: var(--bad); color: var(--bad); }}
     @media (max-width: 860px) {{
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -306,20 +498,97 @@ DASHBOARD_HTML = f"""<!doctype html>
   </main>
   <script>
     const text = value => value === null || value === undefined || value === '' ? 'n/a' : String(value);
+    const esc = value => text(value).replace(/[&<>"']/g, char => ({{
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }}[char]));
     const shortId = value => value ? String(value).slice(0, 8) : 'n/a';
     const statusClass = value => value === true || value === 'ok' || value === 'completed' ? 'ok'
       : value === false || value === 'failed' || value === 'degraded' ? 'bad' : 'warn';
     function statusLabel(value, label) {{
       const cls = statusClass(value);
-      return `<span class="status ${{cls}}"><span class="dot"></span>${{label || text(value)}}</span>`;
+      return `<span class="status ${{cls}}"><span class="dot"></span>${{esc(label || text(value))}}</span>`;
     }}
     function metric(label, value, sub) {{
-      return `<div class="metric"><div class="meta">${{label}}</div><div class="value">${{value}}</div><div class="meta">${{sub || ''}}</div></div>`;
+      return `<div class="metric"><div class="meta">${{esc(label)}}</div><div class="value">${{value}}</div><div class="meta">${{sub || ''}}</div></div>`;
     }}
+    const jsonBlock = value => `<pre>${{esc(JSON.stringify(value || {{}}, null, 2))}}</pre>`;
     function renderTable(id, headers, rows) {{
       const table = document.getElementById(id);
       table.innerHTML = `<thead><tr>${{headers.map(h => `<th>${{h}}</th>`).join('')}}</tr></thead>`
         + `<tbody>${{rows.map(row => `<tr>${{row.map(cell => `<td>${{cell}}</td>`).join('')}}</tr>`).join('')}}</tbody>`;
+    }}
+    function renderApprovals(approvals) {{
+      const container = document.getElementById('approvals');
+      container.innerHTML = '<h2>Pending Approvals</h2>' + (
+        approvals.length ? approvals.map(item => {{
+          const review = item.review || {{}};
+          const task = item.task || {{}};
+          const actions = review.actions || [];
+          return `<div class="approval">
+            <div class="approval-head">
+              <div>
+                <code>${{esc(item.id)}}</code> for <code>${{esc(item.task_id)}}</code>
+                <span class="pill">${{esc(item.approval_level)}}</span>
+              </div>
+              <span class="meta">requested by ${{esc(item.requested_by)}} at ${{esc(item.created_at)}}</span>
+            </div>
+            <div class="meta">${{esc(item.summary)}}</div>
+            <div><strong>Actions</strong><br>${{actions.map(action => `- ${{esc(action)}}`).join('<br>') || '<span class="meta">n/a</span>'}}</div>
+            <div><strong>Worst-case failure mode</strong><br>${{esc(review.failure_mode)}}</div>
+            <div><strong>Config change</strong><br>
+              <span class="meta">enabled before approval: ${{esc(review.config_change?.enabled_before_approval)}}; enabled after approval: ${{esc(review.config_change?.enabled_after_approval)}}</span>
+            </div>
+            <details>
+              <summary>Task config</summary>
+              ${{jsonBlock(task.config)}}
+            </details>
+            <div class="approval-actions">
+              <input type="password" autocomplete="off" placeholder="Approval nonce" aria-label="Approval nonce">
+              <button type="button" data-approval-action="approve" data-approval-id="${{esc(item.id)}}">Approve</button>
+              <button type="button" class="danger" data-approval-action="reject" data-approval-id="${{esc(item.id)}}">Reject</button>
+              <span class="meta approval-message"></span>
+            </div>
+          </div>`;
+        }}).join('<hr>')
+        : '<div class="empty">No pending approvals.</div>'
+      );
+      container.querySelectorAll('[data-approval-action]').forEach(button => {{
+        button.addEventListener('click', () => decideApproval(button));
+      }});
+    }}
+    async function decideApproval(button) {{
+      const approvalId = button.dataset.approvalId;
+      const action = button.dataset.approvalAction;
+      const panel = button.closest('.approval');
+      const message = panel.querySelector('.approval-message');
+      const input = panel.querySelector('input');
+      const body = action === 'approve' ? {{nonce: input.value}} : {{reason: 'Rejected from ops dashboard'}};
+      if (action === 'approve' && !input.value) {{
+        message.textContent = 'Approval nonce is required.';
+        message.className = 'meta approval-message bad';
+        return;
+      }}
+      button.disabled = true;
+      message.textContent = `${{action}} pending...`;
+      message.className = 'meta approval-message';
+      try {{
+        const response = await fetch(`/ops/approvals/${{encodeURIComponent(approvalId)}}/${{action}}`, {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'Content-Type': 'application/json', 'X-Yggy-Ops-Action': 'approval-decision'}},
+          body: JSON.stringify(body),
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        await refresh();
+      }} catch (error) {{
+        message.textContent = error.message;
+        message.className = 'meta approval-message bad';
+      }} finally {{
+        button.disabled = false;
+      }}
     }}
     async function loadStatus() {{
       const response = await fetch('/ops/status', {{credentials: 'same-origin'}});
@@ -338,26 +607,22 @@ DASHBOARD_HTML = f"""<!doctype html>
         <div>Worker: ${{statusLabel(data.service.worker.ok, data.service.worker.status)}} <span class="meta">last seen ${{text(data.service.worker.last_seen_at)}}</span></div>
       `;
       renderTable('tasks', ['Task', 'Type', 'State', 'Trigger', 'Output', 'Latest Run'], data.tasks.map(task => [
-        `<code>${{task.id}}</code><br><span class="meta">${{task.name}}</span>`,
-        `<span class="pill">${{task.type}}</span><br><span class="meta">${{task.approval_level}}</span>`,
+        `<code>${{esc(task.id)}}</code><br><span class="meta">${{esc(task.name)}}</span>`,
+        `<span class="pill">${{esc(task.type)}}</span><br><span class="meta">${{esc(task.approval_level)}}</span>`,
         `${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}}<br><span class="meta">dry run ${{task.dry_run}}</span>`,
-        `<code>${{text(task.trigger.cron)}}</code><br><span class="meta">${{text(task.trigger.timezone)}}</span>`,
-        `${{text(task.output.channel)}}<br><span class="meta">${{text(task.output.target)}}</span>`,
-        task.latest_run ? `<code>${{shortId(task.latest_run.id)}}</code> ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{text(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
+        `<code>${{esc(task.trigger.cron)}}</code><br><span class="meta">${{esc(task.trigger.timezone)}}</span>`,
+        `${{esc(task.output.channel)}}<br><span class="meta">${{esc(task.output.target)}}</span>`,
+        task.latest_run ? `<code>${{esc(shortId(task.latest_run.id))}}</code> ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
       ]));
       renderTable('runs', ['Run', 'Task', 'Status', 'Result', 'Notification', 'Completed'], data.recent_runs.map(run => [
-        `<code title="${{run.id}}">${{shortId(run.id)}}</code>`,
-        `<code>${{run.task_id}}</code>`,
+        `<code title="${{esc(run.id)}}">${{esc(shortId(run.id))}}</code>`,
+        `<code>${{esc(run.task_id)}}</code>`,
         statusLabel(run.status),
-        `${{text(run.result_status)}}${{run.failed_count !== null && run.failed_count !== undefined ? `<br><span class="meta">failed checks ${{run.failed_count}}</span>` : ''}}`,
-        `${{run.notification.sent === true ? 'sent' : run.notification.sent === false ? 'not sent' : 'n/a'}}<br><span class="meta">${{text(run.notification.target || run.notification.transport)}}</span>`,
-        text(run.completed_at),
+        `${{esc(run.result_status)}}${{run.failed_count !== null && run.failed_count !== undefined ? `<br><span class="meta">failed checks ${{esc(run.failed_count)}}</span>` : ''}}`,
+        `${{run.notification.sent === true ? 'sent' : run.notification.sent === false ? 'not sent' : 'n/a'}}<br><span class="meta">${{esc(run.notification.target || run.notification.transport)}}</span>`,
+        esc(run.completed_at),
       ]));
-      const approvals = data.pending_approvals;
-      document.getElementById('approvals').innerHTML = '<h2>Pending Approvals</h2>' + (
-        approvals.length ? approvals.map(item => `<div><code>${{item.id}}</code> for <code>${{item.task_id}}</code> <span class="pill">${{item.approval_level}}</span><br><span class="meta">${{item.summary}}</span></div>`).join('<hr>')
-        : '<div class="empty">No pending approvals.</div>'
-      );
+      renderApprovals(data.pending_approvals);
       const latestRetention = data.retention.latest;
       document.getElementById('retention').innerHTML = `
         <h2>Retention</h2>

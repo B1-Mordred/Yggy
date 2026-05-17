@@ -5,7 +5,7 @@
 1. Ask yggdrasil to draft an automation.
 2. Review the generated task config.
 3. The automation API validates and stores the task disabled.
-4. Approve through the local CLI or local UI using the admin key.
+4. Approve through the local CLI or local approval UI.
 5. The worker executes only approved enabled tasks.
 
 The daily local AI/security briefing is an approved L1 notification task. It is
@@ -24,11 +24,25 @@ L2+ pauses require the admin key.
 
 ## Approve A Task
 
+Use the local approval UI:
+
+```text
+https://yggy.b1.germering:8443/ops
+```
+
+The UI uses the dashboard username/password, shows pending approval details,
+and asks for the approval nonce. It does not expose the admin API key to the
+browser. Mutating approval actions are hidden from OpenAPI and require the
+dashboard credentials plus a same-origin action header.
+
+CLI approval is still available for local shell use:
+
 ```bash
 python scripts/approve_task.py --approval-id <id> --nonce <nonce>
 ```
 
-Never paste `AUTOMATION_ADMIN_API_KEY` into Open WebUI, Hermes, chat, Knowledge, task YAML, or logs.
+Never paste `AUTOMATION_ADMIN_API_KEY` into Open WebUI, Hermes, a browser form,
+chat, Knowledge, task YAML, or logs.
 
 ## Logs
 
@@ -78,13 +92,18 @@ curl -sS -X POST http://127.0.0.1:8088/maintenance/retention \
 
 ## Local Operations Dashboard
 
-The API serves a read-only dashboard at:
+The API serves a local operations and approval dashboard at:
 
 ```text
 http://127.0.0.1:8088/ops
 ```
 
-It shows task state, latest runs, pending approvals, worker heartbeat, and retention status. It does not expose secrets, does not include raw run logs, and is not included in the OpenAPI tool schema.
+It shows task state, latest runs, pending approvals, worker heartbeat, and
+retention status. Pending approvals include actions, worst-case failure mode,
+and the redacted task config. The dashboard can approve or reject pending
+approvals when the operator enters the approval nonce. It does not expose
+secrets, does not include raw run logs, does not expose nonce hashes, and is not
+included in the OpenAPI tool schema.
 
 Configure it with separate local credentials:
 
