@@ -272,7 +272,6 @@ def ops_runs(
             )
         )
 
-    total = query.count()
     sort_columns = {
         "created_at": RunModel.created_at,
         "completed_at": RunModel.completed_at,
@@ -282,14 +281,13 @@ def ops_runs(
     }
     sort_expression = sort_columns[sort_by].asc() if sort_dir == "asc" else sort_columns[sort_by].desc()
     ordered_query = query.order_by(sort_expression, RunModel.created_at.desc(), RunModel.id.asc())
-    if notification_sent is None:
-        runs = ordered_query.offset(_pagination_offset(page, page_size)).limit(page_size).all()
-    else:
+    matched_runs = ordered_query.all()
+    if notification_sent is not None:
         expected_sent = notification_sent == "true"
-        matched_runs = [run for run in ordered_query.all() if _run_notification_sent(run) is expected_sent]
-        total = len(matched_runs)
-        offset = _pagination_offset(page, page_size)
-        runs = matched_runs[offset : offset + page_size]
+        matched_runs = [run for run in matched_runs if _run_notification_sent(run) is expected_sent]
+    total = len(matched_runs)
+    offset = _pagination_offset(page, page_size)
+    runs = matched_runs[offset : offset + page_size]
     return {
         "generated_at": utcnow(),
         "page": page,
@@ -302,6 +300,7 @@ def ops_runs(
         },
         "sort": {"by": sort_by, "dir": sort_dir},
         "pagination": _pagination(page, page_size, total, len(runs)),
+        "summary": _run_collection_summary(matched_runs),
         "runs": [_run_summary(run) for run in runs],
     }
 
@@ -895,6 +894,55 @@ def _run_notification_sent(run: RunModel) -> bool | None:
     return sent if isinstance(sent, bool) else None
 
 
+def _run_result(run: RunModel) -> dict:
+    log = run.log if isinstance(run.log, dict) else {}
+    return log.get("result") if isinstance(log.get("result"), dict) else {}
+
+
+def _run_failed(run: RunModel) -> bool:
+    result = _run_result(run)
+    result_status = str(result.get("status") or "").lower()
+    if str(run.status or "").lower().startswith("failed"):
+        return True
+    if result_status in {"failed", "failure", "error", "degraded"}:
+        return True
+    try:
+        if int(result.get("failed_count") or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        return True
+    return bool(result.get("error") or (result.get("errors") and not result.get("items")))
+
+
+def _run_collection_summary(runs: list[RunModel]) -> dict:
+    last_failure_at = None
+    success_count = 0
+    failure_count = 0
+    dry_run_count = 0
+    sent_discord_count = 0
+    for run in runs:
+        failed = _run_failed(run)
+        if failed:
+            failure_count += 1
+            failure_at = run.completed_at or run.created_at
+            if failure_at and (last_failure_at is None or failure_at > last_failure_at):
+                last_failure_at = failure_at
+        elif str(run.status or "").startswith("completed"):
+            success_count += 1
+        if "dry_run" in str(run.status or ""):
+            dry_run_count += 1
+        if _run_notification_sent(run) is True:
+            sent_discord_count += 1
+    return {
+        "total": len(runs),
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "dry_run_count": dry_run_count,
+        "sent_discord_count": sent_discord_count,
+        "last_failure_at": last_failure_at,
+    }
+
+
 def _run_detail(run: RunModel, task: TaskModel | None) -> dict:
     log = _as_dict(_bounded_value(redact_secrets(run.log if isinstance(run.log, dict) else {})))
     result = _as_dict(log.get("result"))
@@ -1453,11 +1501,23 @@ DASHBOARD_HTML = f"""<!doctype html>
     .timeline-time {{ color: var(--muted); font-size: 12px; }}
     .timeline-main {{ min-width: 0; }}
     .timeline-main .meta {{ margin-top: 3px; }}
+    .summary-strip {{
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 10px 0;
+      margin-top: 12px;
+    }}
+    .summary-stat {{ min-width: 0; }}
+    .summary-stat strong {{ display: block; font-size: 18px; margin-top: 3px; overflow-wrap: anywhere; }}
     @media (max-width: 860px) {{
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .detail-grid {{ grid-template-columns: 1fr; }}
       .timeline-item {{ grid-template-columns: 1fr; }}
+      .summary-strip {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     }}
     @media (max-width: 560px) {{
       .grid {{ grid-template-columns: 1fr; }}
@@ -2336,12 +2396,12 @@ DASHBOARD_HTML = f"""<!doctype html>
           pageState.runs.page = data.pagination.total_pages;
           return loadRuns();
         }}
-        renderRuns(data.runs || [], data.pagination);
+        renderRuns(data.runs || [], data.pagination, data.summary || {{}});
       }} catch (error) {{
         summary.textContent = `Unable to load runs: ${{error.message}}`;
       }}
     }}
-    function renderRuns(runs, pagination) {{
+    function renderRuns(runs, pagination, runSummary) {{
       const total = pagination?.total ?? runs.length;
       byId('run-filter-summary').textContent = `Showing ${{runs.length}} of ${{total}} matching runs.`;
       renderTable('runs', [
@@ -2362,7 +2422,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         esc(run.completed_at),
       ]), 'No runs match the current filters.');
       renderPager('run-pagination', 'runs', total, runs.length, loadRuns);
-      renderRunTimeline(runs, pagination);
+      renderRunTimeline(runs, pagination, runSummary);
       wireSortHeaders('runs', 'runs', loadRuns);
       wireRunLinks();
     }}
@@ -2383,12 +2443,23 @@ DASHBOARD_HTML = f"""<!doctype html>
       if (run.notification?.sent === false) return `notification not sent${{run.notification.target ? ` for ${{run.notification.target}}` : ''}}`;
       return 'notification n/a';
     }}
-    function renderRunTimeline(runs, pagination) {{
+    function renderRunSummary(summary) {{
+      const data = summary || {{}};
+      return `<div class="summary-strip" id="run-summary-strip" aria-label="Run summary">
+        <div class="summary-stat"><div class="meta">Total</div><strong>${{esc(data.total ?? 0)}}</strong></div>
+        <div class="summary-stat"><div class="meta">Success</div><strong>${{esc(data.success_count ?? 0)}}</strong></div>
+        <div class="summary-stat"><div class="meta">Failures</div><strong>${{esc(data.failure_count ?? 0)}}</strong></div>
+        <div class="summary-stat"><div class="meta">Dry-runs</div><strong>${{esc(data.dry_run_count ?? 0)}}</strong></div>
+        <div class="summary-stat"><div class="meta">Discord sent</div><strong>${{esc(data.sent_discord_count ?? 0)}}</strong></div>
+        <div class="summary-stat"><div class="meta">Last failure</div><strong>${{esc(data.last_failure_at || 'n/a')}}</strong></div>
+      </div>`;
+    }}
+    function renderRunTimeline(runs, pagination, runSummary) {{
       const panel = byId('run-timeline');
       const total = pagination?.total ?? runs.length;
       const context = runTimelineContext();
       if (!runs.length) {{
-        panel.innerHTML = `<h2>Run Timeline</h2><div class="meta">${{esc(context)}}; 0 matching runs.</div><div class="empty">No runs match the current filters.</div>`;
+        panel.innerHTML = `<h2>Run Timeline</h2><div class="meta">${{esc(context)}}; 0 matching runs.</div>${{renderRunSummary(runSummary)}}<div class="empty">No runs match the current filters.</div>`;
         return;
       }}
       panel.innerHTML = `
@@ -2398,6 +2469,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <div class="meta">${{esc(context)}}; showing ${{runs.length}} of ${{total}} matching runs in current sort order.</div>
           </div>
         </div>
+        ${{renderRunSummary(runSummary)}}
         <div class="timeline">
           ${{runs.map(run => `
             <div class="timeline-item ${{statusClass(run.status)}}">

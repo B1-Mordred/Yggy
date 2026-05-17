@@ -208,13 +208,15 @@ sent. Runs can be sorted by run id, task id, status, created time, or completed
 time. The `Recent Discord sends` saved view uses the notification-sent filter
 and newest-first sorting. The Runs view also renders a `Run Timeline` panel from
 the current filtered page, so failures, dry-runs, and Discord sends are visible
-as a sequence in the current sort order. The task-detail panel includes a
-`Timeline` button that switches to the Runs view with that task id applied as a
-filter. The run-detail panel is backed by the hidden `/ops/runs/{run_id}`
-endpoint and shows a bounded, redacted projection of the run: topic digest
-message and items, n8n normalizer response, notification decision, and Discord
-send result. It intentionally does not expose raw logs, API keys, approval
-nonces, webhook secrets, or dashboard credentials.
+as a sequence in the current sort order. Above that timeline, the dashboard shows
+summary counts for the full filtered run set: total, success, failure, dry-run,
+Discord sent, and last failure time. The task-detail panel includes a `Timeline`
+button that switches to the Runs view with that task id applied as a filter. The
+run-detail panel is backed by the hidden `/ops/runs/{run_id}` endpoint and shows
+a bounded, redacted projection of the run: topic digest message and items, n8n
+normalizer response, notification decision, and Discord send result. It
+intentionally does not expose raw logs, API keys, approval nonces, webhook
+secrets, or dashboard credentials.
 
 Task rows include manual run controls:
 

@@ -54,6 +54,8 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "recent_discord_sends" in allowed.text
     assert "worker_activity" in allowed.text
     assert "runTimelineContext" in allowed.text
+    assert "run-summary-strip" in allowed.text
+    assert "sent_discord_count" in allowed.text
 
 
 def test_admin_key_can_access_ops_status_without_dashboard_password(client):
@@ -487,6 +489,12 @@ def test_ops_runs_are_filtered_and_paginated(client, monkeypatch):
     assert first_body["pagination"]["total"] == 6
     assert first_body["pagination"]["returned"] == 5
     assert first_body["pagination"]["has_next"] is True
+    assert first_body["summary"]["total"] == 6
+    assert first_body["summary"]["success_count"] == 6
+    assert first_body["summary"]["failure_count"] == 0
+    assert first_body["summary"]["dry_run_count"] == 6
+    assert first_body["summary"]["sent_discord_count"] == 0
+    assert first_body["summary"]["last_failure_at"] is None
     assert all(run["task_id"] == "daily_local_ai_security_briefing" for run in first_body["runs"])
     assert second_page.status_code == 200
     assert second_page.json()["pagination"]["returned"] == 1
@@ -549,8 +557,12 @@ def test_ops_runs_can_filter_notification_sent(client, monkeypatch):
     assert sent.status_code == 200
     assert sent.json()["filters"]["notification_sent"] == "true"
     assert [run["id"] for run in sent.json()["runs"]] == ["run-notification-sent"]
+    assert sent.json()["summary"]["sent_discord_count"] == 1
+    assert sent.json()["summary"]["total"] == 1
     assert unsent.status_code == 200
     assert [run["id"] for run in unsent.json()["runs"]] == ["run-notification-unsent"]
+    assert unsent.json()["summary"]["sent_discord_count"] == 0
+    assert unsent.json()["summary"]["total"] == 1
     assert invalid.status_code == 422
 
 
