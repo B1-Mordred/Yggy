@@ -30,6 +30,11 @@ approval nonces, shell tools, Docker access, filesystem write tools, or direct
 execution privileges. Its write path is limited to canonical intents sent to the
 Heimdal capability gateway in the automation API.
 
+Bragi's ordinary conversation path is a local no-tool chat fallback. It may use
+Ollama to answer normal questions, but it cannot approve tasks, call
+Yggdrasil, send Discord messages, access Docker, write files, or use secrets.
+Only registered automation intents enter the Heimdal/Yggdrasil path.
+
 Allowed model-facing pattern:
 
 ```text

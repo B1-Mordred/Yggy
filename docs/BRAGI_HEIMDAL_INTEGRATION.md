@@ -14,7 +14,8 @@ Human
 ## Roles
 
 - **Bragi** is conversational. It may clarify, explain, remember non-secret
-  preferences later, and prepare canonical intents.
+  preferences later, answer ordinary chat through a local no-tool model
+  fallback, and prepare canonical intents.
 - **Heimdal** is the strict gateway. It validates canonical intents against
   `configs/capabilities.yaml`.
 - **Yggdrasil** remains deterministic. It receives only canonical actions from
@@ -63,6 +64,16 @@ PROPOSE_NEW_CAPABILITY
 ```
 
 Only `ACCEPT` responses include a deterministic `yggdrasil_request`.
+
+If a user message is ordinary conversation and does not look like an automation
+request, Bragi should answer it as normal chat. It should not tell the user that
+the request cannot be sent to Yggdrasil merely because there is no matching
+capability.
+
+If a request maps to a registered capability but the Bragi service is not
+authorized to call Yggdrasil, Bragi should say that the understood automation
+request could not be forwarded because the service is not authorized. That is
+an authorization failure, not a capability failure.
 
 ## Yggdrasil Boundary
 

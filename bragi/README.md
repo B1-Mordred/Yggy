@@ -9,6 +9,11 @@ It is deliberately separate from Yggdrasil:
 - Yggdrasil receives only gateway-approved canonical actions.
 - Yggy automation API remains the policy, approval, audit, and execution authority.
 
+Ordinary conversation is handled as normal chat through a local no-tool Ollama
+fallback. That path cannot approve, configure, run, or forward automations. It
+does not receive shell, Docker, filesystem, Discord, database, n8n, or admin
+credentials.
+
 Bragi exposes an OpenAI-compatible API:
 
 ```text
@@ -30,3 +35,12 @@ Milestone-one capabilities:
 Bragi may ask for user confirmation before forwarding a request. That
 confirmation only confirms understanding. It does not approve or enable the
 automation; the Yggy approval path still applies.
+
+Useful runtime settings:
+
+```text
+BRAGI_GENERAL_CHAT_ENABLED=true
+BRAGI_CHAT_MODEL=qwen3.5:9b
+BRAGI_CHAT_TEMPERATURE=0.55
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```

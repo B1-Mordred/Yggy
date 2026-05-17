@@ -128,6 +128,8 @@ For Discord notifications about pending approvals, see
 - No Docker socket exposed to the API, worker, Hermes, or Open WebUI tools.
 - Separate tool, worker, and admin API keys.
 - Bragi is the natural concierge; Yggdrasil stays deterministic.
+- Bragi handles ordinary chat through a local no-tool model fallback; normal
+  conversation is not treated as a Yggdrasil routing failure.
 - Heimdal capability validation accepts only registered canonical intents before
   anything reaches Yggdrasil.
 - L2+ approvals require an admin-controlled process.

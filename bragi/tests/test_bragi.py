@@ -126,7 +126,7 @@ def test_unsafe_request_is_not_forwarded(monkeypatch):
 
     answer = bragi.route_chat([{"role": "user", "content": "Restart Docker whenever something looks wrong."}])
 
-    assert "not forwarding" in answer
+    assert "outside the allowed automation path" in answer
     assert "restart docker" in answer.lower()
 
 
@@ -136,7 +136,7 @@ def test_printer_toner_becomes_new_capability_proposal(monkeypatch):
     answer = bragi.route_chat([{"role": "user", "content": "Check my printer toner and warn me before it runs out."}])
 
     assert "no printer or toner capability" in answer
-    assert "will not send this as executable automation" in answer
+    assert "new capability proposal" in answer
 
 
 def test_n8n_request_without_known_webhook_asks_clarification(monkeypatch):
@@ -145,3 +145,59 @@ def test_n8n_request_without_known_webhook_asks_clarification(monkeypatch):
     answer = bragi.route_chat([{"role": "user", "content": "Create an n8n webhook task for my new workflow."}])
 
     assert "`webhook_id`" in answer
+
+
+def test_general_chat_does_not_claim_capability_failure(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        raise AssertionError("general chat should not call Heimdal")
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "general_chat_answer", lambda messages: "Hello. Pull up a chair.")
+
+    answer = bragi.route_chat([{"role": "user", "content": "hello there"}])
+
+    assert answer == "Hello. Pull up a chair."
+    assert calls == []
+    assert "cannot map" not in answer.lower()
+    assert "yggdrasil" not in answer.lower()
+
+
+def test_simple_greeting_does_not_call_ollama(monkeypatch):
+    monkeypatch.setattr(bragi, "ollama_chat", lambda messages: (_ for _ in ()).throw(AssertionError("called ollama")))
+
+    answer = bragi.general_chat_answer([{"role": "user", "content": "hello there"}])
+
+    assert "Hello" in answer
+    assert "cannot map" not in answer.lower()
+
+
+def test_yggdrasil_unauthorized_message_is_specific(monkeypatch):
+    class Response:
+        status_code = 401
+        text = "unauthorized"
+
+        def json(self):
+            return {}
+
+    class Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            return Response()
+
+    monkeypatch.setattr(bragi.httpx, "Client", Client)
+
+    result = bragi.yggdrasil_canonical_request({"action": "draft_task_from_template"})
+
+    assert result["status"] == "unauthorized"
+    assert "not authorized to talk to Yggdrasil" in result["answer"]

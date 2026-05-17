@@ -41,6 +41,11 @@ Bragi will ask for confirmation, send only canonical intents to Heimdal, and
 forward only accepted deterministic actions to Yggdrasil. User confirmation is
 not Yggy approval.
 
+Ordinary chat, such as greetings or general questions, stays inside Bragi's
+no-tool chat fallback. Bragi should not describe normal conversation as a
+Yggdrasil routing failure. Only registered automation capabilities enter the
+Heimdal/Yggdrasil path.
+
 Keep the existing Yggdrasil provider available for strict commands:
 
 ```text
