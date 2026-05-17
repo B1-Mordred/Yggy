@@ -72,6 +72,26 @@ class ApprovalModel(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class TaskChangeProposalModel(Base):
+    __tablename__ = "task_change_proposals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(128), ForeignKey("tasks.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    approval_level: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    risk: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    diff: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    base_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    proposed_config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    nonce_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RunModel(Base):
     __tablename__ = "runs"
 

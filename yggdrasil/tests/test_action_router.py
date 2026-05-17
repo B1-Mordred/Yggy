@@ -214,6 +214,79 @@ def test_draft_daily_brief_uses_template_endpoint(monkeypatch):
     assert "Approval request created" in answer
 
 
+def test_schedule_change_creates_task_change_proposal(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+    task_config = yggdrasil_action_api.local_ai_security_briefing_draft("draft weekday 08:00 brief")
+    task_config["enabled"] = True
+    task = {
+        "id": "daily_local_ai_security_briefing",
+        "name": "Daily Local AI Security Briefing",
+        "type": "topic_digest",
+        "enabled": True,
+        "status": "enabled",
+        "approval_level": "L1_NOTIFY_ONLY",
+        "config": task_config,
+    }
+
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path, payload))
+        if method == "GET" and path == "/tasks/daily_local_ai_security_briefing":
+            return 200, task
+        if method == "POST" and path == "/tasks/daily_local_ai_security_briefing/propose-change":
+            return 201, {
+                "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "task_id": "daily_local_ai_security_briefing",
+                "status": "pending",
+                "approval_level": "L1_NOTIFY_ONLY",
+                "summary": "schedule change",
+                "nonce": "nonce-1",
+                "risk": {"severity": "operator_review", "categories": {"schedule": ["trigger.cron"]}},
+                "diff": {
+                    "counts": {"changed": 1, "added": 0, "removed": 0},
+                    "changed": [{"path": "trigger.cron", "before": "0 8 * * 1-5", "after": "30 7 * * 1-5"}],
+                },
+            }
+        raise AssertionError((method, path, payload))
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    answer = yggdrasil_action_api.route_chat(
+        [{"role": "user", "content": "change the daily briefing schedule to 07:30 weekdays"}],
+    )
+
+    assert calls[0][0:2] == ("GET", "/tasks/daily_local_ai_security_briefing")
+    assert calls[1][0:2] == ("POST", "/tasks/daily_local_ai_security_briefing/propose-change")
+    assert calls[1][2]["proposed_config"]["trigger"]["cron"] == "30 7 * * 1-5"
+    assert "Task change proposal created" in answer
+    assert "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" in answer
+    assert "Nonce: `nonce-1`" in answer
+
+
+def test_list_pending_task_change_proposals(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path))
+        return 200, [
+            {
+                "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "task_id": "daily_local_ai_security_briefing",
+                "status": "pending",
+                "risk": {"severity": "operator_review"},
+            }
+        ]
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    answer = yggdrasil_action_api.route_chat(
+        [{"role": "user", "content": "show pending task change proposals"}],
+    )
+
+    assert calls == [("GET", "/task-change-proposals?limit=20&status=pending")]
+    assert "Task change proposals:" in answer
+    assert "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" in answer
+
+
 def test_show_latest_daily_brief_run(monkeypatch):
     calls: list[tuple[str, str]] = []
 

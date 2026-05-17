@@ -83,6 +83,9 @@ For reusable disabled task scaffolds, see
 The automation API exposes these as guarded OpenAPI endpoints under
 `/task-templates` for Yggdrasil/Open WebUI.
 
+For changing existing automations through reviewed diffs, see
+[docs/TASK_CHANGE_PROPOSALS.md](docs/TASK_CHANGE_PROPOSALS.md).
+
 For Discord notifications about pending approvals, see
 [docs/APPROVAL_NOTIFICATIONS.md](docs/APPROVAL_NOTIFICATIONS.md).
 

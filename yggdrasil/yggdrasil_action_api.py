@@ -563,6 +563,12 @@ def automation_run_id_from_text(text: str) -> str | None:
     return match.group(1).lower() if match else None
 
 
+def task_change_proposal_id_from_text(text: str) -> str | None:
+    if not re.search(r'\b(proposal|proposals|task change|task changes|change proposal)\b', text, re.IGNORECASE):
+        return None
+    return automation_run_id_from_text(text)
+
+
 def parse_schedule(text: str) -> tuple[str, str]:
     match = re.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b', text)
     hour = int(match.group(1)) if match else 8
@@ -774,6 +780,95 @@ def format_task_template_list(templates: list[dict[str, Any]]) -> str:
         'Templates are disabled dry-run scaffolds. Use them to draft task YAML, then review and approve through the control plane.',
     ])
     return '\n'.join(lines)
+
+
+def format_task_change_proposal(proposal: dict[str, Any]) -> str:
+    risk = proposal.get('risk') if isinstance(proposal.get('risk'), dict) else {}
+    diff = proposal.get('diff') if isinstance(proposal.get('diff'), dict) else {}
+    counts = diff.get('counts') if isinstance(diff.get('counts'), dict) else {}
+    lines = [
+        f"Task change proposal `{proposal.get('id')}`",
+        "",
+        f"- Task: `{proposal.get('task_id')}`",
+        f"- Status: `{proposal.get('status')}`",
+        f"- Approval level: `{proposal.get('approval_level')}`",
+        f"- Risk: `{risk.get('severity', 'n/a')}`",
+        f"- Summary: {proposal.get('summary') or 'n/a'}",
+        f"- Diff: `{counts.get('changed', 0)} changed`, `{counts.get('added', 0)} added`, `{counts.get('removed', 0)} removed`",
+    ]
+    changed = diff.get('changed') if isinstance(diff.get('changed'), list) else []
+    if changed:
+        lines.extend(["", "Changed paths:"])
+        for item in changed[:8]:
+            if isinstance(item, dict):
+                lines.append(f"- `{item.get('path')}`: `{item.get('before')}` -> `{item.get('after')}`")
+    lines.extend([
+        "",
+        "Approve/apply only through the local admin CLI/UI. I do not have the admin key.",
+    ])
+    return '\n'.join(lines)
+
+
+def format_task_change_proposal_list(proposals: list[dict[str, Any]]) -> str:
+    if not proposals:
+        return 'No task change proposals found.'
+    lines = ['Task change proposals:']
+    for proposal in proposals:
+        risk = proposal.get('risk') if isinstance(proposal.get('risk'), dict) else {}
+        lines.append(
+            f"- `{proposal.get('id')}` task `{proposal.get('task_id')}` "
+            f"status `{proposal.get('status')}`, risk `{risk.get('severity', 'n/a')}`"
+        )
+    lines.append('')
+    lines.append('Approve/apply only through the local admin CLI/UI.')
+    return '\n'.join(lines)
+
+
+def proposal_query_path(text: str) -> str:
+    params: dict[str, Any] = {'limit': 20}
+    task_id = automation_task_id_from_text(text)
+    if task_id:
+        params['task_id'] = task_id
+    if re.search(r'\b(pending|open|unapproved)\b', text, re.IGNORECASE):
+        params['status'] = 'pending'
+    if re.search(r'\b(approved)\b', text, re.IGNORECASE):
+        params['status'] = 'approved'
+    if re.search(r'\b(applied)\b', text, re.IGNORECASE):
+        params['status'] = 'applied'
+    if re.search(r'\b(rejected|cancelled|canceled)\b', text, re.IGNORECASE):
+        params['status'] = 'rejected'
+    return f"/task-change-proposals?{urllib.parse.urlencode(params)}"
+
+
+def propose_schedule_change(user_text: str) -> str:
+    task_id = automation_task_id_from_text(user_text)
+    if not task_id:
+        return 'Which automation task should I change? Give me the task id.'
+    cron, timezone = parse_schedule(user_text)
+    status_code, task = automation_request('GET', f'/tasks/{task_id}')
+    if status_code != 200 or not isinstance(task, dict):
+        return f'Automation API returned status `{status_code}` while loading task `{task_id}`:\n\n```json\n{json.dumps(task, indent=2)}\n```'
+    config = task.get('config')
+    if not isinstance(config, dict):
+        return f'Task `{task_id}` did not return a usable config.'
+    proposed = json.loads(json.dumps(config))
+    proposed.setdefault('trigger', {})
+    proposed['trigger']['cron'] = cron
+    proposed['trigger']['timezone'] = timezone
+    payload = {
+        'requested_by': 'yggdrasil',
+        'summary': f'Propose schedule change for {task_id} to {cron} {timezone}.',
+        'proposed_config': proposed,
+    }
+    create_status, proposal = automation_request('POST', f'/tasks/{task_id}/propose-change', payload)
+    if create_status == 201 and isinstance(proposal, dict):
+        return (
+            "Task change proposal created.\n\n"
+            f"{format_task_change_proposal(proposal)}\n\n"
+            f"Nonce: `{proposal.get('nonce')}`\n\n"
+            "Keep the nonce local; approve/apply only through the admin CLI/UI."
+        )
+    return f'Automation API returned status `{create_status}` while creating the task change proposal:\n\n```json\n{json.dumps(proposal, indent=2)}\n```'
 
 
 def run_delivery_text(run: dict[str, Any]) -> str:
@@ -1036,6 +1131,25 @@ def handle_automation_request(user_text: str) -> str | None:
     requested_run_id = automation_run_id_from_text(user_text)
     if not requested_run_id and not any(word in lowered for word in automation_words + project_words):
         return None
+
+    proposal_id = task_change_proposal_id_from_text(user_text)
+    if proposal_id and re.search(r'\b(show|get|inspect|details?|status)\b', lowered):
+        status_code, body = automation_request('GET', f'/task-change-proposals/{proposal_id}')
+        if status_code == 200 and isinstance(body, dict):
+            return format_task_change_proposal(body)
+        return f'Automation API returned status `{status_code}` for task change proposal `{proposal_id}`:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+
+    if re.search(r'\b(task changes?|change proposals?|task change proposals?|proposals?)\b', lowered) and re.search(
+        r'\b(list|show|pending|open|recent|approved|applied|rejected|status)\b',
+        lowered,
+    ):
+        status_code, body = automation_request('GET', proposal_query_path(user_text))
+        if status_code == 200 and isinstance(body, list):
+            return format_task_change_proposal_list(body)
+        return f'Automation API returned status `{status_code}` while listing task change proposals:\n\n```json\n{json.dumps(body, indent=2)}\n```'
+
+    if re.search(r'\b(change|update|move|set|modify)\b', lowered) and re.search(r'\b(schedule|cron|time|[012]?\d:[0-5]\d)\b', lowered):
+        return propose_schedule_change(user_text)
 
     if re.search(r'\b(template|templates|scaffold|scaffolds)\b', lowered):
         template_id = automation_template_id_from_text(user_text)

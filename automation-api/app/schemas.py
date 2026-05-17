@@ -336,6 +336,20 @@ class TaskConfig(BaseModel):
         return self
 
 
+class TaskChangeProposalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposed_config: TaskConfig
+    summary: str = Field(default="", max_length=1200)
+    requested_by: str = Field(default="yggdrasil", min_length=1, max_length=128)
+
+
+class TaskChangeProposalReject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=500)
+
+
 class TopicConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

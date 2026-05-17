@@ -34,6 +34,20 @@ Rendered tasks are disabled and dry-run by default. They still require import,
 review, approval, and enablement through the normal control-plane workflow. See
 `docs/TASK_TEMPLATES.md`.
 
+Existing enabled tasks should be changed through task change proposals rather
+than direct model-facing updates:
+
+```bash
+python scripts/propose_task_change.py \
+  --task-id daily_local_ai_security_briefing \
+  --proposed-config /path/to/proposed-task.yaml \
+  --summary "Move the weekday briefing to 07:30"
+python scripts/approve_task_change.py --proposal-id <proposal-id> --nonce <nonce> --apply
+```
+
+Yggdrasil can create schedule-change proposals and list pending proposals, but
+approve/apply remains local-admin only. See `docs/TASK_CHANGE_PROPOSALS.md`.
+
 The daily local AI/security briefing is an approved L1 notification task. It is
 scheduled for weekdays at 08:00 Europe/Berlin and sends to the whitelisted
 `briefings` Discord target. Its source list is restricted to enabled entries in

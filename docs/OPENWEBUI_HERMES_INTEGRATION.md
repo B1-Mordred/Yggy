@@ -36,6 +36,11 @@ help through the automation API's `/task-templates` endpoints. Templates are not
 a separate execution path. Rendered templates remain disabled/dry-run task YAML
 and must go through automation API validation, approval, and enablement.
 
+For existing tasks, Yggdrasil may create task-change proposals through
+`POST /tasks/{task_id}/propose-change` and inspect them through
+`GET /task-change-proposals`. Do not expose proposal approve/reject/apply
+operations or the admin API key to Open WebUI.
+
 ## Workspace Tools Warning
 
 Do not implement this system by giving Open WebUI Workspace Tools or Functions broad Python execution. Treat broad Python tools as shell-level trust. Use the automation API as the policy boundary instead.

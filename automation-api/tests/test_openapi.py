@@ -9,4 +9,6 @@ def test_openapi_schema_is_generated(client):
     assert "/tasks/draft" in data["paths"]
     assert "/task-templates" in data["paths"]
     assert "/task-templates/{template_id}/draft" in data["paths"]
+    assert "/tasks/{task_id}/propose-change" in data["paths"]
+    assert "/task-change-proposals/{proposal_id}/approve" in data["paths"]
     assert "/maintenance/retention" in data["paths"]
