@@ -175,5 +175,11 @@ gateway rather than direct arbitrary browsing. The gateway fetches only enabled
 approved source IDs and returns sanitized context. See
 `docs/RESEARCH_GATEWAY.md`.
 
+For research-backed draft requests, Bragi may use the research gateway to
+suggest topic-digest source IDs and filters, but the resulting automation still
+must be represented as a canonical intent, confirmed by the user, validated by
+Heimdal, forwarded deterministically to Yggdrasil, and approved through Yggy
+policy before live delivery.
+
 For recurring task shapes, prefer the reviewed templates in
 `configs/task_templates/` and the workflow in `docs/TASK_TEMPLATES.md`.

@@ -1945,6 +1945,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="channel.discord.rejected">channel.discord.rejected</option>
             <option value="channel.discord.failed">channel.discord.failed</option>
             <option value="research.query">research.query</option>
+            <option value="research.topic_digest_suggest">research.topic_digest_suggest</option>
             <option value="approval.approve">approval.approve</option>
             <option value="approval.reject">approval.reject</option>
             <option value="approval.request">approval.request</option>

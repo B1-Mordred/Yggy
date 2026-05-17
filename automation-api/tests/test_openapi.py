@@ -13,6 +13,7 @@ def test_openapi_schema_is_generated(client):
     assert "/channels/events/{event_id}" in data["paths"]
     assert "/sources" in data["paths"]
     assert "/research/query" in data["paths"]
+    assert "/research/topic-digest-suggestion" in data["paths"]
     assert "/research/items" in data["paths"]
     assert "/tasks/draft" in data["paths"]
     assert "/task-templates" in data["paths"]

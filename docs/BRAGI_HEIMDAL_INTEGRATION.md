@@ -152,6 +152,18 @@ content as untrusted data. Bragi receives this as conversation context only; it
 does not gain arbitrary browsing, shell execution, Docker access, approval
 authority, or task mutation authority.
 
+For explicit research-backed topic digest draft requests, Bragi may call:
+
+```text
+POST /research/topic-digest-suggestion
+```
+
+That endpoint returns only suggested canonical-intent slots such as approved
+`source_ids`, include filters, and research item IDs. Bragi must still send the
+resulting canonical intent to Heimdal, show the user the confirmation summary,
+and wait for user confirmation before Yggdrasil receives a deterministic
+request.
+
 See `docs/RESEARCH_GATEWAY.md`.
 
 ## Route Diagnostics

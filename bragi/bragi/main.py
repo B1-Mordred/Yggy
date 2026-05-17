@@ -730,6 +730,84 @@ def research_context(query: str, *, limit: int) -> dict[str, Any]:
     return context_redact(result)
 
 
+def research_backed_draft_requested(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "research-backed",
+            "based on research",
+            "from research",
+            "approved-source",
+            "approved sources",
+            "recent approved",
+            "recent sources",
+            "latest sources",
+            "latest releases",
+            "what is new",
+            "what's new",
+        )
+    )
+
+
+def enrich_topic_digest_intent_with_research(intent: dict[str, Any], user_text: str) -> dict[str, Any]:
+    if intent.get("capability_id") != "topic_digest.v1" or not research_backed_draft_requested(user_text):
+        return intent
+    slots = intent.setdefault("slots", {})
+    payload = {
+        "query": user_text,
+        "source_ids": slots.get("source_ids") if isinstance(slots.get("source_ids"), list) else [],
+        "limit": min(max(int(slots.get("max_items") or 10), 1), 10),
+        "fetch": True,
+        "refresh": False,
+        "max_age_seconds": 3600,
+    }
+    try:
+        suggestion = api_request("POST", "/research/topic-digest-suggestion", payload)
+    except Exception as exc:
+        slots["research_suggestion_error"] = exc.__class__.__name__
+        return intent
+    suggested_slots = suggestion.get("suggested_slots") if isinstance(suggestion.get("suggested_slots"), dict) else {}
+    if not suggested_slots:
+        if suggestion.get("message"):
+            slots["research_suggestion_error"] = str(suggestion.get("message"))[:160]
+        return intent
+
+    suggested_source_ids = [str(item) for item in suggested_slots.get("source_ids", []) if str(item).strip()]
+    if suggested_source_ids and not slots.get("source_ids"):
+        slots["source_ids"] = suggested_source_ids
+
+    existing_include = [str(item) for item in slots.get("include", []) if str(item).strip()] if isinstance(slots.get("include"), list) else []
+    suggested_include = [str(item) for item in suggested_slots.get("include", []) if str(item).strip()]
+    merged_include: list[str] = []
+    for item in [*existing_include, *suggested_include]:
+        if item.lower() not in {existing.lower() for existing in merged_include}:
+            merged_include.append(item)
+    if merged_include:
+        slots["include"] = merged_include[:8]
+
+    if not slots.get("exclude") and isinstance(suggested_slots.get("exclude"), list):
+        slots["exclude"] = [str(item) for item in suggested_slots["exclude"][:8]]
+    if not slots.get("output_target") and suggested_slots.get("output_target"):
+        slots["output_target"] = str(suggested_slots["output_target"])
+    if not slots.get("max_items") and suggested_slots.get("max_items"):
+        slots["max_items"] = suggested_slots["max_items"]
+
+    research_basis = suggested_slots.get("research_basis") if isinstance(suggested_slots.get("research_basis"), dict) else {}
+    if research_basis:
+        slots["research_basis"] = {
+            "source_ids": [str(item) for item in research_basis.get("source_ids", [])],
+            "item_count": int(research_basis.get("item_count") or 0),
+            "error_count": int(research_basis.get("error_count") or 0),
+            "external_content_is_data_only": True,
+        }
+    research_item_ids = [str(item) for item in suggested_slots.get("research_item_ids", []) if str(item).strip()]
+    if research_item_ids:
+        slots["research_item_ids"] = research_item_ids[:10]
+    intent["confidence"] = max(float(intent.get("confidence") or 0.0), 0.86)
+    return intent
+
+
 def format_context_answer(context: dict[str, Any]) -> str:
     data = context.get("data") if isinstance(context.get("data"), dict) else {}
     lines = ["Here is the read-only Yggy context I can see:"]
@@ -1584,6 +1662,13 @@ def format_confirmation(summary: dict[str, Any], intent: dict[str, Any]) -> str:
         lines.append(f"- Checks: {', '.join(f'`{item}`' for item in summary['checks'])}")
     if summary.get("sources"):
         lines.append(f"- Sources: {', '.join(f'`{item}`' for item in summary['sources'])}")
+    research_basis = (intent.get("slots") or {}).get("research_basis") if isinstance(intent.get("slots"), dict) else None
+    if isinstance(research_basis, dict):
+        lines.append(
+            "- Research basis: "
+            f"`{research_basis.get('item_count', 0)}` approved-source item(s), "
+            f"`{research_basis.get('error_count', 0)}` source error(s); external content is data only"
+        )
     if summary.get("webhook_id"):
         lines.append(f"- Webhook ID: `{summary['webhook_id']}`")
     lines.extend(
@@ -1702,6 +1787,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     pending = pending_intent_from_prior(prior)
     if pending and result_needs_details(prior):
         intent = merge_intent_slots(pending, user_text)
+        intent = enrich_topic_digest_intent_with_research(intent, user_text)
         result = api_request("POST", "/capabilities/validate-intent", intent)
         return format_gateway_result(result, intent)
 
@@ -1713,6 +1799,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     intent = build_candidate_intent(user_text)
     if intent is None:
         return general_chat_answer(messages, user_id=user_id)
+    intent = enrich_topic_digest_intent_with_research(intent, user_text)
     result = api_request("POST", "/capabilities/validate-intent", intent)
     return format_gateway_result(result, intent)
 

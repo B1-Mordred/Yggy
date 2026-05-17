@@ -438,6 +438,31 @@ def context_api_fixture(method, path, payload=None):
             ],
             "errors": [],
         }
+    if method == "POST" and path == "/research/topic-digest-suggestion":
+        return {
+            "read_only": True,
+            "source_content_is_untrusted": True,
+            "suggestion_type": "topic_digest_slots",
+            "suggested_slots": {
+                "source_ids": ["open_webui_releases", "docker_blog"],
+                "include": ["Open WebUI", "Docker", "local AI security"],
+                "exclude": ["sponsored", "rumor"],
+                "output_target": "briefings",
+                "max_items": 10,
+                "research_item_ids": ["research-1"],
+                "research_basis": {
+                    "source_ids": ["open_webui_releases", "docker_blog"],
+                    "item_count": 1,
+                    "error_count": 0,
+                },
+            },
+            "safety": {
+                "requires_user_confirmation": True,
+                "requires_heimdal_validation": True,
+                "requires_yggy_approval": True,
+                "external_content_is_data_only": True,
+            },
+        }
     assert method == "GET"
     if path == "/tasks":
         return {
@@ -604,6 +629,39 @@ def test_write_like_request_still_routes_to_gateway_not_context(monkeypatch):
 
     assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
     assert "Canonical intent" in answer
+
+
+def test_research_backed_topic_digest_draft_uses_suggestion_then_gateway(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        if path == "/research/topic-digest-suggestion":
+            return context_api_fixture(method, path, payload)
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat(
+        [
+            {
+                "role": "user",
+                "content": "draft a weekday 08:00 research-backed topic digest from recent approved sources about local AI security",
+            }
+        ]
+    )
+
+    assert calls[0][0:2] == ("POST", "/research/topic-digest-suggestion")
+    assert calls[0][2]["fetch"] is True
+    assert calls[1][0:2] == ("POST", "/capabilities/validate-intent")
+    intent = calls[1][2]
+    assert intent["capability_id"] == "topic_digest.v1"
+    assert intent["slots"]["source_ids"] == ["open_webui_releases", "ollama_releases", "n8n_releases", "docker_blog"]
+    assert "Open WebUI" in intent["slots"]["include"]
+    assert intent["slots"]["research_basis"]["external_content_is_data_only"] is True
+    assert intent["slots"]["research_item_ids"] == ["research-1"]
+    assert "Research basis" in answer
+    assert "Reply `confirm`" in answer
 
 
 def test_route_diagnostic_for_context_question():

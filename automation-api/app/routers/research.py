@@ -15,6 +15,7 @@ from app.services.research_service import (
     list_approved_sources,
     query_research,
     research_item_to_dict,
+    suggest_topic_digest_slots,
 )
 from app.services.validation_service import redact_secrets
 
@@ -50,6 +51,35 @@ def research_query(
             "source_ids": result.get("source_ids", []),
             "item_count": result.get("item_count", 0),
             "error_count": len(result.get("errors", [])) if isinstance(result.get("errors"), list) else 0,
+            "query_preview": redact_secrets(payload.query or "")[:240],
+        },
+    )
+    session.commit()
+    return result
+
+
+@research_router.post("/topic-digest-suggestion")
+def research_topic_digest_suggestion(
+    payload: ResearchQueryRequest,
+    role: ApiRole = Depends(require_roles(ApiRole.TOOL, ApiRole.ADMIN)),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        result = suggest_topic_digest_slots(session, payload)
+    except ResearchError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    suggested_slots = result.get("suggested_slots") if isinstance(result.get("suggested_slots"), dict) else {}
+    basis = suggested_slots.get("research_basis") if isinstance(suggested_slots.get("research_basis"), dict) else {}
+    audit_event(
+        session,
+        role,
+        "research.topic_digest_suggest",
+        "research",
+        "topic_digest",
+        {
+            "source_ids": basis.get("source_ids", []),
+            "item_count": basis.get("item_count", 0),
+            "error_count": basis.get("error_count", 0),
             "query_preview": redact_secrets(payload.query or "")[:240],
         },
     )

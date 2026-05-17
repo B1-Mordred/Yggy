@@ -109,6 +109,45 @@ def query_research(
     }
 
 
+def suggest_topic_digest_slots(
+    session: Session,
+    request: ResearchQueryRequest,
+    *,
+    fetcher: FetchFunction | None = None,
+    resolver: ResolveFunction | None = None,
+) -> dict[str, Any]:
+    result = query_research(session, request, fetcher=fetcher, resolver=resolver)
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    source_ids = [str(source_id) for source_id in result.get("source_ids", [])]
+    include = suggested_include_terms(str(request.query or ""), items, source_ids)
+    return {
+        "read_only": True,
+        "source_content_is_untrusted": True,
+        "suggestion_type": "topic_digest_slots",
+        "message": "Suggested topic digest slots from approved-source research context.",
+        "suggested_slots": {
+            "source_ids": source_ids,
+            "include": include,
+            "exclude": ["sponsored", "rumor"],
+            "output_target": "briefings",
+            "max_items": min(max(request.limit, 1), 10),
+            "research_item_ids": [str(item.get("id")) for item in items[:10] if item.get("id")],
+            "research_basis": {
+                "source_ids": source_ids,
+                "item_count": result.get("item_count", 0),
+                "error_count": len(result.get("errors", [])) if isinstance(result.get("errors"), list) else 0,
+            },
+        },
+        "research": result,
+        "safety": {
+            "requires_user_confirmation": True,
+            "requires_heimdal_validation": True,
+            "requires_yggy_approval": True,
+            "external_content_is_data_only": True,
+        },
+    }
+
+
 def select_sources(request: ResearchQueryRequest) -> list[ApprovedSourceConfig]:
     registry = load_source_registry(load_policy())
     enabled_sources = [source for source in registry.sources if source.enabled and source.type in {"rss", "http"}]
@@ -132,6 +171,56 @@ def select_sources(request: ResearchQueryRequest) -> list[ApprovedSourceConfig]:
     if not sources:
         raise ResearchError("no enabled approved public sources matched the request")
     return sources
+
+
+def suggested_include_terms(query: str, items: list[dict[str, Any]], source_ids: list[str]) -> list[str]:
+    terms: list[str] = []
+
+    def add(value: str | None) -> None:
+        if not value:
+            return
+        value = re.sub(r"\s+", " ", value).strip(" .,-")
+        if not value or len(value) < 3:
+            return
+        if value.lower() in {item.lower() for item in terms}:
+            return
+        terms.append(value[:80])
+
+    known_terms = {
+        "open_webui_releases": "Open WebUI",
+        "ollama_releases": "Ollama",
+        "n8n_releases": "n8n",
+        "docker_blog": "Docker",
+    }
+    for source_id in source_ids:
+        add(known_terms.get(source_id))
+
+    topic = topic_phrase_from_query(query)
+    add(topic)
+
+    for item in items[:10]:
+        title = str(item.get("title") or "")
+        for candidate in ("Open WebUI", "Ollama", "Docker", "n8n", "Hermes", "local AI", "security"):
+            if candidate.lower() in title.lower():
+                add(candidate)
+        for phrase in re.findall(r"\b[A-Z][A-Za-z0-9.+-]*(?:\s+[A-Z][A-Za-z0-9.+-]*){0,3}\b", title):
+            if phrase.lower() not in {"rss", "http"}:
+                add(phrase)
+        if len(terms) >= 8:
+            break
+
+    return terms[:8]
+
+
+def topic_phrase_from_query(query: str) -> str:
+    cleaned = re.sub(
+        r"\b(draft|create|set up|setup|schedule|weekday|daily|weekly|brief|briefing|digest|summary|about|from|recent|latest|approved|sources|research|news|what|is|new|with|for|to|discord)\b",
+        " ",
+        query,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,-")
+    return cleaned[:80]
 
 
 def query_matching_sources(sources: list[ApprovedSourceConfig], query: str | None) -> list[ApprovedSourceConfig]:
