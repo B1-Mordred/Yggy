@@ -190,3 +190,21 @@ docker cp yggy-https-proxy:/data/caddy/pki/authorities/local/root.crt ./yggy-cad
 ```
 
 Install that certificate as a trusted root CA only on devices you control.
+
+## Backups
+
+Create a local Yggy backup:
+
+```bash
+scripts/backup_yggy.sh
+```
+
+Backups are written under `backups/`, which is ignored by Git. They include MySQL state, redacted API exports, OpenAPI, compose source files, and git metadata. Compose files are copied without resolving `.env`, so secrets are not expanded into the backup. They do not include `.env`, API keys, Discord tokens, dashboard passwords, or Caddy private keys.
+
+Restore is dry-run by default:
+
+```bash
+scripts/restore_yggy.sh --backup-dir backups/yggy-YYYYmmdd-HHMMSSZ
+```
+
+See `docs/BACKUP_RESTORE.md` before applying a restore.

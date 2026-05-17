@@ -94,3 +94,13 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
 - Task YAML, Open WebUI Knowledge, prompts, chat history, and logs must not contain secrets.
 
 See [SECURITY.md](SECURITY.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Backup
+
+Create a local backup:
+
+```bash
+scripts/backup_yggy.sh
+```
+
+Restore is dry-run by default and requires `--apply` before importing MySQL. See [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md).
