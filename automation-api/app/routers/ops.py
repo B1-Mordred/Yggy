@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.audit import audit_event
@@ -206,11 +206,41 @@ def ops_audit_events(
     _: None = Depends(require_ops_access),
     session: Session = Depends(get_session),
     limit: int = Query(default=50, ge=1, le=100),
+    actor_role: str | None = Query(default=None, min_length=1, max_length=64),
+    action: str | None = Query(default=None, min_length=1, max_length=128),
+    resource_type: str | None = Query(default=None, min_length=1, max_length=64),
+    resource_id: str | None = Query(default=None, min_length=1, max_length=128),
+    q: str | None = Query(default=None, min_length=1, max_length=128),
 ) -> dict:
-    events = session.query(AuditEventModel).order_by(AuditEventModel.created_at.desc()).limit(limit).all()
+    query = session.query(AuditEventModel)
+    if actor_role:
+        query = query.filter(AuditEventModel.actor_role == actor_role)
+    if action:
+        query = query.filter(AuditEventModel.action == action)
+    if resource_type:
+        query = query.filter(AuditEventModel.resource_type == resource_type)
+    if resource_id:
+        query = query.filter(AuditEventModel.resource_id.ilike(f"%{resource_id}%"))
+    if q:
+        query = query.filter(
+            or_(
+                AuditEventModel.actor_role.ilike(f"%{q}%"),
+                AuditEventModel.action.ilike(f"%{q}%"),
+                AuditEventModel.resource_type.ilike(f"%{q}%"),
+                AuditEventModel.resource_id.ilike(f"%{q}%"),
+            )
+        )
+    events = query.order_by(AuditEventModel.created_at.desc()).limit(limit).all()
     return {
         "generated_at": utcnow(),
         "limit": limit,
+        "filters": {
+            "actor_role": actor_role,
+            "action": action,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "q": q,
+        },
         "events": [_audit_event_detail(event) for event in events],
     }
 
@@ -787,7 +817,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       font: inherit;
     }}
     .link-button:hover {{ border-color: transparent; }}
-    input {{
+    input, select {{
       width: min(360px, 100%);
       border: 1px solid var(--line);
       background: var(--panel);
@@ -795,6 +825,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       border-radius: 6px;
       padding: 8px 10px;
     }}
+    select {{ width: auto; min-width: 150px; }}
     pre {{
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -810,6 +841,15 @@ DASHBOARD_HTML = f"""<!doctype html>
     .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }}
     .section {{ margin: 18px 0; }}
     .section-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }}
+    .filter-bar {{
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 10px 0;
+    }}
+    .filter-bar input {{ width: min(320px, 100%); }}
+    .filter-bar button {{ padding: 8px 10px; }}
     .panel, .metric, table {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -887,14 +927,51 @@ DASHBOARD_HTML = f"""<!doctype html>
     </section>
     <section class="view" data-view="tasks">
       <section class="section">
-        <h2>Tasks</h2>
+        <div class="section-head">
+          <div>
+            <h2>Tasks</h2>
+            <div class="meta" id="task-filter-summary">No filters applied.</div>
+          </div>
+        </div>
+        <div class="filter-bar" aria-label="Task filters">
+          <input id="task-filter-text" type="search" placeholder="Filter tasks" aria-label="Filter tasks">
+          <select id="task-filter-state" aria-label="Task state">
+            <option value="">All states</option>
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+            <option value="paused">Paused</option>
+            <option value="pending_approval">Pending approval</option>
+            <option value="rejected">Rejected</option>
+          </select>
+          <select id="task-filter-type" aria-label="Task type">
+            <option value="">All types</option>
+          </select>
+          <button id="task-filter-clear" type="button">Clear</button>
+        </div>
         <div class="table-wrap"><table id="tasks"></table></div>
         <div class="meta" id="task-action-status"></div>
       </section>
     </section>
     <section class="view" data-view="runs">
       <section class="section">
-        <h2>Recent Runs</h2>
+        <div class="section-head">
+          <div>
+            <h2>Recent Runs</h2>
+            <div class="meta" id="run-filter-summary">No filters applied.</div>
+          </div>
+        </div>
+        <div class="filter-bar" aria-label="Run filters">
+          <input id="run-filter-text" type="search" placeholder="Filter runs" aria-label="Filter runs">
+          <select id="run-filter-status" aria-label="Run status">
+            <option value="">All statuses</option>
+            <option value="queued">Queued</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="dry_run">Dry-run</option>
+          </select>
+          <button id="run-filter-clear" type="button">Clear</button>
+        </div>
         <div class="table-wrap"><table id="runs"></table></div>
       </section>
       <section class="section panel" id="run-detail">
@@ -913,6 +990,43 @@ DASHBOARD_HTML = f"""<!doctype html>
             <div class="meta" id="audit-generated">Not loaded yet.</div>
           </div>
           <button id="audit-refresh" type="button">Refresh Audit</button>
+        </div>
+        <div class="filter-bar" aria-label="Audit filters">
+          <input id="audit-filter-q" type="search" placeholder="Search actor, action, resource" aria-label="Search audit events">
+          <input id="audit-filter-resource-id" type="search" placeholder="Resource id" aria-label="Audit resource id">
+          <select id="audit-filter-actor" aria-label="Audit actor">
+            <option value="">All actors</option>
+            <option value="ops_dashboard">ops_dashboard</option>
+            <option value="tool">tool</option>
+            <option value="admin">admin</option>
+            <option value="worker">worker</option>
+          </select>
+          <select id="audit-filter-action" aria-label="Audit action">
+            <option value="">All actions</option>
+            <option value="approval.approve">approval.approve</option>
+            <option value="approval.reject">approval.reject</option>
+            <option value="approval.request">approval.request</option>
+            <option value="task.draft">task.draft</option>
+            <option value="task.update">task.update</option>
+            <option value="task.pause">task.pause</option>
+            <option value="task.resume">task.resume</option>
+            <option value="task.run">task.run</option>
+            <option value="run.claim">run.claim</option>
+            <option value="run.update">run.update</option>
+            <option value="maintenance.retention.preview">maintenance.retention.preview</option>
+            <option value="maintenance.retention.apply">maintenance.retention.apply</option>
+            <option value="heartbeat.update">heartbeat.update</option>
+          </select>
+          <select id="audit-filter-resource-type" aria-label="Audit resource type">
+            <option value="">All resources</option>
+            <option value="task">task</option>
+            <option value="run">run</option>
+            <option value="approval">approval</option>
+            <option value="service">service</option>
+            <option value="topic">topic</option>
+            <option value="maintenance">maintenance</option>
+          </select>
+          <button id="audit-filter-clear" type="button">Clear</button>
         </div>
         <div class="table-wrap"><table id="audit"></table></div>
       </section>
@@ -937,11 +1051,13 @@ DASHBOARD_HTML = f"""<!doctype html>
       return `<div class="metric"><div class="meta">${{esc(label)}}</div><div class="value">${{value}}</div><div class="meta">${{sub || ''}}</div></div>`;
     }}
     const jsonBlock = value => `<pre>${{esc(JSON.stringify(value || {{}}, null, 2))}}</pre>`;
-    function renderTable(id, headers, rows) {{
+    const byId = id => document.getElementById(id);
+    function renderTable(id, headers, rows, emptyText = 'No rows match the current view.') {{
       const table = document.getElementById(id);
       table.innerHTML = `<thead><tr>${{headers.map(h => `<th>${{h}}</th>`).join('')}}</tr></thead>`
-        + `<tbody>${{rows.map(row => `<tr>${{row.map(cell => `<td>${{cell}}</td>`).join('')}}</tr>`).join('')}}</tbody>`;
+        + `<tbody>${{rows.length ? rows.map(row => `<tr>${{row.map(cell => `<td>${{cell}}</td>`).join('')}}</tr>`).join('') : `<tr><td colspan="${{headers.length}}" class="empty">${{esc(emptyText)}}</td></tr>`}}</tbody>`;
     }}
+    let lastStatusData = null;
     let activeView = 'overview';
     function showView(view) {{
       activeView = view;
@@ -961,6 +1077,20 @@ DASHBOARD_HTML = f"""<!doctype html>
     function setTabCount(name, value) {{
       const target = document.querySelector(`[data-count="${{name}}"]`);
       if (target) target.textContent = `(${{value}})`;
+    }}
+    const fieldValue = id => (byId(id)?.value || '').trim();
+    const lower = value => text(value).toLowerCase();
+    function matchesText(values, query) {{
+      if (!query) return true;
+      const haystack = values.map(value => lower(value)).join(' ');
+      return haystack.includes(query.toLowerCase());
+    }}
+    function syncTaskTypeOptions(tasks) {{
+      const select = byId('task-filter-type');
+      const selected = select.value;
+      const types = [...new Set(tasks.map(task => task.type).filter(Boolean))].sort();
+      select.innerHTML = '<option value="">All types</option>' + types.map(type => `<option value="${{esc(type)}}">${{esc(type)}}</option>`).join('');
+      select.value = types.includes(selected) ? selected : '';
     }}
     let selectedRunId = null;
     const runButton = run => `<button type="button" class="link-button" data-run-id="${{esc(run.id)}}" title="${{esc(run.id)}}">${{esc(shortId(run.id))}}</button>`;
@@ -1060,6 +1190,63 @@ DASHBOARD_HTML = f"""<!doctype html>
       }} finally {{
         button.disabled = false;
       }}
+    }}
+    function taskMatchesFilters(task) {{
+      const query = fieldValue('task-filter-text');
+      const state = fieldValue('task-filter-state');
+      const type = fieldValue('task-filter-type');
+      const stateMatch = !state
+        || (state === 'enabled' && task.enabled)
+        || (state === 'disabled' && !task.enabled)
+        || task.status === state;
+      return stateMatch
+        && (!type || task.type === type)
+        && matchesText([task.id, task.name, task.type, task.status, task.approval_level, task.output?.target], query);
+    }}
+    function renderTasks() {{
+      if (!lastStatusData) return;
+      const tasks = lastStatusData.tasks || [];
+      const filtered = tasks.filter(taskMatchesFilters);
+      byId('task-filter-summary').textContent = `Showing ${{filtered.length}} of ${{tasks.length}} tasks.`;
+      renderTable('tasks', ['Task', 'Type', 'State', 'Trigger', 'Output', 'Latest Run', 'Actions'], filtered.map(task => [
+        `<code>${{esc(task.id)}}</code><br><span class="meta">${{esc(task.name)}}</span>`,
+        `<span class="pill">${{esc(task.type)}}</span><br><span class="meta">${{esc(task.approval_level)}}</span>`,
+        `${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}}<br><span class="meta">status ${{esc(task.status)}}; dry run ${{task.dry_run}}</span>`,
+        `<code>${{esc(task.trigger.cron)}}</code><br><span class="meta">${{esc(task.trigger.timezone)}}</span>`,
+        `${{esc(task.output.channel)}}<br><span class="meta">${{esc(task.output.target)}}</span>`,
+        task.latest_run ? `${{runButton(task.latest_run)}} ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
+        `${{taskRunButtons(task)}}${{taskStateButtons(task)}}`,
+      ]), 'No tasks match the current filters.');
+      wireRunLinks();
+      wireTaskRunButtons();
+      wireTaskStateButtons();
+    }}
+    function runMatchesFilters(run) {{
+      const query = fieldValue('run-filter-text');
+      const status = fieldValue('run-filter-status');
+      const statusMatch = !status
+        || run.status === status
+        || (status === 'queued' && String(run.status || '').startsWith('queued'))
+        || (status === 'running' && String(run.status || '').startsWith('running'))
+        || (status === 'completed' && String(run.status || '').startsWith('completed'))
+        || (status === 'dry_run' && String(run.status || '').includes('dry_run'));
+      return statusMatch
+        && matchesText([run.id, run.task_id, run.status, run.result_status, run.notification?.target, run.notification?.transport], query);
+    }}
+    function renderRuns() {{
+      if (!lastStatusData) return;
+      const runs = lastStatusData.recent_runs || [];
+      const filtered = runs.filter(runMatchesFilters);
+      byId('run-filter-summary').textContent = `Showing ${{filtered.length}} of ${{runs.length}} recent runs.`;
+      renderTable('runs', ['Run', 'Task', 'Status', 'Result', 'Notification', 'Completed'], filtered.map(run => [
+        runButton(run),
+        `<code>${{esc(run.task_id)}}</code>`,
+        statusLabel(run.status),
+        `${{esc(run.result_status)}}${{run.failed_count !== null && run.failed_count !== undefined ? `<br><span class="meta">failed checks ${{esc(run.failed_count)}}</span>` : ''}}`,
+        `${{run.notification.sent === true ? 'sent' : run.notification.sent === false ? 'not sent' : 'n/a'}}<br><span class="meta">${{esc(run.notification.target || run.notification.transport)}}</span>`,
+        esc(run.completed_at),
+      ]), 'No runs match the current filters.');
+      wireRunLinks();
     }}
     function digestItems(items) {{
       return items && items.length ? `<ol class="digest-items">${{items.map(item => `
@@ -1204,6 +1391,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       const response = await fetch('/ops/status', {{credentials: 'same-origin'}});
       if (!response.ok) throw new Error(`status ${{response.status}}`);
       const data = await response.json();
+      lastStatusData = data;
       document.getElementById('generated').textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}`;
       setTabCount('tasks', data.counts.tasks);
       setTabCount('runs', data.recent_runs.length);
@@ -1219,26 +1407,9 @@ DASHBOARD_HTML = f"""<!doctype html>
         <div>Database: ${{statusLabel(data.service.database.connected, data.service.database.connected ? 'connected' : 'degraded')}}</div>
         <div>Worker: ${{statusLabel(data.service.worker.ok, data.service.worker.status)}} <span class="meta">last seen ${{text(data.service.worker.last_seen_at)}}</span></div>
       `;
-      renderTable('tasks', ['Task', 'Type', 'State', 'Trigger', 'Output', 'Latest Run', 'Actions'], data.tasks.map(task => [
-        `<code>${{esc(task.id)}}</code><br><span class="meta">${{esc(task.name)}}</span>`,
-        `<span class="pill">${{esc(task.type)}}</span><br><span class="meta">${{esc(task.approval_level)}}</span>`,
-        `${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}}<br><span class="meta">dry run ${{task.dry_run}}</span>`,
-        `<code>${{esc(task.trigger.cron)}}</code><br><span class="meta">${{esc(task.trigger.timezone)}}</span>`,
-        `${{esc(task.output.channel)}}<br><span class="meta">${{esc(task.output.target)}}</span>`,
-        task.latest_run ? `${{runButton(task.latest_run)}} ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
-        `${{taskRunButtons(task)}}${{taskStateButtons(task)}}`,
-      ]));
-      renderTable('runs', ['Run', 'Task', 'Status', 'Result', 'Notification', 'Completed'], data.recent_runs.map(run => [
-        runButton(run),
-        `<code>${{esc(run.task_id)}}</code>`,
-        statusLabel(run.status),
-        `${{esc(run.result_status)}}${{run.failed_count !== null && run.failed_count !== undefined ? `<br><span class="meta">failed checks ${{esc(run.failed_count)}}</span>` : ''}}`,
-        `${{run.notification.sent === true ? 'sent' : run.notification.sent === false ? 'not sent' : 'n/a'}}<br><span class="meta">${{esc(run.notification.target || run.notification.transport)}}</span>`,
-        esc(run.completed_at),
-      ]));
-      wireRunLinks();
-      wireTaskRunButtons();
-      wireTaskStateButtons();
+      syncTaskTypeOptions(data.tasks || []);
+      renderTasks();
+      renderRuns();
       if (selectedRunId && activeView === 'runs') loadRunDetail(selectedRunId);
       renderApprovals(data.pending_approvals);
       const latestRetention = data.retention.latest;
@@ -1252,7 +1423,18 @@ DASHBOARD_HTML = f"""<!doctype html>
       const generated = document.getElementById('audit-generated');
       generated.textContent = 'Loading audit events...';
       try {{
-        const response = await fetch('/ops/audit?limit=50', {{credentials: 'same-origin'}});
+        const params = new URLSearchParams({{limit: '50'}});
+        const auditFilters = {{
+          q: fieldValue('audit-filter-q'),
+          resource_id: fieldValue('audit-filter-resource-id'),
+          actor_role: fieldValue('audit-filter-actor'),
+          action: fieldValue('audit-filter-action'),
+          resource_type: fieldValue('audit-filter-resource-type'),
+        }};
+        Object.entries(auditFilters).forEach(([key, value]) => {{
+          if (value) params.set(key, value);
+        }});
+        const response = await fetch(`/ops/audit?${{params.toString()}}`, {{credentials: 'same-origin'}});
         if (!response.ok) throw new Error(`status ${{response.status}}`);
         const data = await response.json();
         generated.textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}; showing ${{data.events.length}} events.`;
@@ -1267,6 +1449,45 @@ DASHBOARD_HTML = f"""<!doctype html>
         generated.textContent = `Unable to load audit events: ${{error.message}}`;
       }}
     }}
+    function wireFilters() {{
+      ['task-filter-text', 'task-filter-state', 'task-filter-type'].forEach(id => {{
+        byId(id).addEventListener('input', renderTasks);
+        byId(id).addEventListener('change', renderTasks);
+      }});
+      byId('task-filter-clear').addEventListener('click', () => {{
+        byId('task-filter-text').value = '';
+        byId('task-filter-state').value = '';
+        byId('task-filter-type').value = '';
+        renderTasks();
+      }});
+      ['run-filter-text', 'run-filter-status'].forEach(id => {{
+        byId(id).addEventListener('input', renderRuns);
+        byId(id).addEventListener('change', renderRuns);
+      }});
+      byId('run-filter-clear').addEventListener('click', () => {{
+        byId('run-filter-text').value = '';
+        byId('run-filter-status').value = '';
+        renderRuns();
+      }});
+      ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'].forEach(id => {{
+        byId(id).addEventListener('change', loadAudit);
+      }});
+      byId('audit-filter-q').addEventListener('input', debounce(loadAudit, 350));
+      byId('audit-filter-resource-id').addEventListener('input', debounce(loadAudit, 350));
+      byId('audit-filter-clear').addEventListener('click', () => {{
+        ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'].forEach(id => {{
+          byId(id).value = '';
+        }});
+        loadAudit();
+      }});
+    }}
+    function debounce(fn, wait) {{
+      let timeout;
+      return () => {{
+        clearTimeout(timeout);
+        timeout = setTimeout(fn, wait);
+      }};
+    }}
     async function refresh() {{
       try {{
         await loadStatus();
@@ -1277,6 +1498,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     document.getElementById('refresh').addEventListener('click', refresh);
     document.getElementById('audit-refresh').addEventListener('click', loadAudit);
     wireViewTabs();
+    wireFilters();
     refresh();
     setInterval(refresh, 30000);
   </script>

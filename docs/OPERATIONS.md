@@ -152,6 +152,8 @@ http://127.0.0.1:8088/ops
 It is split into views for overview, tasks, runs, approvals, audit, and
 retention so routine checks do not require scanning every table. It shows task
 state, latest runs, pending approvals, worker heartbeat, and retention status.
+The task and run views include browser-side filters for quick narrowing by text,
+state, type, or run status.
 Pending approvals include actions, worst-case failure mode, and the redacted task
 config. The dashboard can approve or reject pending approvals when the operator
 enters the approval nonce. It does not expose secrets, does not expose nonce
@@ -188,7 +190,10 @@ the dashboard.
 The `Audit` view is backed by hidden `/ops/audit` and lists recent audit events
 for approvals, task drafts/updates, manual runs, pause/resume, run lifecycle
 updates, heartbeats, and retention cleanup. Audit details are bounded and
-redacted before reaching the browser.
+redacted before reaching the browser. Audit filters are server-backed and can
+narrow by actor role, action, resource type, resource id, or text across the
+audit event metadata. Audit filters do not search raw secret-bearing detail
+payloads.
 
 Configure it with separate local credentials:
 

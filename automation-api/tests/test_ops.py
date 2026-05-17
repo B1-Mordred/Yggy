@@ -22,6 +22,9 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "Yggy Operations" in allowed.text
     assert "data-view-target=\"audit\"" in allowed.text
     assert "data-view=\"tasks\"" in allowed.text
+    assert "task-filter-text" in allowed.text
+    assert "run-filter-status" in allowed.text
+    assert "audit-filter-action" in allowed.text
 
 
 def test_admin_key_can_access_ops_status_without_dashboard_password(client):
@@ -248,6 +251,55 @@ def test_ops_audit_events_are_redacted_and_limited(client, monkeypatch):
     assert event["detail"]["api_token"] == "[REDACTED]"
     assert event["detail"]["nested"]["authorization"] == "[REDACTED]"
     assert "hidden-secret" not in response.text
+
+
+def test_ops_audit_events_can_be_filtered(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    with Session(get_engine()) as session:
+        session.add_all(
+            [
+                AuditEventModel(
+                    actor_role="tool",
+                    action="task.draft",
+                    resource_type="task",
+                    resource_id="daily_local_ai_security_briefing",
+                    detail={"approval_level": "L1_NOTIFY_ONLY"},
+                    created_at=utcnow(),
+                ),
+                AuditEventModel(
+                    actor_role="ops_dashboard",
+                    action="task.pause",
+                    resource_type="task",
+                    resource_id="daily_local_ai_security_briefing",
+                    detail={"surface": "ops_ui"},
+                    created_at=utcnow(),
+                ),
+                AuditEventModel(
+                    actor_role="worker",
+                    action="run.update",
+                    resource_type="run",
+                    resource_id="other-run",
+                    detail={"status": "completed"},
+                    created_at=utcnow(),
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get(
+        "/ops/audit?actor_role=ops_dashboard&action=task.pause&resource_type=task&q=daily",
+        auth=("operator", "test-dashboard-password"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["filters"]["actor_role"] == "ops_dashboard"
+    assert body["filters"]["action"] == "task.pause"
+    assert body["filters"]["resource_type"] == "task"
+    assert body["filters"]["q"] == "daily"
+    assert [event["action"] for event in body["events"]] == ["task.pause"]
+    assert body["events"][0]["resource_id"] == "daily_local_ai_security_briefing"
 
 
 def test_ops_task_run_requires_action_header(client, monkeypatch):
