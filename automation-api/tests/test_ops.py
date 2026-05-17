@@ -11,6 +11,17 @@ from app.services.task_version_service import record_task_config_version
 from conftest import ADMIN_HEADERS, TOOL_HEADERS, sample_task
 
 
+def task_change_payload(task_id: str, *, cron: str = "30 7 * * 1-5") -> dict:
+    proposed = sample_task(task_id)
+    proposed["trigger"]["cron"] = cron
+    proposed["filters"]["include"] = ["Open WebUI", "Ollama", "security"]
+    return {
+        "requested_by": "yggdrasil",
+        "summary": "Move the weekday digest earlier and add security filter.",
+        "proposed_config": proposed,
+    }
+
+
 def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
@@ -142,6 +153,83 @@ def test_ops_status_summarizes_without_logs_or_nonces(client, monkeypatch):
     assert body["pending_approvals"][0]["review"]["config_change"]["enabled_after_approval"] is True
     assert "nonce" not in response.text.lower()
     assert "super-secret-value" not in response.text
+
+
+def test_ops_status_and_queue_show_task_change_proposals(client):
+    task_id = "ops_task_change_visible"
+    create_response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=sample_task(task_id))
+    assert create_response.status_code == 201
+    proposal_response = client.post(
+        f"/tasks/{task_id}/propose-change",
+        headers=TOOL_HEADERS,
+        json=task_change_payload(task_id),
+    )
+    assert proposal_response.status_code == 201
+    proposal = proposal_response.json()
+
+    status_response = client.get("/ops/status", headers=ADMIN_HEADERS)
+    list_response = client.get(f"/ops/task-change-proposals?task_id={task_id}", headers=ADMIN_HEADERS)
+    detail_response = client.get(f"/ops/task-change-proposals/{proposal['id']}", headers=ADMIN_HEADERS)
+
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["counts"]["pending_task_change_proposals"] == 1
+    assert status_body["counts"]["open_task_change_proposals"] == 1
+    assert status_body["pending_task_change_proposals"][0]["id"] == proposal["id"]
+    assert "nonce" not in status_response.text.lower()
+    assert list_response.status_code == 200
+    assert [item["id"] for item in list_response.json()["proposals"]] == [proposal["id"]]
+    assert detail_response.status_code == 200
+    assert detail_response.json()["proposed_config"]["trigger"]["cron"] == "30 7 * * 1-5"
+    assert "nonce" not in detail_response.text.lower()
+
+
+def test_ops_can_approve_and_apply_task_change_proposal_with_action_header(client):
+    task_id = "ops_task_change_apply"
+    create_response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=sample_task(task_id))
+    assert create_response.status_code == 201
+    proposal = client.post(
+        f"/tasks/{task_id}/propose-change",
+        headers=TOOL_HEADERS,
+        json=task_change_payload(task_id, cron="45 6 * * 1-5"),
+    ).json()
+
+    missing_header = client.post(
+        f"/ops/task-change-proposals/{proposal['id']}/approve",
+        headers=ADMIN_HEADERS,
+        json={"nonce": proposal["nonce"]},
+    )
+    bad_nonce = client.post(
+        f"/ops/task-change-proposals/{proposal['id']}/approve",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "task-change-proposal"},
+        json={"nonce": "wrong-nonce"},
+    )
+    approve_response = client.post(
+        f"/ops/task-change-proposals/{proposal['id']}/approve",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "task-change-proposal"},
+        json={"nonce": proposal["nonce"]},
+    )
+    apply_response = client.post(
+        f"/ops/task-change-proposals/{proposal['id']}/apply",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "task-change-proposal"},
+    )
+
+    assert missing_header.status_code == 403
+    assert bad_nonce.status_code == 403
+    assert approve_response.status_code == 200
+    assert approve_response.json()["status"] == "approved"
+    assert apply_response.status_code == 200
+    assert apply_response.json()["proposal"]["status"] == "applied"
+    assert apply_response.json()["task"]["trigger"]["cron"] == "45 6 * * 1-5"
+    with Session(get_engine()) as session:
+        audits = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.resource_type == "task_change_proposal")
+            .filter(AuditEventModel.resource_id == proposal["id"])
+            .order_by(AuditEventModel.created_at)
+            .all()
+        )
+        assert [audit.action for audit in audits][-2:] == ["task_change.approve", "task_change.apply"]
 
 
 def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, monkeypatch):
@@ -1303,6 +1391,11 @@ def test_ops_routes_are_not_in_openapi(client):
     assert "/ops/reviews" not in paths
     assert "/ops/runs" not in paths
     assert "/ops/runs/{run_id}" not in paths
+    assert "/ops/task-change-proposals" not in paths
+    assert "/ops/task-change-proposals/{proposal_id}" not in paths
+    assert "/ops/task-change-proposals/{proposal_id}/approve" not in paths
+    assert "/ops/task-change-proposals/{proposal_id}/reject" not in paths
+    assert "/ops/task-change-proposals/{proposal_id}/apply" not in paths
     assert "/ops/tasks/{task_id}" not in paths
     assert "/ops/tasks/{task_id}/run" not in paths
     assert "/ops/tasks/{task_id}/pause" not in paths

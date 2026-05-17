@@ -37,6 +37,19 @@ POST /task-change-proposals/{proposal_id}/reject
 POST /task-change-proposals/{proposal_id}/apply
 ```
 
+Local ops UI only:
+
+```text
+GET /ops/task-change-proposals
+GET /ops/task-change-proposals/{proposal_id}
+POST /ops/task-change-proposals/{proposal_id}/approve
+POST /ops/task-change-proposals/{proposal_id}/reject
+POST /ops/task-change-proposals/{proposal_id}/apply
+```
+
+The `/ops` endpoints are hidden from OpenAPI, require local ops dashboard access,
+and require `X-Yggy-Ops-Action: task-change-proposal` for mutations.
+
 The approve endpoint requires the nonce returned when the proposal was created.
 The nonce is local operator material. Do not paste admin keys or long-lived
 secrets into chat, Open WebUI Knowledge, task YAML, or logs.
@@ -67,6 +80,13 @@ Reject:
 python scripts/reject_task_change.py \
   --proposal-id <proposal-id> \
   --reason "Not needed"
+```
+
+Notify Discord about pending proposals without including the proposal nonce:
+
+```bash
+python scripts/notify_pending_task_changes.py --dry-run --all
+python scripts/notify_pending_task_changes.py --proposal-id <proposal-id>
 ```
 
 ## Yggdrasil Usage

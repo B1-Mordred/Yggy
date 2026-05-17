@@ -161,12 +161,15 @@ target without granting Discord approval authority:
 ```bash
 python scripts/notify_pending_approvals.py --dry-run --all
 python scripts/notify_pending_approvals.py --approval-id <approval-id>
+python scripts/notify_pending_task_changes.py --dry-run --all
+python scripts/notify_pending_task_changes.py --proposal-id <proposal-id>
 ```
 
-Live sends require either `--approval-id` or `--all`. Messages include the
-approval id, task, risk, actions, failure mode, and redacted config diff summary,
-but not the admin key, nonce hash, or approval nonce. Approve only through the
-local `/ops` UI or local CLI. See `docs/APPROVAL_NOTIFICATIONS.md`.
+Live approval sends require either `--approval-id` or `--all`; live task-change
+sends require either `--proposal-id` or `--all`. Messages include ids, task,
+risk, and redacted diff summaries, but not the admin key, nonce hash, approval
+nonce, or proposal nonce. Approve only through the local `/ops` UI or local CLI.
+See `docs/APPROVAL_NOTIFICATIONS.md`.
 
 ## Logs
 
@@ -330,12 +333,15 @@ the operator can review the proposed config change before entering the approval
 nonce. Config snapshots are stored redacted and are not exposed in the OpenAPI
 tool schema.
 
-The `Proposals` view contains pending draft, update, approval-request, and
-revert approvals with config diffs. The `Approvals` view is reserved for pending
-approvals that are not config proposals. This keeps routine config review
-separate from broader operational approvals as the queue grows. Both views can
-filter by text, task id, requester, and approval level. Proposals can also filter
-by config change type. Both views page through hidden `/ops/reviews` results.
+The `Proposals` view contains task-change proposals created through
+`POST /tasks/{task_id}/propose-change`. It can filter by text, task id,
+requester, approval level, status, and risk severity. Pending proposals can be
+approved with the proposal nonce, approved proposals can be applied, and pending
+or approved proposals can be rejected. These actions are local-only hidden
+`/ops/task-change-proposals` endpoints, require dashboard access plus the
+`X-Yggy-Ops-Action: task-change-proposal` same-origin action header, and are not
+included in the OpenAPI tool schema. The `Approvals` view remains reserved for
+pending approvals that are not config proposals.
 
 Prior config versions can be reverted from the task-detail panel. A revert does
 not immediately enable or run the task. It creates a new disabled

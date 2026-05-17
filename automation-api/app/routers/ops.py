@@ -16,7 +16,7 @@ from app.audit import audit_event
 from app.auth import ApiRole, classify_api_key
 from app.config import get_settings
 from app.database import get_session
-from app.models import ApprovalModel, AuditEventModel, HeartbeatModel, RunModel, TaskModel, utcnow
+from app.models import ApprovalModel, AuditEventModel, HeartbeatModel, RunModel, TaskChangeProposalModel, TaskModel, utcnow
 from app.policy import PolicyViolation, load_policy, validate_task_policy
 from app.routers.health import WORKER_HEARTBEAT_MAX_AGE_SECONDS, heartbeat_to_dict
 from app.routers.tasks import queue_task_run
@@ -30,6 +30,13 @@ from app.services.task_version_service import (
     task_config_version_to_dict,
     task_config_versions,
 )
+from app.services.task_change_service import (
+    TaskChangeProposalError,
+    apply_task_change_proposal,
+    approve_task_change_proposal,
+    proposal_to_dict,
+    reject_task_change_proposal,
+)
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(tags=["ops"])
@@ -38,6 +45,7 @@ OPS_ACTION_HEADER = "approval-decision"
 OPS_RUN_ACTION_HEADER = "manual-run"
 OPS_TASK_STATE_ACTION_HEADER = "task-state"
 OPS_VERSION_REVERT_ACTION_HEADER = "version-revert"
+OPS_TASK_CHANGE_ACTION_HEADER = "task-change-proposal"
 MAX_RUN_DETAIL_ITEMS = 10
 MAX_RUN_DETAIL_ERRORS = 10
 MAX_RUN_DETAIL_TEXT = 6000
@@ -139,6 +147,13 @@ def require_ops_version_revert_action_header(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops version revert action header")
 
 
+def require_ops_task_change_action_header(
+    x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
+) -> None:
+    if x_yggy_ops_action != OPS_TASK_CHANGE_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops task change action header")
+
+
 @router.get("/ops", response_class=HTMLResponse, include_in_schema=False)
 def ops_dashboard(_: None = Depends(require_ops_access)) -> HTMLResponse:
     return HTMLResponse(DASHBOARD_HTML)
@@ -170,6 +185,13 @@ def ops_status(
         .limit(20)
         .all()
     )
+    open_task_change_proposals = (
+        session.query(TaskChangeProposalModel)
+        .filter(TaskChangeProposalModel.status.in_(["pending", "approved"]))
+        .order_by(TaskChangeProposalModel.created_at.desc())
+        .limit(20)
+        .all()
+    )
     active_runs = [run for run in recent_runs if run.status in {"queued", "queued_dry_run", "running", "running_dry_run"}]
     latest_retention = (
         session.query(AuditEventModel)
@@ -189,6 +211,16 @@ def ops_status(
             pending_proposals.append(summary)
         else:
             pending_general_approvals.append(summary)
+    pending_task_changes = [
+        _task_change_proposal_summary(proposal, include_configs=False)
+        for proposal in open_task_change_proposals
+        if proposal.status == "pending"
+    ]
+    approved_task_changes = [
+        _task_change_proposal_summary(proposal, include_configs=False)
+        for proposal in open_task_change_proposals
+        if proposal.status == "approved"
+    ]
 
     return {
         "generated_at": now,
@@ -203,6 +235,10 @@ def ops_status(
             "pending_approvals": len(pending_approvals),
             "pending_proposals": len(pending_proposals),
             "pending_general_approvals": len(pending_general_approvals),
+            "pending_task_change_proposals": len(pending_task_changes),
+            "approved_task_change_proposals": len(approved_task_changes),
+            "open_task_change_proposals": len(pending_task_changes) + len(approved_task_changes),
+            "pending_reviews": len(pending_approvals) + len(pending_task_changes),
             "active_runs": len(active_runs),
         },
         "tasks": [_task_summary(task, latest_by_task.get(task.id)) for task in tasks],
@@ -210,6 +246,9 @@ def ops_status(
         "pending_approvals": pending_approval_summaries,
         "pending_proposals": pending_proposals,
         "pending_general_approvals": pending_general_approvals,
+        "pending_task_change_proposals": pending_task_changes,
+        "approved_task_change_proposals": approved_task_changes,
+        "open_task_change_proposals": pending_task_changes + approved_task_changes,
         "retention": {
             "policy": {
                 "run_retention_days": get_settings().run_retention_days,
@@ -465,6 +504,164 @@ def ops_reviews(
         "counts": {"matched": len(matched), "returned": len(selected)},
         "pagination": _pagination(page, page_size, len(matched), len(selected)),
         "reviews": [_approval_summary(approval, session.get(TaskModel, approval.task_id), session=session) for approval in selected],
+    }
+
+
+@router.get("/ops/task-change-proposals", include_in_schema=False)
+def ops_task_change_proposals(
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=DEFAULT_OPS_PAGE_SIZE, ge=MIN_OPS_PAGE_SIZE, le=MAX_OPS_PAGE_SIZE),
+    q: str | None = Query(default=None, min_length=1, max_length=128),
+    task_id: str | None = Query(default=None, min_length=1, max_length=128),
+    status_filter: str | None = Query(default=None, alias="status", min_length=1, max_length=32),
+    approval_level: str | None = Query(default=None, min_length=1, max_length=64),
+    requested_by: str | None = Query(default=None, min_length=1, max_length=128),
+    risk_severity: str | None = Query(default=None, alias="risk", min_length=1, max_length=64),
+) -> dict:
+    query = session.query(TaskChangeProposalModel)
+    if task_id:
+        query = query.filter(TaskChangeProposalModel.task_id.ilike(f"%{task_id}%"))
+    if status_filter:
+        query = query.filter(TaskChangeProposalModel.status == status_filter)
+    if approval_level:
+        query = query.filter(TaskChangeProposalModel.approval_level == approval_level)
+    if requested_by:
+        query = query.filter(TaskChangeProposalModel.requested_by.ilike(f"%{requested_by}%"))
+    if q:
+        query = query.filter(
+            or_(
+                TaskChangeProposalModel.id.ilike(f"%{q}%"),
+                TaskChangeProposalModel.task_id.ilike(f"%{q}%"),
+                TaskChangeProposalModel.requested_by.ilike(f"%{q}%"),
+                TaskChangeProposalModel.approval_level.ilike(f"%{q}%"),
+                TaskChangeProposalModel.summary.ilike(f"%{q}%"),
+            )
+        )
+
+    matched = query.order_by(TaskChangeProposalModel.created_at.desc()).all()
+    if risk_severity:
+        matched = [
+            proposal
+            for proposal in matched
+            if isinstance(proposal.risk, dict) and proposal.risk.get("severity") == risk_severity
+        ]
+    offset = _pagination_offset(page, page_size)
+    selected = matched[offset : offset + page_size]
+    return {
+        "generated_at": utcnow(),
+        "page": page,
+        "page_size": page_size,
+        "limit": page_size,
+        "filters": {
+            "q": q,
+            "task_id": task_id,
+            "status": status_filter,
+            "approval_level": approval_level,
+            "requested_by": requested_by,
+            "risk": risk_severity,
+        },
+        "counts": {"matched": len(matched), "returned": len(selected)},
+        "pagination": _pagination(page, page_size, len(matched), len(selected)),
+        "proposals": [_task_change_proposal_summary(proposal, include_configs=False) for proposal in selected],
+    }
+
+
+@router.get("/ops/task-change-proposals/{proposal_id}", include_in_schema=False)
+def ops_task_change_proposal_detail(
+    proposal_id: str,
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(TaskChangeProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task change proposal not found")
+    return _task_change_proposal_summary(proposal, include_configs=True)
+
+
+@router.post("/ops/task-change-proposals/{proposal_id}/approve", include_in_schema=False)
+def ops_approve_task_change_proposal(
+    proposal_id: str,
+    payload: OpsApprovalDecision,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_task_change_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(TaskChangeProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task change proposal not found")
+    try:
+        approve_task_change_proposal(proposal, payload.nonce)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except TaskChangeProposalError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    audit_event(
+        session,
+        "ops_dashboard",
+        "task_change.approve",
+        "task_change_proposal",
+        proposal.id,
+        {"task_id": proposal.task_id, "surface": "ops_ui"},
+    )
+    session.commit()
+    return _task_change_proposal_summary(proposal, include_configs=True)
+
+
+@router.post("/ops/task-change-proposals/{proposal_id}/reject", include_in_schema=False)
+def ops_reject_task_change_proposal(
+    proposal_id: str,
+    payload: OpsApprovalRejection | None = None,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_task_change_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(TaskChangeProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task change proposal not found")
+    try:
+        reject_task_change_proposal(proposal)
+    except TaskChangeProposalError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    audit_event(
+        session,
+        "ops_dashboard",
+        "task_change.reject",
+        "task_change_proposal",
+        proposal.id,
+        {"task_id": proposal.task_id, "surface": "ops_ui", "reason": payload.reason if payload else ""},
+    )
+    session.commit()
+    return _task_change_proposal_summary(proposal, include_configs=True)
+
+
+@router.post("/ops/task-change-proposals/{proposal_id}/apply", include_in_schema=False)
+def ops_apply_task_change_proposal(
+    proposal_id: str,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_task_change_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(TaskChangeProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task change proposal not found")
+    try:
+        task = apply_task_change_proposal(session, proposal, actor_role="ops_dashboard")
+    except TaskChangeProposalError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    audit_event(
+        session,
+        "ops_dashboard",
+        "task_change.apply",
+        "task_change_proposal",
+        proposal.id,
+        {"task_id": proposal.task_id, "surface": "ops_ui"},
+    )
+    session.commit()
+    return {
+        "proposal": _task_change_proposal_summary(proposal, include_configs=True),
+        "task": _task_summary(task, None),
     }
 
 
@@ -797,6 +994,16 @@ def _redacted_task_config(task: TaskModel) -> Any:
         text_limit=MAX_RUN_DETAIL_TEXT,
         field_text_limit=MAX_RUN_DETAIL_FIELD_TEXT,
     )
+
+
+def _task_change_proposal_summary(proposal: TaskChangeProposalModel, *, include_configs: bool = False) -> dict:
+    payload = proposal_to_dict(proposal, include_configs=include_configs)
+    payload["risk"] = _bounded_value(redact_secrets(payload.get("risk") or {}))
+    payload["diff"] = _bounded_value(redact_secrets(payload.get("diff") or {}))
+    if include_configs:
+        payload["base_config"] = _bounded_value(redact_secrets(payload.get("base_config") or {}))
+        payload["proposed_config"] = _bounded_value(redact_secrets(payload.get("proposed_config") or {}))
+    return payload
 
 
 def _task_action_eligibility(session: Session, task: TaskModel) -> dict:
@@ -1670,7 +1877,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       <section class="section panel">
         <div class="section-head">
           <div>
-            <h2>Pending Proposals</h2>
+            <h2>Task Change Proposals</h2>
             <div class="meta" id="proposal-filter-summary">Not loaded yet.</div>
           </div>
           <button id="proposal-refresh" type="button">Refresh Proposals</button>
@@ -1687,12 +1894,19 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="L3_EXTERNAL_SIDE_EFFECT">L3_EXTERNAL_SIDE_EFFECT</option>
             <option value="L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE">L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE</option>
           </select>
-          <select id="proposal-filter-change-type" aria-label="Proposal change type">
-            <option value="">All change types</option>
-            <option value="draft">draft</option>
-            <option value="update">update</option>
-            <option value="approval_request">approval_request</option>
-            <option value="revert_draft">revert_draft</option>
+          <select id="proposal-filter-status" aria-label="Proposal status">
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="applied">Applied</option>
+            <option value="rejected">Rejected</option>
+            <option value="">All statuses</option>
+          </select>
+          <select id="proposal-filter-risk" aria-label="Proposal risk">
+            <option value="">All risk levels</option>
+            <option value="standard_review">standard_review</option>
+            <option value="operator_review">operator_review</option>
+            <option value="admin_required">admin_required</option>
+            <option value="manual_only">manual_only</option>
           </select>
           <label class="page-size" for="proposal-page-size">Per page
             <input id="proposal-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Proposals per page">
@@ -1733,6 +1947,10 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="task.pause">task.pause</option>
             <option value="task.resume">task.resume</option>
             <option value="task.run">task.run</option>
+            <option value="task_change.propose">task_change.propose</option>
+            <option value="task_change.approve">task_change.approve</option>
+            <option value="task_change.reject">task_change.reject</option>
+            <option value="task_change.apply">task_change.apply</option>
             <option value="run.claim">run.claim</option>
             <option value="run.update">run.update</option>
             <option value="maintenance.retention.preview">maintenance.retention.preview</option>
@@ -1742,6 +1960,7 @@ DASHBOARD_HTML = f"""<!doctype html>
           <select id="audit-filter-resource-type" aria-label="Audit resource type">
             <option value="">All resources</option>
             <option value="task">task</option>
+            <option value="task_change_proposal">task_change_proposal</option>
             <option value="run">run</option>
             <option value="approval">approval</option>
             <option value="service">service</option>
@@ -1828,7 +2047,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     const filterFieldsByView = {{
       tasks: ['task-filter-text', 'task-filter-state', 'task-filter-type'],
       runs: ['run-filter-text', 'run-filter-task-id', 'run-filter-status', 'run-filter-notification-sent'],
-      proposals: ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-change-type'],
+      proposals: ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-status', 'proposal-filter-risk'],
       approvals: ['approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level'],
       audit: ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'],
     }};
@@ -1853,7 +2072,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       }},
       task_changes: {{
         view: 'audit',
-        fields: {{'audit-filter-q': 'task.', 'audit-filter-resource-type': 'task'}},
+        fields: {{'audit-filter-action': 'task_change.propose', 'audit-filter-resource-type': 'task_change_proposal'}},
         sort: {{view: 'audit', by: 'created_at', dir: 'desc'}},
       }},
       worker_activity: {{
@@ -1960,7 +2179,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       [
         'task-filter-text', 'task-filter-state', 'task-filter-type',
         'run-filter-text', 'run-filter-task-id', 'run-filter-status', 'run-filter-notification-sent',
-        'proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-change-type',
+        'proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-status', 'proposal-filter-risk',
         'approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level',
         'audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type',
       ].forEach(id => {{
@@ -1987,7 +2206,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       }});
       if (view === 'runs') loadRuns();
       if (view === 'audit') loadAudit();
-      if (view === 'proposals') loadReviewQueue('proposals');
+      if (view === 'proposals') loadTaskChangeProposals();
       if (view === 'approvals') loadReviewQueue('approvals');
     }}
     function wireViewTabs() {{
@@ -2594,17 +2813,78 @@ DASHBOARD_HTML = f"""<!doctype html>
         button.addEventListener('click', () => decideApproval(button));
       }});
     }}
-    function renderProposals(proposals) {{
+    function proposalRiskText(risk) {{
+      const data = risk || {{}};
+      const categories = data.categories || {{}};
+      const categoryText = Object.entries(categories).map(([category, paths]) => {{
+        const pathText = Array.isArray(paths) ? paths.join(', ') : text(paths);
+        return `${{category}}: ${{pathText}}`;
+      }}).join('; ');
+      return categoryText ? `${{data.severity || 'n/a'}}; ${{categoryText}}` : (data.severity || 'n/a');
+    }}
+    function taskChangeProposalCards(proposals, emptyText) {{
+      return proposals.length ? proposals.map(item => {{
+        const risk = item.risk || {{}};
+        const diff = item.diff || {{}};
+        const pending = item.status === 'pending';
+        const approved = item.status === 'approved';
+        return `<div class="approval">
+          <div class="approval-head">
+            <div>
+              <code>${{esc(item.id)}}</code> for <code>${{esc(item.task_id)}}</code>
+              <span class="pill">${{esc(item.status)}}</span>
+              <span class="pill">${{esc(item.approval_level)}}</span>
+              <span class="pill">${{esc(risk.severity || 'n/a')}}</span>
+            </div>
+            <span class="meta">requested by ${{esc(item.requested_by)}} at ${{esc(item.created_at)}}</span>
+          </div>
+          <div>${{esc(item.summary)}}</div>
+          <div class="meta">risk ${{esc(proposalRiskText(risk))}}; base enabled ${{esc(risk.base_enabled)}} -> proposed enabled ${{esc(risk.proposed_enabled)}}</div>
+          <div><strong>Config diff</strong><br>
+            <span class="meta">${{configDiffSummary(diff)}}</span>
+            ${{configDiffList(diff)}}
+          </div>
+          <div class="approval-actions">
+            ${{pending ? '<input type="password" autocomplete="off" placeholder="Proposal nonce" aria-label="Proposal nonce">' : ''}}
+            ${{pending ? `<button type="button" data-proposal-action="approve" data-proposal-id="${{esc(item.id)}}">Approve</button>` : ''}}
+            ${{approved ? `<button type="button" data-proposal-action="apply" data-proposal-id="${{esc(item.id)}}">Apply</button>` : ''}}
+            ${{pending || approved ? `<button type="button" class="danger" data-proposal-action="reject" data-proposal-id="${{esc(item.id)}}">Reject</button>` : ''}}
+            <button type="button" data-proposal-detail-id="${{esc(item.id)}}">Details</button>
+            <span class="meta approval-message"></span>
+          </div>
+          <div class="proposal-detail-panel"></div>
+        </div>`;
+      }}).join('<hr>') : `<div class="empty">${{esc(emptyText)}}</div>`;
+    }}
+    function wireTaskChangeProposalButtons(container) {{
+      container.querySelectorAll('[data-proposal-action]').forEach(button => {{
+        button.addEventListener('click', () => decideTaskChangeProposal(button));
+      }});
+      container.querySelectorAll('[data-proposal-detail-id]').forEach(button => {{
+        button.addEventListener('click', () => loadTaskChangeProposalDetail(button));
+      }});
+    }}
+    function renderTaskChangeProposals(proposals) {{
       const container = document.getElementById('proposals');
-      container.innerHTML = '<div class="meta">Draft, update, and revert approvals with config diffs.</div>'
-        + approvalCards(proposals, 'No pending config proposals match the current filters.');
-      wireApprovalButtons(container);
+      container.innerHTML = '<div class="meta">Task changes are proposed by Yggdrasil or the CLI, but approve/apply/reject actions stay local to this ops surface.</div>'
+        + taskChangeProposalCards(proposals, 'No task change proposals match the current filters.');
+      wireTaskChangeProposalButtons(container);
     }}
     function renderApprovals(approvals) {{
       const container = document.getElementById('approvals');
       container.innerHTML = '<div class="meta">Pending approvals that are not config proposals.</div>'
         + approvalCards(approvals, 'No pending general approvals match the current filters.');
       wireApprovalButtons(container);
+    }}
+    function taskChangeProposalFilterValues() {{
+      return {{
+        q: fieldValue('proposal-filter-q'),
+        task_id: fieldValue('proposal-filter-task-id'),
+        requested_by: fieldValue('proposal-filter-requested-by'),
+        approval_level: fieldValue('proposal-filter-level'),
+        status: fieldValue('proposal-filter-status'),
+        risk: fieldValue('proposal-filter-risk'),
+      }};
     }}
     function reviewFilterValues(kind) {{
       const prefix = kind === 'proposals' ? 'proposal' : 'approval';
@@ -2614,10 +2894,35 @@ DASHBOARD_HTML = f"""<!doctype html>
         requested_by: fieldValue(`${{prefix}}-filter-requested-by`),
         approval_level: fieldValue(`${{prefix}}-filter-level`),
       }};
-      if (kind === 'proposals') {{
-        filters.change_type = fieldValue('proposal-filter-change-type');
-      }}
       return filters;
+    }}
+    async function loadTaskChangeProposals() {{
+      const summary = byId('proposal-filter-summary');
+      summary.textContent = 'Loading task change proposals...';
+      try {{
+        const params = new URLSearchParams({{
+          page: String(pageState.proposals.page),
+          page_size: String(pageSize('proposals')),
+        }});
+        Object.entries(taskChangeProposalFilterValues()).forEach(([key, value]) => {{
+          if (value) params.set(key, value);
+        }});
+        const response = await fetch(`/ops/task-change-proposals?${{params.toString()}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const data = await response.json();
+        if (data.pagination.total > 0 && pageState.proposals.page > data.pagination.total_pages) {{
+          pageState.proposals.page = data.pagination.total_pages;
+          return loadTaskChangeProposals();
+        }}
+        summary.textContent = `Showing ${{data.counts.returned}} of ${{data.counts.matched}} matching task change proposals.`;
+        renderTaskChangeProposals(data.proposals || []);
+        renderPager('proposal-pagination', 'proposals', data.pagination.total, data.pagination.returned, loadTaskChangeProposals);
+      }} catch (error) {{
+        summary.textContent = `Unable to load task change proposals: ${{error.message}}`;
+      }}
     }}
     async function loadReviewQueue(kind) {{
       const prefix = kind === 'proposals' ? 'proposal' : 'approval';
@@ -2643,7 +2948,7 @@ DASHBOARD_HTML = f"""<!doctype html>
           return loadReviewQueue(kind);
         }}
         summary.textContent = `Showing ${{data.counts.returned}} of ${{data.counts.matched}} matching reviews.`;
-        if (kind === 'proposals') renderProposals(data.reviews || []);
+        if (kind === 'proposals') renderTaskChangeProposals(data.reviews || []);
         else renderApprovals(data.reviews || []);
         renderPager(`${{prefix}}-pagination`, kind, data.pagination.total, data.pagination.returned, () => loadReviewQueue(kind));
       }} catch (error) {{
@@ -2684,6 +2989,74 @@ DASHBOARD_HTML = f"""<!doctype html>
         button.disabled = false;
       }}
     }}
+    async function loadTaskChangeProposalDetail(button) {{
+      const proposalId = button.dataset.proposalDetailId;
+      const panel = button.closest('.approval').querySelector('.proposal-detail-panel');
+      panel.innerHTML = '<div class="empty">Loading proposal detail...</div>';
+      try {{
+        const response = await fetch(`/ops/task-change-proposals/${{encodeURIComponent(proposalId)}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const detail = await response.json();
+        panel.innerHTML = `<details open>
+          <summary>Proposal detail</summary>
+          <div class="detail-grid section">
+            <div class="detail-block">
+              <h3>Base Config</h3>
+              ${{jsonBlock(detail.base_config)}}
+            </div>
+            <div class="detail-block">
+              <h3>Proposed Config</h3>
+              ${{jsonBlock(detail.proposed_config)}}
+            </div>
+          </div>
+        </details>`;
+      }} catch (error) {{
+        panel.innerHTML = `<div class="bad">Unable to load proposal detail: ${{esc(error.message)}}</div>`;
+      }}
+    }}
+    async function decideTaskChangeProposal(button) {{
+      const proposalId = button.dataset.proposalId;
+      const action = button.dataset.proposalAction;
+      const panel = button.closest('.approval');
+      const message = panel.querySelector('.approval-message');
+      const input = panel.querySelector('input');
+      const body = action === 'approve'
+        ? {{nonce: input?.value || ''}}
+        : action === 'reject'
+          ? {{reason: 'Rejected from ops dashboard'}}
+          : null;
+      if (action === 'approve' && !input?.value) {{
+        message.textContent = 'Proposal nonce is required.';
+        message.className = 'meta approval-message bad';
+        return;
+      }}
+      button.disabled = true;
+      message.textContent = `${{action}} pending...`;
+      message.className = 'meta approval-message';
+      try {{
+        const response = await fetch(`/ops/task-change-proposals/${{encodeURIComponent(proposalId)}}/${{action}}`, {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: body
+            ? {{'Content-Type': 'application/json', 'X-Yggy-Ops-Action': 'task-change-proposal'}}
+            : {{'X-Yggy-Ops-Action': 'task-change-proposal'}},
+          body: body ? JSON.stringify(body) : undefined,
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        await refresh();
+      }} catch (error) {{
+        message.textContent = error.message;
+        message.className = 'meta approval-message bad';
+      }} finally {{
+        button.disabled = false;
+      }}
+    }}
     async function loadStatus() {{
       const response = await fetch('/ops/status', {{credentials: 'same-origin'}});
       if (!response.ok) throw new Error(`status ${{response.status}}`);
@@ -2692,13 +3065,13 @@ DASHBOARD_HTML = f"""<!doctype html>
       document.getElementById('generated').textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}`;
       setTabCount('tasks', data.counts.tasks);
       setTabCount('runs', data.recent_runs.length);
-      setTabCount('proposals', data.counts.pending_proposals || 0);
+      setTabCount('proposals', data.counts.open_task_change_proposals || 0);
       setTabCount('approvals', data.counts.pending_general_approvals || 0);
       document.getElementById('metrics').innerHTML = [
         metric('Service', statusLabel(data.service.status), `worker age ${{text(data.service.worker.age_seconds)}}s`),
         metric('Tasks', data.counts.tasks, `${{data.counts.enabled_tasks}} enabled`),
         metric('Active Runs', data.counts.active_runs, 'queued or running'),
-        metric('Pending Reviews', data.counts.pending_approvals, `${{data.counts.pending_proposals || 0}} proposals; ${{data.counts.pending_general_approvals || 0}} general`),
+        metric('Pending Reviews', data.counts.pending_reviews || data.counts.pending_approvals, `${{data.counts.pending_task_change_proposals || 0}} task changes; ${{data.counts.pending_general_approvals || 0}} general`),
       ].join('');
       document.getElementById('service').innerHTML = `
         <h2>Service Health</h2>
@@ -2819,27 +3192,27 @@ DASHBOARD_HTML = f"""<!doctype html>
         markCustomView();
         if (id) persistField(id);
         resetPage('proposals');
-        loadReviewQueue('proposals');
+        loadTaskChangeProposals();
       }};
       ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by'].forEach(id => {{
         byId(id).addEventListener('input', debounce(() => reloadProposals(id), 350));
       }});
-      ['proposal-filter-level', 'proposal-filter-change-type'].forEach(id => {{
+      ['proposal-filter-level', 'proposal-filter-status', 'proposal-filter-risk'].forEach(id => {{
         byId(id).addEventListener('change', () => reloadProposals(id));
       }});
       byId('proposal-page-size').addEventListener('change', () => {{
         resetPage('proposals');
         pageSize('proposals');
-        loadReviewQueue('proposals');
+        loadTaskChangeProposals();
       }});
       byId('proposal-filter-clear').addEventListener('click', () => {{
         markCustomView();
-        ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-change-type'].forEach(id => {{
+        ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-status', 'proposal-filter-risk'].forEach(id => {{
           byId(id).value = '';
           persistField(id);
         }});
         resetPage('proposals');
-        loadReviewQueue('proposals');
+        loadTaskChangeProposals();
       }});
       const reloadApprovals = id => {{
         markCustomView();
@@ -2903,7 +3276,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         await loadStatus();
         if (activeView === 'runs') await loadRuns();
         if (activeView === 'audit') await loadAudit();
-        if (activeView === 'proposals') await loadReviewQueue('proposals');
+        if (activeView === 'proposals') await loadTaskChangeProposals();
         if (activeView === 'approvals') await loadReviewQueue('approvals');
       }}
       catch (error) {{ document.getElementById('generated').textContent = `Unable to load status: ${{error.message}}`; }}
@@ -2911,7 +3284,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     document.getElementById('refresh').addEventListener('click', refresh);
     document.getElementById('run-refresh').addEventListener('click', loadRuns);
     document.getElementById('audit-refresh').addEventListener('click', loadAudit);
-    document.getElementById('proposal-refresh').addEventListener('click', () => loadReviewQueue('proposals'));
+    document.getElementById('proposal-refresh').addEventListener('click', loadTaskChangeProposals);
     document.getElementById('approval-refresh').addEventListener('click', () => loadReviewQueue('approvals'));
     document.getElementById('saved-view-select').addEventListener('change', event => applySavedView(event.target.value));
     wireViewTabs();

@@ -19,6 +19,7 @@ CLI.
 
 ```bash
 python scripts/notify_pending_approvals.py --dry-run --all
+python scripts/notify_pending_task_changes.py --dry-run --all
 ```
 
 This calls the automation API and records a dry-run Discord send. No Discord
@@ -28,18 +29,23 @@ network request is made.
 
 ```bash
 python scripts/notify_pending_approvals.py --approval-id <approval-id>
+python scripts/notify_pending_task_changes.py --proposal-id <proposal-id>
 ```
 
 This sends one live Discord message to the whitelisted `approvals` target.
+Task-change proposal notifications include the proposal id, task id, status,
+risk severity, and redacted diff summary, but never the proposal nonce.
 
 ## Notify All Pending Approvals
 
 ```bash
 python scripts/notify_pending_approvals.py --all
+python scripts/notify_pending_task_changes.py --all
 ```
 
-Live sends require either `--approval-id` or `--all` so an operator has to make
-an explicit selection.
+Live approval sends require either `--approval-id` or `--all`; live task-change
+sends require either `--proposal-id` or `--all` so an operator has to make an
+explicit selection.
 
 ## Output Target
 
@@ -61,7 +67,7 @@ or direct Discord webhooks outside the automation API.
    ```
 
 2. Review the task, actions, failure mode, and config diff.
-3. Enter the approval nonce only in the local UI or local CLI.
+3. Enter the approval or proposal nonce only in the local UI or local CLI.
 4. Reject approvals that are unexpected, stale, unclear, or riskier than their
    approval level suggests.
 
