@@ -75,6 +75,9 @@ The default HTTPS dashboard URL is `https://yggy.b1.germering:8443/ops`.
 
 Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_INTEGRATION.md](docs/OPENWEBUI_HERMES_INTEGRATION.md).
 
+For registry drift checks between Git YAML and live API state, see
+[docs/CONFIG_REGISTRY.md](docs/CONFIG_REGISTRY.md).
+
 ## Defaults
 
 - API framework: FastAPI

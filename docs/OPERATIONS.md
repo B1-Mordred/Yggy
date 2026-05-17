@@ -8,6 +8,16 @@
 4. Approve through the local CLI or local approval UI.
 5. The worker executes only approved enabled tasks.
 
+Use the configuration registry scripts to compare Git YAML with live MySQL-backed
+API state before and after operational changes:
+
+```bash
+python scripts/export_live_configs.py --clean
+python scripts/diff_registry.py --no-fail-on-drift
+```
+
+See `docs/CONFIG_REGISTRY.md` for the full workflow.
+
 The daily local AI/security briefing is an approved L1 notification task. It is
 scheduled for weekdays at 08:00 Europe/Berlin and sends to the whitelisted
 `briefings` Discord target. Its source list is restricted to enabled entries in

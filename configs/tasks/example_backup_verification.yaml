@@ -1,7 +1,7 @@
 id: yggy_backup_verification
 name: Yggy Backup Verification
 type: backup_verification
-enabled: false
+enabled: true
 owner: local_user
 created_by: yggdrasil
 
@@ -42,7 +42,7 @@ policy:
   allow_filesystem_write: false
 
 runtime:
-  dry_run: true
+  dry_run: false
   timeout_seconds: 60
   retry_count: 1
 
