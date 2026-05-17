@@ -23,6 +23,38 @@ short history, and attachment metadata. Bragi returns the text reply to post.
 Do not give Bragi the Discord bot token, webhook URLs, admin API key, approval
 nonces, shell tools, Docker tools, or filesystem write tools.
 
+If the existing Discord gateway can only speak to an OpenAI-compatible model,
+configure the Discord Hermes profile as a thin Bragi client instead of a
+general-purpose agent:
+
+```yaml
+name: Bragi
+display_name: Bragi
+profile_name: Bragi
+alias: Bragi
+
+model:
+  default: bragi
+  provider: custom:bragi
+  base_url: http://127.0.0.1:8650/v1
+  api_mode: chat_completions
+
+providers:
+  bragi:
+    name: bragi
+    base_url: http://127.0.0.1:8650/v1
+    key_env: BRAGI_API_KEY
+    api_mode: chat_completions
+    model: bragi
+
+toolsets: []
+fallback_providers: []
+```
+
+The Discord profile `.env` may contain `DISCORD_BOT_TOKEN`,
+`DISCORD_ALLOWED_USERS`, and `BRAGI_API_KEY`. It must not contain the Yggy admin
+key, worker key, approval nonces, task secrets, or webhook URLs for Bragi.
+
 ## Bragi Provider
 
 When the Bragi service is running, add it to Open WebUI as a separate
