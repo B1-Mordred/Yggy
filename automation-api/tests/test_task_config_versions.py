@@ -124,15 +124,17 @@ def test_ops_reviews_filters_proposals_and_general_approvals(client):
         )
         session.commit()
 
-    proposals = client.get("/ops/reviews?kind=proposals", headers=ADMIN_HEADERS)
-    approvals = client.get("/ops/reviews?kind=approvals", headers=ADMIN_HEADERS)
+    proposals = client.get("/ops/reviews?kind=proposals&page=1&page_size=5", headers=ADMIN_HEADERS)
+    approvals = client.get("/ops/reviews?kind=approvals&page=1&page_size=5", headers=ADMIN_HEADERS)
     draft_proposals = client.get("/ops/reviews?kind=proposals&change_type=draft", headers=ADMIN_HEADERS)
     searched_approvals = client.get("/ops/reviews?kind=approvals&q=manual", headers=ADMIN_HEADERS)
     task_filtered = client.get("/ops/reviews?kind=all&task_id=review_filter_general", headers=ADMIN_HEADERS)
+    too_small = client.get("/ops/reviews?kind=all&page_size=4", headers=ADMIN_HEADERS)
 
     assert proposals.status_code == 200
     assert [item["id"] for item in proposals.json()["reviews"]] == [proposal_approval_id]
     assert proposals.json()["counts"]["matched"] == 1
+    assert proposals.json()["pagination"]["min_page_size"] == 5
     assert approvals.status_code == 200
     assert [item["id"] for item in approvals.json()["reviews"]] == ["approval-review-general"]
     assert draft_proposals.status_code == 200
@@ -141,3 +143,4 @@ def test_ops_reviews_filters_proposals_and_general_approvals(client):
     assert [item["id"] for item in searched_approvals.json()["reviews"]] == ["approval-review-general"]
     assert task_filtered.status_code == 200
     assert [item["id"] for item in task_filtered.json()["reviews"]] == ["approval-review-general"]
+    assert too_small.status_code == 422

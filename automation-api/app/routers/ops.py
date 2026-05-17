@@ -61,6 +61,9 @@ RUN_DETAIL_SECRET_KEY_MARKERS = (
 )
 RUN_DETAIL_NON_SECRET_KEYS = {"webhook_id"}
 PROPOSAL_CHANGE_TYPES = {"draft", "update", "revert_draft", "approval_request"}
+MIN_OPS_PAGE_SIZE = 5
+DEFAULT_OPS_PAGE_SIZE = 10
+MAX_OPS_PAGE_SIZE = 100
 
 
 class OpsApprovalDecision(BaseModel):
@@ -237,6 +240,56 @@ def ops_run_detail(
     return _run_detail(run, task)
 
 
+@router.get("/ops/runs", include_in_schema=False)
+def ops_runs(
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=DEFAULT_OPS_PAGE_SIZE, ge=MIN_OPS_PAGE_SIZE, le=MAX_OPS_PAGE_SIZE),
+    q: str | None = Query(default=None, min_length=1, max_length=128),
+    task_id: str | None = Query(default=None, min_length=1, max_length=128),
+    status_filter: str | None = Query(default=None, alias="status", min_length=1, max_length=64),
+) -> dict:
+    query = session.query(RunModel)
+    if task_id:
+        query = query.filter(RunModel.task_id.ilike(f"%{task_id}%"))
+    if status_filter:
+        if status_filter in {"queued", "running", "completed"}:
+            query = query.filter(RunModel.status.ilike(f"{status_filter}%"))
+        elif status_filter == "dry_run":
+            query = query.filter(RunModel.status.ilike("%dry_run%"))
+        else:
+            query = query.filter(RunModel.status == status_filter)
+    if q:
+        query = query.filter(
+            or_(
+                RunModel.id.ilike(f"%{q}%"),
+                RunModel.task_id.ilike(f"%{q}%"),
+                RunModel.status.ilike(f"%{q}%"),
+            )
+        )
+
+    total = query.count()
+    runs = (
+        query.order_by(RunModel.created_at.desc())
+        .offset(_pagination_offset(page, page_size))
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "generated_at": utcnow(),
+        "page": page,
+        "page_size": page_size,
+        "filters": {
+            "q": q,
+            "task_id": task_id,
+            "status": status_filter,
+        },
+        "pagination": _pagination(page, page_size, total, len(runs)),
+        "runs": [_run_summary(run) for run in runs],
+    }
+
+
 @router.get("/ops/tasks/{task_id}", include_in_schema=False)
 def ops_task_detail(
     task_id: str,
@@ -273,7 +326,8 @@ def ops_task_detail(
 def ops_audit_events(
     _: None = Depends(require_ops_access),
     session: Session = Depends(get_session),
-    limit: int = Query(default=50, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=DEFAULT_OPS_PAGE_SIZE, ge=MIN_OPS_PAGE_SIZE, le=MAX_OPS_PAGE_SIZE),
     actor_role: str | None = Query(default=None, min_length=1, max_length=64),
     action: str | None = Query(default=None, min_length=1, max_length=128),
     resource_type: str | None = Query(default=None, min_length=1, max_length=64),
@@ -298,10 +352,18 @@ def ops_audit_events(
                 AuditEventModel.resource_id.ilike(f"%{q}%"),
             )
         )
-    events = query.order_by(AuditEventModel.created_at.desc()).limit(limit).all()
+    total = query.count()
+    events = (
+        query.order_by(AuditEventModel.created_at.desc())
+        .offset(_pagination_offset(page, page_size))
+        .limit(page_size)
+        .all()
+    )
     return {
         "generated_at": utcnow(),
-        "limit": limit,
+        "page": page,
+        "page_size": page_size,
+        "limit": page_size,
         "filters": {
             "actor_role": actor_role,
             "action": action,
@@ -309,6 +371,7 @@ def ops_audit_events(
             "resource_id": resource_id,
             "q": q,
         },
+        "pagination": _pagination(page, page_size, total, len(events)),
         "events": [_audit_event_detail(event) for event in events],
     }
 
@@ -318,7 +381,8 @@ def ops_reviews(
     _: None = Depends(require_ops_access),
     session: Session = Depends(get_session),
     kind: Literal["all", "proposals", "approvals"] = Query(default="all"),
-    limit: int = Query(default=50, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=DEFAULT_OPS_PAGE_SIZE, ge=MIN_OPS_PAGE_SIZE, le=MAX_OPS_PAGE_SIZE),
     q: str | None = Query(default=None, min_length=1, max_length=128),
     task_id: str | None = Query(default=None, min_length=1, max_length=128),
     approval_level: str | None = Query(default=None, min_length=1, max_length=64),
@@ -356,11 +420,14 @@ def ops_reviews(
             continue
         matched.append(approval)
 
-    selected = matched[:limit]
+    offset = _pagination_offset(page, page_size)
+    selected = matched[offset : offset + page_size]
     return {
         "generated_at": utcnow(),
         "kind": kind,
-        "limit": limit,
+        "page": page,
+        "page_size": page_size,
+        "limit": page_size,
         "filters": {
             "q": q,
             "task_id": task_id,
@@ -369,6 +436,7 @@ def ops_reviews(
             "change_type": change_type,
         },
         "counts": {"matched": len(matched), "returned": len(selected)},
+        "pagination": _pagination(page, page_size, len(matched), len(selected)),
         "reviews": [_approval_summary(approval, session.get(TaskModel, approval.task_id), session=session) for approval in selected],
     }
 
@@ -631,6 +699,25 @@ def ops_reject_approval(
     )
     session.commit()
     return _approval_summary(approval, task, session=session)
+
+
+def _pagination_offset(page: int, page_size: int) -> int:
+    return (page - 1) * page_size
+
+
+def _pagination(page: int, page_size: int, total: int, returned: int) -> dict:
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "returned": returned,
+        "total_pages": total_pages,
+        "has_previous": page > 1,
+        "has_next": page < total_pages,
+        "min_page_size": MIN_OPS_PAGE_SIZE,
+        "max_page_size": MAX_OPS_PAGE_SIZE,
+    }
 
 
 def _task_summary(task: TaskModel, latest_run: RunModel | None) -> dict:
@@ -1218,6 +1305,31 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     .filter-bar input {{ width: min(320px, 100%); }}
     .filter-bar button {{ padding: 8px 10px; }}
+    .page-size {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .page-size input {{
+      width: 78px;
+      min-width: 78px;
+    }}
+    .pager {{
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }}
+    .pager-actions {{
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }}
+    .pager-actions button {{ padding: 6px 9px; }}
     .panel, .metric, table {{
       background: var(--panel);
       border: 1px solid var(--line);
@@ -1320,9 +1432,13 @@ DASHBOARD_HTML = f"""<!doctype html>
           <select id="task-filter-type" aria-label="Task type">
             <option value="">All types</option>
           </select>
+          <label class="page-size" for="task-page-size">Per page
+            <input id="task-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Tasks per page">
+          </label>
           <button id="task-filter-clear" type="button">Clear</button>
         </div>
         <div class="table-wrap"><table id="tasks"></table></div>
+        <div class="pager" id="task-pagination"></div>
         <div class="meta" id="task-action-status"></div>
       </section>
       <section class="section panel" id="task-detail">
@@ -1337,9 +1453,11 @@ DASHBOARD_HTML = f"""<!doctype html>
             <h2>Recent Runs</h2>
             <div class="meta" id="run-filter-summary">No filters applied.</div>
           </div>
+          <button id="run-refresh" type="button">Refresh Runs</button>
         </div>
         <div class="filter-bar" aria-label="Run filters">
           <input id="run-filter-text" type="search" placeholder="Filter runs" aria-label="Filter runs">
+          <input id="run-filter-task-id" type="search" placeholder="Task id" aria-label="Run task id">
           <select id="run-filter-status" aria-label="Run status">
             <option value="">All statuses</option>
             <option value="queued">Queued</option>
@@ -1348,9 +1466,13 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="failed">Failed</option>
             <option value="dry_run">Dry-run</option>
           </select>
+          <label class="page-size" for="run-page-size">Per page
+            <input id="run-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Runs per page">
+          </label>
           <button id="run-filter-clear" type="button">Clear</button>
         </div>
         <div class="table-wrap"><table id="runs"></table></div>
+        <div class="pager" id="run-pagination"></div>
       </section>
       <section class="section panel" id="run-detail">
         <h2>Run Detail</h2>
@@ -1378,9 +1500,13 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="L3_EXTERNAL_SIDE_EFFECT">L3_EXTERNAL_SIDE_EFFECT</option>
             <option value="L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE">L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE</option>
           </select>
+          <label class="page-size" for="approval-page-size">Per page
+            <input id="approval-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Approvals per page">
+          </label>
           <button id="approval-filter-clear" type="button">Clear</button>
         </div>
         <div id="approvals"></div>
+        <div class="pager" id="approval-pagination"></div>
       </section>
     </section>
     <section class="view" data-view="proposals">
@@ -1411,9 +1537,13 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="approval_request">approval_request</option>
             <option value="revert_draft">revert_draft</option>
           </select>
+          <label class="page-size" for="proposal-page-size">Per page
+            <input id="proposal-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Proposals per page">
+          </label>
           <button id="proposal-filter-clear" type="button">Clear</button>
         </div>
         <div id="proposals"></div>
+        <div class="pager" id="proposal-pagination"></div>
       </section>
     </section>
     <section class="view" data-view="audit">
@@ -1461,9 +1591,13 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="topic">topic</option>
             <option value="maintenance">maintenance</option>
           </select>
+          <label class="page-size" for="audit-page-size">Per page
+            <input id="audit-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Audit events per page">
+          </label>
           <button id="audit-filter-clear" type="button">Clear</button>
         </div>
         <div class="table-wrap"><table id="audit"></table></div>
+        <div class="pager" id="audit-pagination"></div>
       </section>
     </section>
     <section class="view" data-view="retention">
@@ -1492,6 +1626,88 @@ DASHBOARD_HTML = f"""<!doctype html>
       table.innerHTML = `<thead><tr>${{headers.map(h => `<th>${{h}}</th>`).join('')}}</tr></thead>`
         + `<tbody>${{rows.length ? rows.map(row => `<tr>${{row.map(cell => `<td>${{cell}}</td>`).join('')}}</tr>`).join('') : `<tr><td colspan="${{headers.length}}" class="empty">${{esc(emptyText)}}</td></tr>`}}</tbody>`;
     }}
+    const MIN_PAGE_SIZE = 5;
+    const DEFAULT_PAGE_SIZE = 10;
+    const MAX_PAGE_SIZE = 100;
+    const storageKey = key => `yggy.ops.${{key}}`;
+    function storedValue(key) {{
+      try {{ return window.localStorage.getItem(storageKey(key)); }}
+      catch (error) {{ return null; }}
+    }}
+    function storeValue(key, value) {{
+      try {{ window.localStorage.setItem(storageKey(key), value); }}
+      catch (error) {{}}
+    }}
+    function boundedNumber(value, fallback, min = MIN_PAGE_SIZE, max = MAX_PAGE_SIZE) {{
+      const number = Number.parseInt(value, 10);
+      if (Number.isNaN(number)) return fallback;
+      return Math.min(max, Math.max(min, number));
+    }}
+    const pageState = {{
+      tasks: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.tasks'), DEFAULT_PAGE_SIZE)}},
+      runs: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.runs'), DEFAULT_PAGE_SIZE)}},
+      proposals: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.proposals'), DEFAULT_PAGE_SIZE)}},
+      approvals: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.approvals'), DEFAULT_PAGE_SIZE)}},
+      audit: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.audit'), DEFAULT_PAGE_SIZE)}},
+    }};
+    function pageSize(view) {{
+      const input = byId(`${{view.slice(0, -1)}}-page-size`) || byId(`${{view}}-page-size`);
+      const size = boundedNumber(input?.value, pageState[view].pageSize);
+      pageState[view].pageSize = size;
+      if (input) input.value = size;
+      storeValue(`pageSize.${{view}}`, String(size));
+      return size;
+    }}
+    function setPage(view, page) {{
+      pageState[view].page = Math.max(1, page);
+    }}
+    function resetPage(view) {{
+      setPage(view, 1);
+    }}
+    function renderPager(id, view, total, returned, onPageChange) {{
+      const pager = byId(id);
+      if (!pager) return;
+      const state = pageState[view];
+      const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+      if (state.page > totalPages) state.page = totalPages;
+      const from = total === 0 ? 0 : ((state.page - 1) * state.pageSize) + 1;
+      const to = total === 0 ? 0 : Math.min(total, from + returned - 1);
+      pager.innerHTML = `
+        <div class="meta">Page ${{state.page}} of ${{totalPages}}; items ${{from}}-${{to}} of ${{total}}</div>
+        <div class="pager-actions">
+          <button type="button" data-page-action="previous"${{state.page <= 1 ? ' disabled' : ''}}>Previous</button>
+          <button type="button" data-page-action="next"${{state.page >= totalPages ? ' disabled' : ''}}>Next</button>
+        </div>`;
+      pager.querySelector('[data-page-action="previous"]').addEventListener('click', () => {{
+        if (state.page <= 1) return;
+        state.page -= 1;
+        onPageChange();
+      }});
+      pager.querySelector('[data-page-action="next"]').addEventListener('click', () => {{
+        if (state.page >= totalPages) return;
+        state.page += 1;
+        onPageChange();
+      }});
+    }}
+    function restorePersistentFields() {{
+      [
+        'task-filter-text', 'task-filter-state', 'task-filter-type',
+        'run-filter-text', 'run-filter-task-id', 'run-filter-status',
+        'proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-change-type',
+        'approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level',
+        'audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type',
+      ].forEach(id => {{
+        const value = storedValue(`field.${{id}}`);
+        if (value !== null && byId(id)) byId(id).value = value;
+      }});
+      Object.entries(pageState).forEach(([view, state]) => {{
+        const input = byId(`${{view.slice(0, -1)}}-page-size`) || byId(`${{view}}-page-size`);
+        if (input) input.value = state.pageSize;
+      }});
+    }}
+    function persistField(id) {{
+      if (byId(id)) storeValue(`field.${{id}}`, byId(id).value);
+    }}
     let lastStatusData = null;
     let activeView = 'overview';
     function showView(view) {{
@@ -1502,6 +1718,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       document.querySelectorAll('[data-view-target]').forEach(button => {{
         button.classList.toggle('active', button.dataset.viewTarget === view);
       }});
+      if (view === 'runs') loadRuns();
       if (view === 'audit') loadAudit();
       if (view === 'proposals') loadReviewQueue('proposals');
       if (view === 'approvals') loadReviewQueue('approvals');
@@ -1524,7 +1741,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     function syncTaskTypeOptions(tasks) {{
       const select = byId('task-filter-type');
-      const selected = select.value;
+      const selected = select.value || storedValue('field.task-filter-type') || '';
       const types = [...new Set(tasks.map(task => task.type).filter(Boolean))].sort();
       select.innerHTML = '<option value="">All types</option>' + types.map(type => `<option value="${{esc(type)}}">${{esc(type)}}</option>`).join('');
       select.value = types.includes(selected) ? selected : '';
@@ -1686,8 +1903,14 @@ DASHBOARD_HTML = f"""<!doctype html>
       if (!lastStatusData) return;
       const tasks = lastStatusData.tasks || [];
       const filtered = tasks.filter(taskMatchesFilters);
-      byId('task-filter-summary').textContent = `Showing ${{filtered.length}} of ${{tasks.length}} tasks.`;
-      renderTable('tasks', ['Task', 'Type', 'State', 'Trigger', 'Output', 'Latest Run', 'Actions'], filtered.map(task => [
+      const state = pageState.tasks;
+      const size = pageSize('tasks');
+      const totalPages = Math.max(1, Math.ceil(filtered.length / size));
+      if (state.page > totalPages) state.page = totalPages;
+      const start = (state.page - 1) * size;
+      const pageRows = filtered.slice(start, start + size);
+      byId('task-filter-summary').textContent = `Showing ${{pageRows.length}} of ${{filtered.length}} matching tasks; ${{tasks.length}} total.`;
+      renderTable('tasks', ['Task', 'Type', 'State', 'Trigger', 'Output', 'Latest Run', 'Actions'], pageRows.map(task => [
         `${{taskButton(task)}}<br><span class="meta">${{esc(task.name)}}</span>`,
         `<span class="pill">${{esc(task.type)}}</span><br><span class="meta">${{esc(task.approval_level)}}</span>`,
         `${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}}<br><span class="meta">status ${{esc(task.status)}}; dry run ${{task.dry_run}}</span>`,
@@ -1696,6 +1919,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         task.latest_run ? `${{runButton(task.latest_run)}} ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
         `${{taskRunButtons(task)}}${{taskStateButtons(task)}}`,
       ]), 'No tasks match the current filters.');
+      renderPager('task-pagination', 'tasks', filtered.length, pageRows.length, renderTasks);
       wireTaskDetailLinks();
       wireRunLinks();
       wireTaskRunButtons();
@@ -1821,24 +2045,43 @@ DASHBOARD_HTML = f"""<!doctype html>
         panel.innerHTML = `<h2>Task Detail</h2><div class="bad">Unable to load task detail: ${{esc(error.message)}}</div>`;
       }}
     }}
-    function runMatchesFilters(run) {{
-      const query = fieldValue('run-filter-text');
-      const status = fieldValue('run-filter-status');
-      const statusMatch = !status
-        || run.status === status
-        || (status === 'queued' && String(run.status || '').startsWith('queued'))
-        || (status === 'running' && String(run.status || '').startsWith('running'))
-        || (status === 'completed' && String(run.status || '').startsWith('completed'))
-        || (status === 'dry_run' && String(run.status || '').includes('dry_run'));
-      return statusMatch
-        && matchesText([run.id, run.task_id, run.status, run.result_status, run.notification?.target, run.notification?.transport], query);
+    function runFilterValues() {{
+      return {{
+        q: fieldValue('run-filter-text'),
+        task_id: fieldValue('run-filter-task-id'),
+        status: fieldValue('run-filter-status'),
+      }};
     }}
-    function renderRuns() {{
-      if (!lastStatusData) return;
-      const runs = lastStatusData.recent_runs || [];
-      const filtered = runs.filter(runMatchesFilters);
-      byId('run-filter-summary').textContent = `Showing ${{filtered.length}} of ${{runs.length}} recent runs.`;
-      renderTable('runs', ['Run', 'Task', 'Status', 'Result', 'Notification', 'Completed'], filtered.map(run => [
+    async function loadRuns() {{
+      const summary = byId('run-filter-summary');
+      summary.textContent = 'Loading runs...';
+      try {{
+        const params = new URLSearchParams({{
+          page: String(pageState.runs.page),
+          page_size: String(pageSize('runs')),
+        }});
+        Object.entries(runFilterValues()).forEach(([key, value]) => {{
+          if (value) params.set(key, value);
+        }});
+        const response = await fetch(`/ops/runs?${{params.toString()}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const data = await response.json();
+        if (data.pagination.total > 0 && pageState.runs.page > data.pagination.total_pages) {{
+          pageState.runs.page = data.pagination.total_pages;
+          return loadRuns();
+        }}
+        renderRuns(data.runs || [], data.pagination);
+      }} catch (error) {{
+        summary.textContent = `Unable to load runs: ${{error.message}}`;
+      }}
+    }}
+    function renderRuns(runs, pagination) {{
+      const total = pagination?.total ?? runs.length;
+      byId('run-filter-summary').textContent = `Showing ${{runs.length}} of ${{total}} matching runs.`;
+      renderTable('runs', ['Run', 'Task', 'Status', 'Result', 'Notification', 'Completed'], runs.map(run => [
         runButton(run),
         `<code>${{esc(run.task_id)}}</code>`,
         statusLabel(run.status),
@@ -1846,6 +2089,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         `${{run.notification.sent === true ? 'sent' : run.notification.sent === false ? 'not sent' : 'n/a'}}<br><span class="meta">${{esc(run.notification.target || run.notification.transport)}}</span>`,
         esc(run.completed_at),
       ]), 'No runs match the current filters.');
+      renderPager('run-pagination', 'runs', total, runs.length, loadRuns);
       wireRunLinks();
     }}
     function digestItems(items) {{
@@ -1986,7 +2230,11 @@ DASHBOARD_HTML = f"""<!doctype html>
       const summary = byId(`${{prefix}}-filter-summary`);
       summary.textContent = 'Loading reviews...';
       try {{
-        const params = new URLSearchParams({{kind, limit: '100'}});
+        const params = new URLSearchParams({{
+          kind,
+          page: String(pageState[kind].page),
+          page_size: String(pageSize(kind)),
+        }});
         Object.entries(reviewFilterValues(kind)).forEach(([key, value]) => {{
           if (value) params.set(key, value);
         }});
@@ -1996,9 +2244,14 @@ DASHBOARD_HTML = f"""<!doctype html>
           throw new Error(error.detail || `status ${{response.status}}`);
         }}
         const data = await response.json();
+        if (data.pagination.total > 0 && pageState[kind].page > data.pagination.total_pages) {{
+          pageState[kind].page = data.pagination.total_pages;
+          return loadReviewQueue(kind);
+        }}
         summary.textContent = `Showing ${{data.counts.returned}} of ${{data.counts.matched}} matching reviews.`;
         if (kind === 'proposals') renderProposals(data.reviews || []);
         else renderApprovals(data.reviews || []);
+        renderPager(`${{prefix}}-pagination`, kind, data.pagination.total, data.pagination.returned, () => loadReviewQueue(kind));
       }} catch (error) {{
         summary.textContent = `Unable to load reviews: ${{error.message}}`;
       }}
@@ -2060,11 +2313,8 @@ DASHBOARD_HTML = f"""<!doctype html>
       `;
       syncTaskTypeOptions(data.tasks || []);
       renderTasks();
-      renderRuns();
       if (selectedTaskId && activeView === 'tasks') loadTaskDetail(selectedTaskId);
       if (selectedRunId && activeView === 'runs') loadRunDetail(selectedRunId);
-      renderProposals(data.pending_proposals || []);
-      renderApprovals(data.pending_general_approvals || []);
       const latestRetention = data.retention.latest;
       document.getElementById('retention').innerHTML = `
         <h2>Retention</h2>
@@ -2076,7 +2326,10 @@ DASHBOARD_HTML = f"""<!doctype html>
       const generated = document.getElementById('audit-generated');
       generated.textContent = 'Loading audit events...';
       try {{
-        const params = new URLSearchParams({{limit: '50'}});
+        const params = new URLSearchParams({{
+          page: String(pageState.audit.page),
+          page_size: String(pageSize('audit')),
+        }});
         const auditFilters = {{
           q: fieldValue('audit-filter-q'),
           resource_id: fieldValue('audit-filter-resource-id'),
@@ -2090,7 +2343,11 @@ DASHBOARD_HTML = f"""<!doctype html>
         const response = await fetch(`/ops/audit?${{params.toString()}}`, {{credentials: 'same-origin'}});
         if (!response.ok) throw new Error(`status ${{response.status}}`);
         const data = await response.json();
-        generated.textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}; showing ${{data.events.length}} events.`;
+        if (data.pagination.total > 0 && pageState.audit.page > data.pagination.total_pages) {{
+          pageState.audit.page = data.pagination.total_pages;
+          return loadAudit();
+        }}
+        generated.textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}; showing ${{data.events.length}} of ${{data.pagination.total}} matching events.`;
         renderTable('audit', ['Time', 'Actor', 'Action', 'Resource', 'Detail'], data.events.map(event => [
           esc(event.created_at),
           `<span class="pill">${{esc(event.actor_role)}}</span>`,
@@ -2098,61 +2355,123 @@ DASHBOARD_HTML = f"""<!doctype html>
           `${{esc(event.resource_type)}}<br><code>${{esc(event.resource_id)}}</code>`,
           jsonBlock(event.detail),
         ]));
+        renderPager('audit-pagination', 'audit', data.pagination.total, data.pagination.returned, loadAudit);
       }} catch (error) {{
         generated.textContent = `Unable to load audit events: ${{error.message}}`;
       }}
     }}
     function wireFilters() {{
+      const persistAndRenderTasks = id => {{
+        persistField(id);
+        resetPage('tasks');
+        renderTasks();
+      }};
       ['task-filter-text', 'task-filter-state', 'task-filter-type'].forEach(id => {{
-        byId(id).addEventListener('input', renderTasks);
-        byId(id).addEventListener('change', renderTasks);
+        byId(id).addEventListener('input', () => persistAndRenderTasks(id));
+        byId(id).addEventListener('change', () => persistAndRenderTasks(id));
       }});
-      byId('task-filter-clear').addEventListener('click', () => {{
-        byId('task-filter-text').value = '';
-        byId('task-filter-state').value = '';
-        byId('task-filter-type').value = '';
+      byId('task-page-size').addEventListener('change', () => {{
+        resetPage('tasks');
+        pageSize('tasks');
         renderTasks();
       }});
-      ['run-filter-text', 'run-filter-status'].forEach(id => {{
-        byId(id).addEventListener('input', renderRuns);
-        byId(id).addEventListener('change', renderRuns);
+      byId('task-filter-clear').addEventListener('click', () => {{
+        ['task-filter-text', 'task-filter-state', 'task-filter-type'].forEach(id => {{
+          byId(id).value = '';
+          persistField(id);
+        }});
+        resetPage('tasks');
+        renderTasks();
+      }});
+      const reloadRuns = id => {{
+        if (id) persistField(id);
+        resetPage('runs');
+        loadRuns();
+      }};
+      ['run-filter-text', 'run-filter-task-id'].forEach(id => {{
+        byId(id).addEventListener('input', debounce(() => reloadRuns(id), 350));
+      }});
+      byId('run-filter-status').addEventListener('change', () => reloadRuns('run-filter-status'));
+      byId('run-page-size').addEventListener('change', () => {{
+        resetPage('runs');
+        pageSize('runs');
+        loadRuns();
       }});
       byId('run-filter-clear').addEventListener('click', () => {{
-        byId('run-filter-text').value = '';
-        byId('run-filter-status').value = '';
-        renderRuns();
+        ['run-filter-text', 'run-filter-task-id', 'run-filter-status'].forEach(id => {{
+          byId(id).value = '';
+          persistField(id);
+        }});
+        resetPage('runs');
+        loadRuns();
       }});
+      const reloadProposals = id => {{
+        if (id) persistField(id);
+        resetPage('proposals');
+        loadReviewQueue('proposals');
+      }};
       ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by'].forEach(id => {{
-        byId(id).addEventListener('input', debounce(() => loadReviewQueue('proposals'), 350));
+        byId(id).addEventListener('input', debounce(() => reloadProposals(id), 350));
       }});
       ['proposal-filter-level', 'proposal-filter-change-type'].forEach(id => {{
-        byId(id).addEventListener('change', () => loadReviewQueue('proposals'));
+        byId(id).addEventListener('change', () => reloadProposals(id));
+      }});
+      byId('proposal-page-size').addEventListener('change', () => {{
+        resetPage('proposals');
+        pageSize('proposals');
+        loadReviewQueue('proposals');
       }});
       byId('proposal-filter-clear').addEventListener('click', () => {{
         ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-change-type'].forEach(id => {{
           byId(id).value = '';
+          persistField(id);
         }});
+        resetPage('proposals');
         loadReviewQueue('proposals');
       }});
+      const reloadApprovals = id => {{
+        if (id) persistField(id);
+        resetPage('approvals');
+        loadReviewQueue('approvals');
+      }};
       ['approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by'].forEach(id => {{
-        byId(id).addEventListener('input', debounce(() => loadReviewQueue('approvals'), 350));
+        byId(id).addEventListener('input', debounce(() => reloadApprovals(id), 350));
       }});
-      byId('approval-filter-level').addEventListener('change', () => loadReviewQueue('approvals'));
+      byId('approval-filter-level').addEventListener('change', () => reloadApprovals('approval-filter-level'));
+      byId('approval-page-size').addEventListener('change', () => {{
+        resetPage('approvals');
+        pageSize('approvals');
+        loadReviewQueue('approvals');
+      }});
       byId('approval-filter-clear').addEventListener('click', () => {{
         ['approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level'].forEach(id => {{
           byId(id).value = '';
+          persistField(id);
         }});
+        resetPage('approvals');
         loadReviewQueue('approvals');
       }});
-      ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'].forEach(id => {{
-        byId(id).addEventListener('change', loadAudit);
+      const reloadAudit = id => {{
+        if (id) persistField(id);
+        resetPage('audit');
+        loadAudit();
+      }};
+      ['audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'].forEach(id => {{
+        byId(id).addEventListener('change', () => reloadAudit(id));
       }});
-      byId('audit-filter-q').addEventListener('input', debounce(loadAudit, 350));
-      byId('audit-filter-resource-id').addEventListener('input', debounce(loadAudit, 350));
+      byId('audit-filter-q').addEventListener('input', debounce(() => reloadAudit('audit-filter-q'), 350));
+      byId('audit-filter-resource-id').addEventListener('input', debounce(() => reloadAudit('audit-filter-resource-id'), 350));
+      byId('audit-page-size').addEventListener('change', () => {{
+        resetPage('audit');
+        pageSize('audit');
+        loadAudit();
+      }});
       byId('audit-filter-clear').addEventListener('click', () => {{
         ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'].forEach(id => {{
           byId(id).value = '';
+          persistField(id);
         }});
+        resetPage('audit');
         loadAudit();
       }});
     }}
@@ -2166,6 +2485,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     async function refresh() {{
       try {{
         await loadStatus();
+        if (activeView === 'runs') await loadRuns();
         if (activeView === 'audit') await loadAudit();
         if (activeView === 'proposals') await loadReviewQueue('proposals');
         if (activeView === 'approvals') await loadReviewQueue('approvals');
@@ -2173,10 +2493,12 @@ DASHBOARD_HTML = f"""<!doctype html>
       catch (error) {{ document.getElementById('generated').textContent = `Unable to load status: ${{error.message}}`; }}
     }}
     document.getElementById('refresh').addEventListener('click', refresh);
+    document.getElementById('run-refresh').addEventListener('click', loadRuns);
     document.getElementById('audit-refresh').addEventListener('click', loadAudit);
     document.getElementById('proposal-refresh').addEventListener('click', () => loadReviewQueue('proposals'));
     document.getElementById('approval-refresh').addEventListener('click', () => loadReviewQueue('approvals'));
     wireViewTabs();
+    restorePersistentFields();
     wireFilters();
     refresh();
     setInterval(refresh, 30000);

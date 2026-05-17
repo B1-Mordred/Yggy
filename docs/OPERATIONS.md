@@ -155,10 +155,13 @@ http://127.0.0.1:8088/ops
 It is split into views for overview, tasks, runs, proposals, approvals, audit,
 and retention so routine checks do not require scanning every table. It shows
 task state, latest runs, pending reviews, worker heartbeat, and retention status.
-The task and run views include browser-side filters for quick narrowing by text,
-state, type, or run status. Proposal, approval, and audit filters are backed by
-hidden server-side endpoints so larger review queues can be narrowed without
-exposing dashboard-only routes in the OpenAPI tool schema.
+The task view includes browser-side filters for quick narrowing by text, state,
+and type. Runs, proposals, approvals, and audit use hidden server-side endpoints
+for filtering and pagination so larger queues can be narrowed without exposing
+dashboard-only routes in the OpenAPI tool schema. Each operational list has a
+configurable `Per page` control. The API enforces a minimum page size of `5` and
+a maximum of `100`; the browser remembers the selected page size and filter
+values locally.
 Pending approvals include actions, worst-case failure mode, and the redacted task
 config. The dashboard can approve or reject pending approvals when the operator
 enters the approval nonce. It does not expose secrets, does not expose nonce
@@ -183,7 +186,7 @@ revert approvals with config diffs. The `Approvals` view is reserved for pending
 approvals that are not config proposals. This keeps routine config review
 separate from broader operational approvals as the queue grows. Both views can
 filter by text, task id, requester, and approval level. Proposals can also filter
-by config change type.
+by config change type. Both views page through hidden `/ops/reviews` results.
 
 Prior config versions can be reverted from the task-detail panel. A revert does
 not immediately enable or run the task. It creates a new disabled
@@ -193,11 +196,12 @@ fresh approval request. The new approval nonce is shown once in the local
 dashboard response for the operator. The task remains disabled until that
 approval is accepted through the local approval flow.
 
-Recent run ids in the dashboard are clickable. The run-detail panel is backed by
-the hidden `/ops/runs/{run_id}` endpoint and shows a bounded, redacted projection
-of the run: topic digest message and items, n8n normalizer response, notification
-decision, and Discord send result. It intentionally does not expose raw logs,
-API keys, approval nonces, webhook secrets, or dashboard credentials.
+Recent run ids in the dashboard are clickable. The run list is backed by hidden
+`/ops/runs` with filters for text, task id, and status. The run-detail panel is
+backed by the hidden `/ops/runs/{run_id}` endpoint and shows a bounded, redacted
+projection of the run: topic digest message and items, n8n normalizer response,
+notification decision, and Discord send result. It intentionally does not expose
+raw logs, API keys, approval nonces, webhook secrets, or dashboard credentials.
 
 Task rows include manual run controls:
 
@@ -227,7 +231,7 @@ updates, heartbeats, and retention cleanup. Audit details are bounded and
 redacted before reaching the browser. Audit filters are server-backed and can
 narrow by actor role, action, resource type, resource id, or text across the
 audit event metadata. Audit filters do not search raw secret-bearing detail
-payloads.
+payloads. Audit pagination is server-side.
 
 Configure it with separate local credentials:
 

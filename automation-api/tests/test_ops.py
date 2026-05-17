@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
@@ -31,8 +32,16 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "data-task-detail-id" in allowed.text
     assert "data-task-version-revert" in allowed.text
     assert "task-filter-text" in allowed.text
+    assert "task-page-size" in allowed.text
     assert "run-filter-status" in allowed.text
+    assert "run-filter-task-id" in allowed.text
+    assert "run-page-size" in allowed.text
+    assert "proposal-page-size" in allowed.text
+    assert "approval-page-size" in allowed.text
     assert "audit-filter-action" in allowed.text
+    assert "audit-page-size" in allowed.text
+    assert "task-pagination" in allowed.text
+    assert "run-pagination" in allowed.text
 
 
 def test_admin_key_can_access_ops_status_without_dashboard_password(client):
@@ -331,7 +340,7 @@ def test_ops_task_detail_reports_l2_actions_blocked(client, monkeypatch):
     assert "resume L2+" in actions["resume"]["reason"]
 
 
-def test_ops_audit_events_are_redacted_and_limited(client, monkeypatch):
+def test_ops_audit_events_are_redacted_and_paginated(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
     with Session(get_engine()) as session:
@@ -362,18 +371,70 @@ def test_ops_audit_events_are_redacted_and_limited(client, monkeypatch):
         )
         session.commit()
 
-    response = client.get("/ops/audit?limit=1", auth=("operator", "test-dashboard-password"))
+    response = client.get("/ops/audit?page=1&page_size=5", auth=("operator", "test-dashboard-password"))
 
     assert response.status_code == 200
     body = response.json()
-    assert body["limit"] == 1
-    assert len(body["events"]) == 1
+    assert body["page_size"] == 5
+    assert body["pagination"]["min_page_size"] == 5
+    assert body["pagination"]["total"] == 2
+    assert len(body["events"]) == 2
     event = body["events"][0]
     assert event["action"] == "task.run"
     assert event["resource_id"] == "daily_local_ai_security_briefing"
     assert event["detail"]["api_token"] == "[REDACTED]"
     assert event["detail"]["nested"]["authorization"] == "[REDACTED]"
     assert "hidden-secret" not in response.text
+
+
+def test_ops_audit_rejects_page_size_below_minimum(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+
+    response = client.get("/ops/audit?page_size=4", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 422
+
+
+def test_ops_runs_are_filtered_and_paginated(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    now = utcnow()
+    with Session(get_engine()) as session:
+        session.add_all(
+            [
+                RunModel(
+                    id=f"run-pagination-{index}",
+                    task_id="daily_local_ai_security_briefing" if index < 6 else "other_task",
+                    status="completed_dry_run" if index < 6 else "failed",
+                    log={"result": {"status": "ready"}, "notification": {"sent": False}},
+                    created_at=now + timedelta(seconds=index),
+                    completed_at=now + timedelta(seconds=index),
+                )
+                for index in range(7)
+            ]
+        )
+        session.commit()
+
+    first_page = client.get(
+        "/ops/runs?task_id=daily_local_ai_security_briefing&status=dry_run&page=1&page_size=5",
+        auth=("operator", "test-dashboard-password"),
+    )
+    second_page = client.get(
+        "/ops/runs?task_id=daily_local_ai_security_briefing&status=dry_run&page=2&page_size=5",
+        auth=("operator", "test-dashboard-password"),
+    )
+    too_small = client.get("/ops/runs?page_size=4", auth=("operator", "test-dashboard-password"))
+
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert first_body["pagination"]["total"] == 6
+    assert first_body["pagination"]["returned"] == 5
+    assert first_body["pagination"]["has_next"] is True
+    assert all(run["task_id"] == "daily_local_ai_security_briefing" for run in first_body["runs"])
+    assert second_page.status_code == 200
+    assert second_page.json()["pagination"]["returned"] == 1
+    assert too_small.status_code == 422
 
 
 def test_ops_audit_events_can_be_filtered(client, monkeypatch):
@@ -1111,6 +1172,7 @@ def test_ops_routes_are_not_in_openapi(client):
     assert "/ops/status" not in paths
     assert "/ops/audit" not in paths
     assert "/ops/reviews" not in paths
+    assert "/ops/runs" not in paths
     assert "/ops/runs/{run_id}" not in paths
     assert "/ops/tasks/{task_id}" not in paths
     assert "/ops/tasks/{task_id}/run" not in paths
