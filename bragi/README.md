@@ -106,6 +106,19 @@ Bragi may ask for user confirmation before forwarding a request. That
 confirmation only confirms understanding. It does not approve or enable the
 automation; the Yggy approval path still applies.
 
+Bragi can also collect details across a natural multi-turn conversation for a
+new topic digest. For example, if the user gradually describes a daily morning
+security briefing, then later provides sources such as Ubuntu security notices,
+Ollama release notes, vulnerability announcements, patch notes, and NVD records,
+Bragi should stop conversationally once enough slots are present and show a
+canonical `topic_digest.v1` intent. Even phrases like `so be it` only close the
+intake enough to display that canonical intent; they do not forward anything to
+Yggdrasil until the user replies `confirm` to the shown intent.
+
+Bragi must not claim that it has contacted Yggdrasil, scheduled a briefing, or
+that the user can expect future delivery unless a canonical Yggdrasil action
+actually returned that result.
+
 For existing briefs, Bragi can propose bounded subject/source changes:
 
 ```text

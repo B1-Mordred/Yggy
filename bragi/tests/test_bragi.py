@@ -294,6 +294,61 @@ def source_catalog_fixture(method, path, payload=None):
                     "ingestion_mode": "http_summary",
                     "description": "Known exploited vulnerabilities catalog.",
                 },
+                {
+                    "id": "ubuntu_security_notices",
+                    "name": "Ubuntu Security Notices",
+                    "type": "http",
+                    "enabled": True,
+                    "categories": ["preapproved", "cybersecurity"],
+                    "trust_level": "ai_safe_b_terms_check",
+                    "ai_safe_fit": "B - terms-check/variable",
+                    "ingestion_mode": "metadata_only",
+                    "description": "Canonical/Ubuntu security notices and CVE package status.",
+                },
+                {
+                    "id": "ollama_releases",
+                    "name": "Ollama releases",
+                    "type": "rss",
+                    "enabled": True,
+                    "categories": ["local_ai", "project_releases"],
+                    "trust_level": "official_project_release_feed",
+                    "ai_safe_fit": "",
+                    "ingestion_mode": "feed_metadata",
+                    "description": "Official Ollama release feed.",
+                },
+                {
+                    "id": "open_webui_releases",
+                    "name": "Open WebUI releases",
+                    "type": "rss",
+                    "enabled": True,
+                    "categories": ["local_ai", "project_releases"],
+                    "trust_level": "official_project_release_feed",
+                    "ai_safe_fit": "",
+                    "ingestion_mode": "feed_metadata",
+                    "description": "Official Open WebUI release feed.",
+                },
+                {
+                    "id": "n8n_releases",
+                    "name": "n8n releases",
+                    "type": "rss",
+                    "enabled": True,
+                    "categories": ["workflow_automation", "project_releases"],
+                    "trust_level": "official_project_release_feed",
+                    "ai_safe_fit": "",
+                    "ingestion_mode": "feed_metadata",
+                    "description": "Official n8n release feed.",
+                },
+                {
+                    "id": "docker_blog",
+                    "name": "Docker blog",
+                    "type": "rss",
+                    "enabled": True,
+                    "categories": ["containers", "security_news"],
+                    "trust_level": "official_vendor_blog",
+                    "ai_safe_fit": "",
+                    "ingestion_mode": "feed_metadata",
+                    "description": "Docker security and platform news.",
+                },
             ]
         }
     return gateway_response_for(payload)
@@ -352,6 +407,86 @@ def test_confirmed_source_selection_generates_task_change_intent(monkeypatch):
     assert intent["slots"]["add_include"] == ["CISA", "NVD"]
     assert "Canonical intent pending confirmation" in answer
     assert "Reply `confirm`" in answer
+
+
+def test_conversational_security_briefing_intake_becomes_canonical_intent(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    messages = [
+        {"role": "user", "content": "daring to dream of automating something"},
+        {"role": "assistant", "content": "What is the dream automation?"},
+        {"role": "user", "content": "a morning briefing about relevant threats could teach me about what to expect"},
+        {"role": "assistant", "content": "What sources should Yggy use?"},
+        {"role": "user", "content": "need it security related information about ubuntu 26, hermes, ollama"},
+        {
+            "role": "user",
+            "content": "official blog posts, vulnerability announcements, patch notes, nvd records, no gossip, update me for breakfast on a daily basis",
+        },
+    ]
+
+    answer = bragi.route_chat(messages)
+
+    assert calls[0][0:2] == ("GET", "/sources")
+    assert calls[1][0:2] == ("POST", "/capabilities/validate-intent")
+    intent = calls[1][2]
+    assert intent["intent"] == "draft_task"
+    assert intent["capability_id"] == "topic_digest.v1"
+    assert intent["slots"]["task_id"] == "daily_security_threat_briefing"
+    assert intent["slots"]["cron"] == "0 8 * * *"
+    assert "ubuntu_security_notices" in intent["slots"]["source_ids"]
+    assert "ollama_releases" in intent["slots"]["source_ids"]
+    assert "nist_national_vulnerability_database" in intent["slots"]["source_ids"]
+    assert "cisa_news_events" in intent["slots"]["source_ids"]
+    assert "gossip" in intent["slots"]["exclude"]
+    assert "Hermes" in intent["slots"]["include"]
+    assert "Canonical intent pending confirmation" in answer
+    assert "Reply `confirm`" in answer
+
+
+def test_conversational_confirmation_without_pending_intent_shows_intent_first(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))
+
+    messages = [
+        {"role": "user", "content": "I want a daily morning briefing about Ubuntu 26, Hermes, Ollama security threats"},
+        {"role": "assistant", "content": "Should I use official blog posts, vulnerability announcements, patch notes, and NVD records?"},
+        {"role": "user", "content": "so be it"},
+    ]
+
+    answer = bragi.route_chat(messages)
+
+    assert calls[0][0:2] == ("GET", "/sources")
+    assert calls[1][0:2] == ("POST", "/capabilities/validate-intent")
+    assert "Canonical intent pending confirmation" in answer
+    assert "Reply `confirm`" in answer
+
+
+def test_freeform_yggdrasil_message_is_refused_without_forwarding(monkeypatch):
+    calls = []
+
+    def fake_yggdrasil(payload):
+        calls.append(payload)
+        raise AssertionError("free-form message forwarded")
+
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", fake_yggdrasil)
+
+    answer = bragi.route_chat([{"role": "user", "content": "inform yggdrasil that i expect to hear from him regarding this"}])
+
+    assert calls == []
+    assert "cannot send a free-form side message to Yggdrasil" in answer
+    assert "canonical intent" in answer
 
 
 def test_confirmed_brief_subject_change_forwards_canonical_proposal(monkeypatch):

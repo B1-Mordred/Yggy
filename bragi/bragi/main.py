@@ -92,6 +92,10 @@ SOURCE_SEARCH_ALIASES = {
     "known exploited vulnerability": "cisa_known_exploited_vulnerabilities_catalog",
     "nvd": "nist_national_vulnerability_database",
     "national vulnerability database": "nist_national_vulnerability_database",
+    "ubuntu": "ubuntu_security_notices",
+    "ubuntu security": "ubuntu_security_notices",
+    "ubuntu security notices": "ubuntu_security_notices",
+    "mitre cve": "mitre_cve",
     "nasa": "nasa_news",
     "wikipedia": "wikipedia",
     "tagesschau": "tagesschau_rss_alle_meldungen",
@@ -576,7 +580,7 @@ def context_categories_for_text(text: str, requested_category: str | None = None
         category = requested_category.strip().lower()
         return [category] if category in CONTEXT_CATEGORIES else []
     lowered = text.lower()
-    if re.match(r"^\s*(draft|create|set up|setup|schedule|add|include|remove|exclude|stop|run|send|pause|disable|approve|reject)\b", lowered):
+    if re.match(r"^\s*(?:please\s+)?(draft|create|set up|setup|schedule|add|include|remove|exclude|stop|run|send|pause|disable|approve|reject)\b", lowered):
         return []
     categories: list[str] = []
 
@@ -1195,13 +1199,23 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
     if is_confirmation(user_text):
         source_selection = pending_source_selection_from_prior(prior)
         pending = pending_intent_from_prior(prior)
+        conversational_intent = conversational_topic_digest_intent(messages, resolve_sources=False)
         diagnostic.update(
             {
                 "mode": "confirmation",
-                "route": "heimdal_validate_intent" if source_selection else "heimdal_prepare_yggdrasil_request" if pending else "none",
+                "route": (
+                    "heimdal_validate_intent"
+                    if source_selection or conversational_intent
+                    else "heimdal_prepare_yggdrasil_request"
+                    if pending
+                    else "none"
+                ),
                 "reason": (
                     "Confirmation with pending approved-source selection."
                     if source_selection
+                    else
+                    "Confirmation closes a conversational topic-digest intake; Bragi must show a canonical intent first."
+                    if conversational_intent
                     else
                     "Confirmation with pending canonical intent."
                     if pending
@@ -1209,7 +1223,7 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
                 ),
                 "pending_source_selection_found": bool(source_selection),
                 "pending_intent_found": bool(pending),
-                "candidate_intent": diagnostic_intent(pending),
+                "candidate_intent": diagnostic_intent(pending or conversational_intent),
             }
         )
         return diagnostic
@@ -1224,6 +1238,29 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
                 "reason": "Prior assistant message contains a canonical intent awaiting missing details.",
                 "pending_intent_found": True,
                 "candidate_intent": diagnostic_intent(merged),
+            }
+        )
+        return diagnostic
+
+    freeform_yggdrasil = yggdrasil_freeform_message_response(user_text)
+    if freeform_yggdrasil is not None:
+        diagnostic.update(
+            {
+                "mode": "automation_boundary",
+                "route": "general_chat_boundary",
+                "reason": "User asked to send an unstructured message to Yggdrasil; Bragi refuses free-form forwarding.",
+            }
+        )
+        return diagnostic
+
+    conversational_intent = conversational_topic_digest_intent(messages, resolve_sources=False)
+    if conversational_intent is not None:
+        diagnostic.update(
+            {
+                "mode": "draft",
+                "route": "heimdal_validate_intent",
+                "reason": "Conversation has enough topic-digest setup context; Bragi builds a canonical intent instead of making a conversational promise.",
+                "candidate_intent": diagnostic_intent(conversational_intent),
             }
         )
         return diagnostic
@@ -1319,6 +1356,9 @@ def is_confirmation(text: str) -> bool:
         "confirm",
         "go ahead",
         "do it",
+        "so be it",
+        "sounds good",
+        "proceed",
         "yes go ahead",
         "yes, go ahead",
         "confirm sources",
@@ -1876,6 +1916,219 @@ def source_selection_to_intent(selection: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def joined_message_text(messages: list[dict[str, Any]], *, roles: set[str] | None = None, limit: int = 14) -> str:
+    parts: list[str] = []
+    for message in messages[-limit:]:
+        role = str(message.get("role") or "")
+        if roles is not None and role not in roles:
+            continue
+        content = extract_text(message.get("content")).strip()
+        if content:
+            parts.append(content[:3000])
+    return "\n".join(parts)
+
+
+def latest_advances_topic_digest_intake(text: str) -> bool:
+    compact = re.sub(r"\s+", " ", text.strip().lower()).strip(" .?!")
+    if compact in {"both", "so be it", "sounds good", "proceed"}:
+        return True
+    return bool(
+        re.search(
+            r"\b(draft|proposal|propose|set up|setup|schedule|daily|morning|breakfast|briefing|brief|digest|update me|keep me updated|official blog|patch notes?|vulnerab\w*|nvd|sources?)\b",
+            compact,
+        )
+    )
+
+
+def conversational_topic_digest_active(messages: list[dict[str, Any]]) -> bool:
+    if sum(1 for message in messages if message.get("role") == "user") < 2:
+        return False
+    user_text = joined_message_text(messages, roles={"user"}).lower()
+    latest = latest_user_request(messages)
+    if not user_text or not latest_advances_topic_digest_intake(latest):
+        return False
+    has_automation_context = bool(
+        re.search(r"\b(automat|yggy|yggdrasil|brief|briefing|digest|update me|stay on top|proposal)\b", user_text)
+    )
+    has_security_context = bool(
+        re.search(
+            r"\b(security|vulnerab\w*|threat|patch|nvd|cisa|ubuntu|hermes|ollama|open webui|docker|n8n|server)\b",
+            user_text,
+        )
+    )
+    return has_automation_context and has_security_context
+
+
+def extract_approved_source_ids_from_text(text: str, approved_source_ids: set[str]) -> list[str]:
+    found: list[str] = []
+    for candidate in re.findall(r"\b[a-z][a-z0-9_]{2,127}\b", text.lower()):
+        if candidate in approved_source_ids and candidate not in found:
+            found.append(candidate)
+    return found
+
+
+def add_source_id(source_ids: list[str], source_id: str, approved_source_ids: set[str]) -> None:
+    if source_id in approved_source_ids and source_id not in source_ids:
+        source_ids.append(source_id)
+
+
+def source_ids_from_aliases(text: str, approved_source_ids: set[str]) -> list[str]:
+    lowered = text.lower()
+    source_ids: list[str] = []
+    aliases = {**SOURCE_ALIASES, **SOURCE_SEARCH_ALIASES}
+    for phrase, source_id in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(phrase)}\b", lowered):
+            add_source_id(source_ids, source_id, approved_source_ids)
+    return source_ids
+
+
+def conversational_topic_digest_source_ids(messages: list[dict[str, Any]], *, resolve_sources: bool = True) -> list[str]:
+    sources: list[dict[str, Any]] = []
+    if resolve_sources:
+        try:
+            sources = approved_sources_from_api()
+        except Exception as exc:
+            print(f"bragi approved source lookup failed during intake: {exc}", file=sys.stderr)
+    approved_source_ids = {str(source.get("id")) for source in sources if source.get("id")}
+    if not approved_source_ids:
+        approved_source_ids = set(SOURCE_ALIASES.values()) | set(SOURCE_SEARCH_ALIASES.values())
+
+    user_text = joined_message_text(messages, roles={"user"}).lower()
+    prior = prior_text(messages)
+    latest = latest_user_request(messages).lower()
+    combined = f"{user_text}\n{prior.lower()}"
+
+    source_ids: list[str] = []
+    if re.search(r"\ball (?:of )?(?:those|these|the) sources\b", latest):
+        for source_id in extract_approved_source_ids_from_text(prior, approved_source_ids):
+            add_source_id(source_ids, source_id, approved_source_ids)
+
+    for source_id in extract_approved_source_ids_from_text(user_text, approved_source_ids):
+        add_source_id(source_ids, source_id, approved_source_ids)
+    for source_id in source_ids_from_aliases(user_text, approved_source_ids):
+        add_source_id(source_ids, source_id, approved_source_ids)
+
+    if re.search(r"\b(official blog|official blogs|patch notes?|release notes?)\b", combined):
+        for phrase, source_id in (
+            ("open webui", "open_webui_releases"),
+            ("ollama", "ollama_releases"),
+            ("n8n", "n8n_releases"),
+            ("docker", "docker_blog"),
+        ):
+            if phrase in combined:
+                add_source_id(source_ids, source_id, approved_source_ids)
+    if "ubuntu" in combined or "patch" in combined:
+        add_source_id(source_ids, "ubuntu_security_notices", approved_source_ids)
+    if re.search(r"\b(vulnerab\w*|security advis|threat|nvd)\b", combined):
+        for source_id in (
+            "nist_national_vulnerability_database",
+            "cisa_news_events",
+            "cisa_known_exploited_vulnerabilities_catalog",
+        ):
+            add_source_id(source_ids, source_id, approved_source_ids)
+    if "mitre" in combined or re.search(r"\bcve\b", combined):
+        add_source_id(source_ids, "mitre_cve", approved_source_ids)
+
+    return source_ids[:12]
+
+
+def conversational_topic_digest_include_terms(messages: list[dict[str, Any]]) -> list[str]:
+    text = joined_message_text(messages, roles={"user"}).lower()
+    terms: list[str] = []
+
+    def add(label: str) -> None:
+        if label == "Ubuntu" and "Ubuntu 26" in terms:
+            return
+        if label == "Ubuntu 26" and "Ubuntu" in terms:
+            terms.remove("Ubuntu")
+        if label.lower() not in {term.lower() for term in terms}:
+            terms.append(label)
+
+    component_patterns = [
+        (r"\bubuntu\s*26\b", "Ubuntu 26"),
+        (r"\bubuntu\b", "Ubuntu"),
+        (r"\bhermes\b", "Hermes"),
+        (r"\bollama\b", "Ollama"),
+        (r"\bopen webui\b|\bopen-webui\b", "Open WebUI"),
+        (r"\bdocker\b", "Docker"),
+        (r"\bn8n\b", "n8n"),
+    ]
+    for pattern, label in component_patterns:
+        if re.search(pattern, text):
+            add(label)
+    topical_patterns = [
+        (r"\bvulnerabilit", "vulnerability announcements"),
+        (r"\bthreat", "relevant threats"),
+        (r"\bpatch notes?\b|\brelease notes?\b", "patch notes"),
+        (r"\bnvd\b", "NVD records"),
+        (r"\bofficial blog", "official blog posts"),
+        (r"\brecent findings?\b", "recent security findings"),
+    ]
+    for pattern, label in topical_patterns:
+        if re.search(pattern, text):
+            add(label)
+    if not terms:
+        add("security updates")
+    return terms[:10]
+
+
+def conversational_topic_digest_exclude_terms(messages: list[dict[str, Any]]) -> list[str]:
+    text = joined_message_text(messages, roles={"user"}).lower()
+    terms = ["sponsored", "rumor"]
+    if "gossip" in text:
+        terms.append("gossip")
+    if "speculat" in text or "no gossip" in text:
+        terms.append("speculation")
+    return terms
+
+
+def conversational_topic_digest_cron(messages: list[dict[str, Any]]) -> str:
+    text = joined_message_text(messages, roles={"user"})
+    if re.search(r"\bweekday|weekdays|workday|workdays|mon-fri\b", text, re.IGNORECASE):
+        return schedule_cron(text, default="0 8 * * 1-5")
+    if re.search(r"\bbreakfast|morning\b", text, re.IGNORECASE):
+        return schedule_cron(text, default="0 8 * * *")
+    return schedule_cron(text, default="0 8 * * *")
+
+
+def conversational_topic_digest_intent(messages: list[dict[str, Any]], *, resolve_sources: bool = True) -> dict[str, Any] | None:
+    if not conversational_topic_digest_active(messages):
+        return None
+    source_ids = conversational_topic_digest_source_ids(messages, resolve_sources=resolve_sources)
+    include = conversational_topic_digest_include_terms(messages)
+    return {
+        "intent": "draft_task",
+        "capability_id": "topic_digest.v1",
+        "confidence": 0.82 if source_ids else 0.68,
+        "requires_user_confirmation": True,
+        "user_confirmation_obtained": False,
+        "user_request": latest_user_request(messages),
+        "slots": {
+            "task_id": "daily_security_threat_briefing",
+            "name": "Daily Security Threat Briefing",
+            "cron": conversational_topic_digest_cron(messages),
+            "timezone": "Europe/Berlin",
+            "source_ids": source_ids,
+            "include": include,
+            "exclude": conversational_topic_digest_exclude_terms(messages),
+            "output_target": "briefings",
+            "max_items": 10,
+        },
+    }
+
+
+def yggdrasil_freeform_message_response(text: str) -> str | None:
+    lowered = text.lower()
+    if not re.search(r"\b(inform|tell|message|pass .*to|send .*to|hear from)\b", lowered):
+        return None
+    if "yggdrasil" not in lowered and "yggy" not in lowered:
+        return None
+    return (
+        "I cannot send a free-form side message to Yggdrasil. That would be exactly the sort of misty shortcut we built Heimdal to block.\n\n"
+        "If this should become automation work, I need to turn it into a canonical intent first, show you the summary, and then wait for your `confirm` before Yggdrasil receives the deterministic request."
+    )
+
+
 def schedule_cron(text: str, *, default: str) -> str:
     match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
     if not match:
@@ -2190,6 +2443,10 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
             return format_gateway_result(result, intent)
         pending = pending_intent_from_prior(prior)
         if not pending:
+            conversational_intent = conversational_topic_digest_intent(messages)
+            if conversational_intent is not None:
+                result = api_request("POST", "/capabilities/validate-intent", conversational_intent)
+                return format_gateway_result(result, conversational_intent)
             return "I do not have a pending canonical intent to confirm."
         pending["user_confirmation_obtained"] = True
         result = api_request("POST", "/capabilities/prepare-yggdrasil-request", pending)
@@ -2198,17 +2455,26 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
         yggdrasil = yggdrasil_canonical_request(result["yggdrasil_request"])
         return yggdrasil.get("answer") or json.dumps(yggdrasil, indent=2)
 
-    context_categories = context_categories_for_text(user_text)
-    if context_categories:
-        context = build_context(user_text, user_id=user_id)
-        return format_context_answer(context)
-
     pending = pending_intent_from_prior(prior)
     if pending and result_needs_details(prior):
         intent = merge_intent_slots(pending, user_text)
         intent = enrich_topic_digest_intent_with_research(intent, user_text)
         result = api_request("POST", "/capabilities/validate-intent", intent)
         return format_gateway_result(result, intent)
+
+    freeform_yggdrasil = yggdrasil_freeform_message_response(user_text)
+    if freeform_yggdrasil is not None:
+        return freeform_yggdrasil
+
+    conversational_intent = conversational_topic_digest_intent(messages)
+    if conversational_intent is not None:
+        result = api_request("POST", "/capabilities/validate-intent", conversational_intent)
+        return format_gateway_result(result, conversational_intent)
+
+    context_categories = context_categories_for_text(user_text)
+    if context_categories:
+        context = build_context(user_text, user_id=user_id)
+        return format_context_answer(context)
 
     operation = operation_from_text(user_text)
     if operation is not None:

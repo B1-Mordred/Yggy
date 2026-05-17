@@ -169,6 +169,22 @@ resulting canonical intent to Heimdal, show the user the confirmation summary,
 and wait for user confirmation before Yggdrasil receives a deterministic
 request.
 
+Bragi may collect a new `topic_digest.v1` request across a natural multi-turn
+conversation. This is intentionally limited to slot collection. The active
+conversation must contain automation/briefing context and security or component
+context, and the latest user message must advance the setup with details such as
+daily/morning schedule, approved-source hints, vulnerability/patch/NVD scope, or
+an explicit confirmation phrase like `so be it`. Once enough information exists,
+Bragi must generate a canonical intent and call Heimdal validation. It must not
+continue with a general-chat promise such as "I'll pass this to Yggdrasil" or
+"you can expect this tomorrow."
+
+Confirmation phrases that close this conversational intake do not authorize
+execution. They only trigger the first canonical intent display. The normal
+`confirm` response to that visible canonical intent is still required before
+Yggdrasil receives a deterministic request, and Yggy approval still controls
+whether the resulting disabled draft can become active.
+
 For brief-change requests that name sources naturally, such as:
 
 ```text
