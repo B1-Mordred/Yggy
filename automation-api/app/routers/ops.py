@@ -251,6 +251,7 @@ def ops_runs(
     q: str | None = Query(default=None, min_length=1, max_length=128),
     task_id: str | None = Query(default=None, min_length=1, max_length=128),
     status_filter: str | None = Query(default=None, alias="status", min_length=1, max_length=64),
+    notification_sent: Literal["true", "false"] | None = Query(default=None),
 ) -> dict:
     query = session.query(RunModel)
     if task_id:
@@ -280,12 +281,15 @@ def ops_runs(
         "id": RunModel.id,
     }
     sort_expression = sort_columns[sort_by].asc() if sort_dir == "asc" else sort_columns[sort_by].desc()
-    runs = (
-        query.order_by(sort_expression, RunModel.created_at.desc(), RunModel.id.asc())
-        .offset(_pagination_offset(page, page_size))
-        .limit(page_size)
-        .all()
-    )
+    ordered_query = query.order_by(sort_expression, RunModel.created_at.desc(), RunModel.id.asc())
+    if notification_sent is None:
+        runs = ordered_query.offset(_pagination_offset(page, page_size)).limit(page_size).all()
+    else:
+        expected_sent = notification_sent == "true"
+        matched_runs = [run for run in ordered_query.all() if _run_notification_sent(run) is expected_sent]
+        total = len(matched_runs)
+        offset = _pagination_offset(page, page_size)
+        runs = matched_runs[offset : offset + page_size]
     return {
         "generated_at": utcnow(),
         "page": page,
@@ -294,6 +298,7 @@ def ops_runs(
             "q": q,
             "task_id": task_id,
             "status": status_filter,
+            "notification_sent": notification_sent,
         },
         "sort": {"by": sort_by, "dir": sort_dir},
         "pagination": _pagination(page, page_size, total, len(runs)),
@@ -883,6 +888,13 @@ def _run_summary(run: RunModel | None) -> dict | None:
     }
 
 
+def _run_notification_sent(run: RunModel) -> bool | None:
+    log = run.log if isinstance(run.log, dict) else {}
+    notification = log.get("notification") if isinstance(log.get("notification"), dict) else {}
+    sent = notification.get("sent")
+    return sent if isinstance(sent, bool) else None
+
+
 def _run_detail(run: RunModel, task: TaskModel | None) -> dict:
     log = _as_dict(_bounded_value(redact_secrets(run.log if isinstance(run.log, dict) else {})))
     result = _as_dict(log.get("result"))
@@ -1319,6 +1331,15 @@ DASHBOARD_HTML = f"""<!doctype html>
     .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }}
     .section {{ margin: 18px 0; }}
     .section-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }}
+    .header-actions {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
+    .saved-view {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .saved-view select {{ min-width: 220px; }}
     .filter-bar {{
       display: flex;
       gap: 8px;
@@ -1429,7 +1450,20 @@ DASHBOARD_HTML = f"""<!doctype html>
       <h1>{escape("Yggy Operations")}</h1>
       <div class="meta" id="generated">Loading status...</div>
     </div>
-    <button id="refresh" type="button" title="Refresh status">Refresh</button>
+    <div class="header-actions">
+      <label class="saved-view" for="saved-view-select">Saved view
+        <select id="saved-view-select" aria-label="Saved dashboard view">
+          <option value="">Custom</option>
+          <option value="failed_runs">Failed runs</option>
+          <option value="pending_approvals">Pending approvals</option>
+          <option value="pending_proposals">Pending proposals</option>
+          <option value="recent_discord_sends">Recent Discord sends</option>
+          <option value="task_changes">Task changes</option>
+          <option value="worker_activity">Worker activity</option>
+        </select>
+      </label>
+      <button id="refresh" type="button" title="Refresh status">Refresh</button>
+    </div>
   </header>
   <nav class="tabs" aria-label="Operations views">
     <button class="tab-button active" type="button" data-view-target="overview">Overview</button>
@@ -1499,6 +1533,11 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="completed">Completed</option>
             <option value="failed">Failed</option>
             <option value="dry_run">Dry-run</option>
+          </select>
+          <select id="run-filter-notification-sent" aria-label="Run notification result">
+            <option value="">All notifications</option>
+            <option value="true">Sent notifications</option>
+            <option value="false">Unsent notifications</option>
           </select>
           <label class="page-size" for="run-page-size">Per page
             <input id="run-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Runs per page">
@@ -1702,6 +1741,72 @@ DASHBOARD_HTML = f"""<!doctype html>
       runs: storedSort('runs', 'created_at', 'desc'),
       audit: storedSort('audit', 'created_at', 'desc'),
     }};
+    const filterFieldsByView = {{
+      tasks: ['task-filter-text', 'task-filter-state', 'task-filter-type'],
+      runs: ['run-filter-text', 'run-filter-task-id', 'run-filter-status', 'run-filter-notification-sent'],
+      proposals: ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-change-type'],
+      approvals: ['approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level'],
+      audit: ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'],
+    }};
+    const savedViews = {{
+      failed_runs: {{
+        view: 'runs',
+        fields: {{'run-filter-status': 'failed'}},
+        sort: {{view: 'runs', by: 'created_at', dir: 'desc'}},
+      }},
+      pending_approvals: {{
+        view: 'approvals',
+        fields: {{}},
+      }},
+      pending_proposals: {{
+        view: 'proposals',
+        fields: {{}},
+      }},
+      recent_discord_sends: {{
+        view: 'runs',
+        fields: {{'run-filter-notification-sent': 'true'}},
+        sort: {{view: 'runs', by: 'created_at', dir: 'desc'}},
+      }},
+      task_changes: {{
+        view: 'audit',
+        fields: {{'audit-filter-q': 'task.', 'audit-filter-resource-type': 'task'}},
+        sort: {{view: 'audit', by: 'created_at', dir: 'desc'}},
+      }},
+      worker_activity: {{
+        view: 'audit',
+        fields: {{'audit-filter-actor': 'worker'}},
+        sort: {{view: 'audit', by: 'created_at', dir: 'desc'}},
+      }},
+    }};
+    function markCustomView() {{
+      const select = byId('saved-view-select');
+      if (select) select.value = '';
+    }}
+    function setField(id, value) {{
+      if (!byId(id)) return;
+      byId(id).value = value || '';
+      persistField(id);
+    }}
+    function clearViewFilters(view) {{
+      (filterFieldsByView[view] || []).forEach(id => setField(id, ''));
+    }}
+    function setSort(view, by, dir) {{
+      if (!allowedSorts[view] || !allowedSorts[view].includes(by)) return;
+      sortState[view].by = by;
+      sortState[view].dir = dir === 'asc' ? 'asc' : 'desc';
+      storeValue(`sortBy.${{view}}`, sortState[view].by);
+      storeValue(`sortDir.${{view}}`, sortState[view].dir);
+    }}
+    function applySavedView(name) {{
+      const preset = savedViews[name];
+      if (!preset) return;
+      clearViewFilters(preset.view);
+      Object.entries(preset.fields || {{}}).forEach(([id, value]) => setField(id, value));
+      if (preset.sort) setSort(preset.sort.view, preset.sort.by, preset.sort.dir);
+      resetPage(preset.view);
+      showView(preset.view);
+      if (preset.view === 'tasks') renderTasks();
+    }}
     function sortIndicator(view, key) {{
       if (sortState[view].by !== key) return '';
       return sortState[view].dir === 'asc' ? ' ↑' : ' ↓';
@@ -1719,6 +1824,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       }}
       storeValue(`sortBy.${{view}}`, sortState[view].by);
       storeValue(`sortDir.${{view}}`, sortState[view].dir);
+      markCustomView();
       resetPage(view);
       onChange();
     }}
@@ -1769,7 +1875,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     function restorePersistentFields() {{
       [
         'task-filter-text', 'task-filter-state', 'task-filter-type',
-        'run-filter-text', 'run-filter-task-id', 'run-filter-status',
+        'run-filter-text', 'run-filter-task-id', 'run-filter-status', 'run-filter-notification-sent',
         'proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-change-type',
         'approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level',
         'audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type',
@@ -2163,6 +2269,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         q: fieldValue('run-filter-text'),
         task_id: fieldValue('run-filter-task-id'),
         status: fieldValue('run-filter-status'),
+        notification_sent: fieldValue('run-filter-notification-sent'),
       }};
     }}
     async function loadRuns() {{
@@ -2498,6 +2605,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     function wireFilters() {{
       const persistAndRenderTasks = id => {{
+        markCustomView();
         persistField(id);
         resetPage('tasks');
         renderTasks();
@@ -2512,6 +2620,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         renderTasks();
       }});
       byId('task-filter-clear').addEventListener('click', () => {{
+        markCustomView();
         ['task-filter-text', 'task-filter-state', 'task-filter-type'].forEach(id => {{
           byId(id).value = '';
           persistField(id);
@@ -2520,6 +2629,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         renderTasks();
       }});
       const reloadRuns = id => {{
+        markCustomView();
         if (id) persistField(id);
         resetPage('runs');
         loadRuns();
@@ -2528,13 +2638,15 @@ DASHBOARD_HTML = f"""<!doctype html>
         byId(id).addEventListener('input', debounce(() => reloadRuns(id), 350));
       }});
       byId('run-filter-status').addEventListener('change', () => reloadRuns('run-filter-status'));
+      byId('run-filter-notification-sent').addEventListener('change', () => reloadRuns('run-filter-notification-sent'));
       byId('run-page-size').addEventListener('change', () => {{
         resetPage('runs');
         pageSize('runs');
         loadRuns();
       }});
       byId('run-filter-clear').addEventListener('click', () => {{
-        ['run-filter-text', 'run-filter-task-id', 'run-filter-status'].forEach(id => {{
+        markCustomView();
+        ['run-filter-text', 'run-filter-task-id', 'run-filter-status', 'run-filter-notification-sent'].forEach(id => {{
           byId(id).value = '';
           persistField(id);
         }});
@@ -2542,6 +2654,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         loadRuns();
       }});
       const reloadProposals = id => {{
+        markCustomView();
         if (id) persistField(id);
         resetPage('proposals');
         loadReviewQueue('proposals');
@@ -2558,6 +2671,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         loadReviewQueue('proposals');
       }});
       byId('proposal-filter-clear').addEventListener('click', () => {{
+        markCustomView();
         ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-change-type'].forEach(id => {{
           byId(id).value = '';
           persistField(id);
@@ -2566,6 +2680,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         loadReviewQueue('proposals');
       }});
       const reloadApprovals = id => {{
+        markCustomView();
         if (id) persistField(id);
         resetPage('approvals');
         loadReviewQueue('approvals');
@@ -2580,6 +2695,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         loadReviewQueue('approvals');
       }});
       byId('approval-filter-clear').addEventListener('click', () => {{
+        markCustomView();
         ['approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level'].forEach(id => {{
           byId(id).value = '';
           persistField(id);
@@ -2588,6 +2704,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         loadReviewQueue('approvals');
       }});
       const reloadAudit = id => {{
+        markCustomView();
         if (id) persistField(id);
         resetPage('audit');
         loadAudit();
@@ -2603,6 +2720,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         loadAudit();
       }});
       byId('audit-filter-clear').addEventListener('click', () => {{
+        markCustomView();
         ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'].forEach(id => {{
           byId(id).value = '';
           persistField(id);
@@ -2633,6 +2751,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     document.getElementById('audit-refresh').addEventListener('click', loadAudit);
     document.getElementById('proposal-refresh').addEventListener('click', () => loadReviewQueue('proposals'));
     document.getElementById('approval-refresh').addEventListener('click', () => loadReviewQueue('approvals'));
+    document.getElementById('saved-view-select').addEventListener('change', event => applySavedView(event.target.value));
     wireViewTabs();
     restorePersistentFields();
     wireFilters();

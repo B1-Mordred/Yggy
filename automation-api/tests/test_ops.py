@@ -35,6 +35,7 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "task-page-size" in allowed.text
     assert "run-filter-status" in allowed.text
     assert "run-filter-task-id" in allowed.text
+    assert "run-filter-notification-sent" in allowed.text
     assert "run-page-size" in allowed.text
     assert "proposal-page-size" in allowed.text
     assert "approval-page-size" in allowed.text
@@ -46,6 +47,10 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "sortHeader('tasks', 'Task', 'id')" in allowed.text
     assert "sortHeader('runs', 'Created', 'created_at')" in allowed.text
     assert "sortHeader('audit', 'Action', 'action')" in allowed.text
+    assert "saved-view-select" in allowed.text
+    assert "failed_runs" in allowed.text
+    assert "recent_discord_sends" in allowed.text
+    assert "worker_activity" in allowed.text
 
 
 def test_admin_key_can_access_ops_status_without_dashboard_password(client):
@@ -491,6 +496,59 @@ def test_ops_runs_are_filtered_and_paginated(client, monkeypatch):
         "run-pagination-2",
     ]
     assert invalid_sort.status_code == 422
+
+
+def test_ops_runs_can_filter_notification_sent(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    now = utcnow()
+    with Session(get_engine()) as session:
+        session.add_all(
+            [
+                RunModel(
+                    id="run-notification-sent",
+                    task_id="daily_local_ai_security_briefing",
+                    status="completed",
+                    log={"result": {"status": "ready"}, "notification": {"sent": True, "target": "briefings"}},
+                    created_at=now,
+                    completed_at=now,
+                ),
+                RunModel(
+                    id="run-notification-unsent",
+                    task_id="daily_local_ai_security_briefing",
+                    status="completed_dry_run",
+                    log={"result": {"status": "ready"}, "notification": {"sent": False, "target": "briefings"}},
+                    created_at=now + timedelta(seconds=1),
+                    completed_at=now + timedelta(seconds=1),
+                ),
+                RunModel(
+                    id="run-notification-missing",
+                    task_id="daily_local_ai_security_briefing",
+                    status="completed",
+                    log={"result": {"status": "ready"}},
+                    created_at=now + timedelta(seconds=2),
+                    completed_at=now + timedelta(seconds=2),
+                ),
+            ]
+        )
+        session.commit()
+
+    sent = client.get(
+        "/ops/runs?notification_sent=true&page=1&page_size=5",
+        auth=("operator", "test-dashboard-password"),
+    )
+    unsent = client.get(
+        "/ops/runs?notification_sent=false&page=1&page_size=5",
+        auth=("operator", "test-dashboard-password"),
+    )
+    invalid = client.get("/ops/runs?notification_sent=maybe", auth=("operator", "test-dashboard-password"))
+
+    assert sent.status_code == 200
+    assert sent.json()["filters"]["notification_sent"] == "true"
+    assert [run["id"] for run in sent.json()["runs"]] == ["run-notification-sent"]
+    assert unsent.status_code == 200
+    assert [run["id"] for run in unsent.json()["runs"]] == ["run-notification-unsent"]
+    assert invalid.status_code == 422
 
 
 def test_ops_audit_events_can_be_filtered(client, monkeypatch):

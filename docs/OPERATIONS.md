@@ -163,7 +163,11 @@ configurable `Per page` control. The API enforces a minimum page size of `5` and
 a maximum of `100`; the browser remembers the selected page size and filter
 values locally. Click sortable table headers to reorder task, run, and audit
 views. Task sorting happens in the browser; run and audit sorting is handled by
-hidden server-side endpoints with allowlisted sort fields only.
+hidden server-side endpoints with allowlisted sort fields only. The header
+includes a compact saved-view selector for common checks: failed runs, pending
+approvals, pending proposals, recent Discord sends, task changes, and worker
+activity. Selecting a saved view applies the relevant filters, sort order, and
+dashboard tab without adding any model-facing capability.
 Pending approvals include actions, worst-case failure mode, and the redacted task
 config. The dashboard can approve or reject pending approvals when the operator
 enters the approval nonce. It does not expose secrets, does not expose nonce
@@ -199,13 +203,14 @@ dashboard response for the operator. The task remains disabled until that
 approval is accepted through the local approval flow.
 
 Recent run ids in the dashboard are clickable. The run list is backed by hidden
-`/ops/runs` with filters for text, task id, and status. Runs can be sorted by
-run id, task id, status, created time, or completed time. The run-detail panel
-is backed by the hidden `/ops/runs/{run_id}` endpoint and shows a bounded,
-redacted projection of the run: topic digest message and items, n8n normalizer
-response, notification decision, and Discord send result. It intentionally does
-not expose raw logs, API keys, approval nonces, webhook secrets, or dashboard
-credentials.
+`/ops/runs` with filters for text, task id, status, and notification sent/not
+sent. Runs can be sorted by run id, task id, status, created time, or completed
+time. The `Recent Discord sends` saved view uses the notification-sent filter
+and newest-first sorting. The run-detail panel is backed by the hidden
+`/ops/runs/{run_id}` endpoint and shows a bounded, redacted projection of the
+run: topic digest message and items, n8n normalizer response, notification
+decision, and Discord send result. It intentionally does not expose raw logs,
+API keys, approval nonces, webhook secrets, or dashboard credentials.
 
 Task rows include manual run controls:
 
