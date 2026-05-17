@@ -4,17 +4,17 @@ import uuid
 from datetime import timedelta
 from math import ceil
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.audit import audit_event
 from app.auth import ApiRole, require_roles
 from app.config import get_settings
 from app.database import get_session
-from app.models import RunModel, TaskModel, utcnow
+from app.models import ApprovalModel, RunModel, TaskModel, utcnow
 from app.policy import PolicyViolation, load_policy, validate_task_policy
 from app.schemas import ApprovalLevel, TaskConfig, TaskRunRequest, approval_at_least
-from app.services.approval_service import create_approval_request, needs_initial_approval
+from app.services.approval_service import create_approval_request, needs_initial_approval, reject_request
 from app.services.run_state_service import ACTIVE_RUN_STATUSES, COMPLETED_RUN_STATUSES, recover_stale_runs
 from app.services.task_version_service import link_latest_task_config_version_to_approval, record_task_config_version
 from app.services.validation_service import redact_secrets
@@ -56,10 +56,14 @@ def approval_to_public(approval, nonce: str | None = None) -> dict:
 
 @router.get("")
 def list_tasks(
+    include_archived: bool = Query(default=False),
     role: ApiRole = Depends(require_roles(ApiRole.TOOL, ApiRole.ADMIN, ApiRole.WORKER)),
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    return [task_to_dict(task) for task in session.query(TaskModel).order_by(TaskModel.id).all()]
+    query = session.query(TaskModel)
+    if not include_archived:
+        query = query.filter(TaskModel.status != "archived")
+    return [task_to_dict(task) for task in query.order_by(TaskModel.id).all()]
 
 
 @router.get("/{task_id}")
@@ -233,6 +237,53 @@ def pause_task(
         summary="Task paused and enabled flag mirrored into task config.",
     )
     audit_event(session, role, "task.pause", "task", task.id)
+    session.commit()
+    return task_to_dict(task)
+
+
+@router.post("/{task_id}/archive")
+def archive_task(
+    task_id: str,
+    role: ApiRole = Depends(require_roles(ApiRole.ADMIN)),
+    session: Session = Depends(get_session),
+) -> dict:
+    task = session.get(TaskModel, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    if task.enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="enabled tasks must be paused before archive")
+    if task.status == "archived":
+        return task_to_dict(task)
+    if task.status not in {"draft", "pending_approval", "rejected", "paused"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"task status {task.status} cannot be archived")
+
+    pending_approvals = (
+        session.query(ApprovalModel)
+        .filter(ApprovalModel.task_id == task.id)
+        .filter(ApprovalModel.status == "pending")
+        .all()
+    )
+    for approval in pending_approvals:
+        reject_request(approval)
+
+    task.enabled = False
+    task.status = "archived"
+    task.config = {**task.config, "enabled": False}
+    record_task_config_version(
+        session,
+        task,
+        actor_role=role,
+        change_type="archive",
+        summary="Disabled task archived; audit history retained.",
+    )
+    audit_event(
+        session,
+        role,
+        "task.archive",
+        "task",
+        task.id,
+        {"rejected_pending_approvals": [approval.id for approval in pending_approvals]},
+    )
     session.commit()
     return task_to_dict(task)
 

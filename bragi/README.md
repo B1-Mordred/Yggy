@@ -18,8 +18,20 @@ Bragi exposes an OpenAI-compatible API:
 
 ```text
 GET  /health
+POST /diagnostics/route
 GET  /v1/models
 POST /v1/chat/completions
+```
+
+`POST /diagnostics/route` is read-only. It classifies a request and reports
+whether Bragi would keep it in chat, validate it through Heimdal, or forward a
+structured canonical operation to Yggdrasil. The diagnostic path does not call
+Ollama, Heimdal, Yggdrasil, Discord, or the automation API.
+
+You can also ask Bragi directly:
+
+```text
+diagnose route: send daily brief now
 ```
 
 Configure Open WebUI as a separate model/provider for Bragi. Do not attach

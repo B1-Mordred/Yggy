@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bragi"))
 
@@ -362,3 +364,55 @@ def test_yggdrasil_unauthorized_message_is_specific(monkeypatch):
 
     assert result["status"] == "unauthorized"
     assert "not authorized to talk to Yggdrasil" in result["answer"]
+
+
+def test_route_diagnostic_for_operation_is_read_only():
+    diagnostic = bragi.diagnose_route([{"role": "user", "content": "send daily brief now"}])
+
+    assert diagnostic["mode"] == "operation"
+    assert diagnostic["route"] == "yggdrasil_canonical_action"
+    assert diagnostic["operation"] == {"action": "run_task", "task_id": "daily_local_ai_security_briefing"}
+    assert diagnostic["calls_external_services"] is False
+
+
+def test_route_diagnostic_for_help_stays_general_chat():
+    diagnostic = bragi.diagnose_route([{"role": "user", "content": "how can i add a new subject to the brief?"}])
+
+    assert diagnostic["mode"] == "help"
+    assert diagnostic["route"] == "general_chat"
+    assert "conversational" in diagnostic["reason"]
+
+
+def test_route_diagnostic_for_draft_omits_raw_user_request():
+    diagnostic = bragi.diagnose_route(
+        [{"role": "user", "content": "draft a weekday 08:00 topic digest about German politics"}]
+    )
+
+    assert diagnostic["mode"] == "draft"
+    assert diagnostic["route"] == "heimdal_validate_intent"
+    assert diagnostic["candidate_intent"]["capability_id"] == "topic_digest.v1"
+    assert "user_request" not in diagnostic["candidate_intent"]
+
+
+def test_route_diagnostic_chat_command_formats_result():
+    answer = bragi.route_chat([{"role": "user", "content": "diagnose route: send daily brief now"}])
+
+    assert "Bragi route diagnostic" in answer
+    assert "yggdrasil_canonical_action" in answer
+    assert "run_task" in answer
+
+
+def test_route_diagnostics_endpoint_requires_bragi_key(monkeypatch):
+    monkeypatch.setattr(bragi, "API_KEY", "test-bragi-key")
+    client = TestClient(bragi.app)
+
+    unauthorized = client.post("/diagnostics/route", json={"text": "send daily brief now"})
+    authorized = client.post(
+        "/diagnostics/route",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"text": "send daily brief now"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert authorized.status_code == 200
+    assert authorized.json()["operation"]["action"] == "run_task"

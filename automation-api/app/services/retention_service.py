@@ -11,7 +11,7 @@ from app.auth import ApiRole
 from app.models import ApprovalModel, AuditEventModel, RunModel, TaskConfigVersionModel, TaskModel, utcnow
 
 TEMP_TASK_PREFIXES = ("temporary_", "test_")
-TEMP_TASK_STATUSES = ("paused", "draft", "pending_approval", "rejected")
+TEMP_TASK_STATUSES = ("paused", "draft", "pending_approval", "rejected", "archived")
 
 
 @dataclass(frozen=True)

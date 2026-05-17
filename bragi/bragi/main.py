@@ -14,6 +14,7 @@ import httpx
 import yaml
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 MODEL_ID = os.getenv("BRAGI_MODEL_ID", "bragi")
@@ -85,6 +86,11 @@ app = FastAPI(
     version="0.1.0",
     description="Natural human-facing concierge for Yggy. Bragi talks; Heimdal validates; Yggdrasil compiles.",
 )
+
+
+class RouteDiagnosticsRequest(BaseModel):
+    text: str | None = Field(default=None, max_length=12000)
+    messages: list[dict[str, Any]] | None = None
 
 
 def utcnow() -> datetime:
@@ -218,6 +224,150 @@ def openwebui_auxiliary_answer(user_text: str) -> str | None:
     if "generate 1-3 broad tags" in lowered:
         return '{"tags":["Automation","Yggy"]}'
     return None
+
+
+def diagnostic_probe_from_text(text: str) -> str | None:
+    match = re.match(
+        r"^\s*(?:diagnose|debug|explain)\s+(?:route|routing|request|this request)\s*:?\s+(.+?)\s*$",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    probe = match.group(1).strip()
+    return probe or None
+
+
+def redact_diagnostic_text(text: str) -> str:
+    redacted = re.sub(
+        r"(?i)\b(api[_-]?key|token|password|secret|webhook[_-]?url|private[_-]?key|cookie|nonce)\b\s*[:=]\s*\S+",
+        r"\1=[redacted]",
+        text,
+    )
+    redacted = re.sub(r"https://discord(?:app)?\.com/api/webhooks/\S+", "[redacted-discord-webhook]", redacted)
+    return redacted
+
+
+def diagnostic_intent(intent: dict[str, Any] | None) -> dict[str, Any] | None:
+    if intent is None:
+        return None
+    cleaned = json.loads(json.dumps(intent, default=str))
+    cleaned.pop("user_request", None)
+    return cleaned
+
+
+def diagnose_route(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    user_text = latest_user_request(messages)
+    preview = redact_diagnostic_text(user_text)[:240]
+    diagnostic: dict[str, Any] = {
+        "service": "bragi",
+        "diagnostic_version": 1,
+        "request_preview": preview,
+        "request_length": len(user_text),
+        "mode": "none",
+        "route": "none",
+        "reason": "no user request",
+        "calls_external_services": False,
+    }
+    if not user_text:
+        return diagnostic
+
+    auxiliary = openwebui_auxiliary_answer(user_text)
+    if auxiliary is not None:
+        diagnostic.update(
+            {
+                "mode": "auxiliary",
+                "route": "openwebui_auxiliary_answer",
+                "reason": "Open WebUI metadata generation prompt detected.",
+            }
+        )
+        return diagnostic
+
+    prior = prior_text(messages)
+    if is_confirmation(user_text):
+        pending = pending_intent_from_prior(prior)
+        diagnostic.update(
+            {
+                "mode": "confirmation",
+                "route": "heimdal_prepare_yggdrasil_request" if pending else "none",
+                "reason": (
+                    "Confirmation with pending canonical intent."
+                    if pending
+                    else "Confirmation phrase without a pending canonical intent."
+                ),
+                "pending_intent_found": bool(pending),
+                "candidate_intent": diagnostic_intent(pending),
+            }
+        )
+        return diagnostic
+
+    pending = pending_intent_from_prior(prior)
+    if pending and result_needs_details(prior):
+        merged = merge_intent_slots(pending, user_text)
+        diagnostic.update(
+            {
+                "mode": "slot_fill",
+                "route": "heimdal_validate_intent",
+                "reason": "Prior assistant message contains a canonical intent awaiting missing details.",
+                "pending_intent_found": True,
+                "candidate_intent": diagnostic_intent(merged),
+            }
+        )
+        return diagnostic
+
+    mode = classify_request(user_text)
+    diagnostic["mode"] = mode
+    operation = operation_from_text(user_text)
+    if operation is not None:
+        diagnostic.update(
+            {
+                "route": "yggdrasil_canonical_action",
+                "reason": "Request maps to a deterministic task operation.",
+                "operation": operation,
+            }
+        )
+        return diagnostic
+
+    intent = build_candidate_intent(user_text)
+    if intent is not None:
+        diagnostic.update(
+            {
+                "route": "heimdal_validate_intent",
+                "reason": "Request appears to create or change an automation and maps to a registered capability candidate.",
+                "candidate_intent": diagnostic_intent(intent),
+            }
+        )
+        return diagnostic
+
+    diagnostic.update(
+        {
+            "route": "general_chat",
+            "reason": (
+                "Help/meta question stays conversational."
+                if mode == "help"
+                else "No executable automation operation or draft request detected."
+            ),
+        }
+    )
+    return diagnostic
+
+
+def format_route_diagnostic(diagnostic: dict[str, Any]) -> str:
+    lines = [
+        "Bragi route diagnostic",
+        "",
+        f"- Mode: `{diagnostic.get('mode')}`",
+        f"- Route: `{diagnostic.get('route')}`",
+        f"- Reason: {diagnostic.get('reason')}",
+        f"- External calls made by diagnostic: `{str(diagnostic.get('calls_external_services')).lower()}`",
+    ]
+    operation = diagnostic.get("operation")
+    if isinstance(operation, dict):
+        lines.extend(["", "Canonical operation:", f"```json\n{json.dumps(operation, indent=2, sort_keys=True)}\n```"])
+    intent = diagnostic.get("candidate_intent")
+    if isinstance(intent, dict):
+        lines.extend(["", "Candidate canonical intent:", f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```"])
+    return "\n".join(lines)
 
 
 def is_confirmation(text: str) -> bool:
@@ -688,6 +838,10 @@ def route_chat(messages: list[dict[str, Any]]) -> str:
     auxiliary = openwebui_auxiliary_answer(user_text)
     if auxiliary is not None:
         return auxiliary
+    diagnostic_probe = diagnostic_probe_from_text(user_text)
+    if diagnostic_probe:
+        diagnostic_messages = [*messages[:-1], {"role": "user", "content": diagnostic_probe}]
+        return format_route_diagnostic(diagnose_route(diagnostic_messages))
 
     prior = prior_text(messages)
     if is_confirmation(user_text):
@@ -738,6 +892,19 @@ def health() -> dict[str, Any]:
         "memory_file": MEMORY_FILE,
         "memory_loaded": bool(load_memory()),
     }
+
+
+@app.post("/diagnostics/route")
+def route_diagnostics(payload: RouteDiagnosticsRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if payload.messages is not None:
+        messages = payload.messages
+    elif payload.text is not None:
+        messages = [{"role": "user", "content": payload.text}]
+    else:
+        raise HTTPException(status_code=422, detail="text or messages is required")
+    return diagnose_route(messages)
 
 
 @app.get("/v1/models")

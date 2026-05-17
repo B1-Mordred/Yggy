@@ -353,6 +353,24 @@ the operator can review the proposed config change before entering the approval
 nonce. Config snapshots are stored redacted and are not exposed in the OpenAPI
 tool schema.
 
+Disabled draft, rejected, pending-approval, or paused tasks can be archived
+through the admin-only API:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8088/tasks/<task-id>/archive \
+  -H "X-Automation-Api-Key: $AUTOMATION_ADMIN_API_KEY"
+```
+
+Archive is not deletion. The task is disabled, pending approvals for that task
+are rejected, a config version is recorded, and a `task.archive` audit event is
+kept. Archived tasks are hidden from `GET /tasks` by default and can be reviewed
+with:
+
+```bash
+curl -sS "http://127.0.0.1:8088/tasks?include_archived=true" \
+  -H "X-Automation-Api-Key: $AUTOMATION_ADMIN_API_KEY"
+```
+
 The `Proposals` view contains task-change proposals created through
 `POST /tasks/{task_id}/propose-change`. It can filter by text, task id,
 requester, approval level, status, and risk severity. Pending proposals can be

@@ -89,6 +89,42 @@ authorized to call Yggdrasil, Bragi should say that the understood automation
 request could not be forwarded because the service is not authorized. That is
 an authorization failure, not a capability failure.
 
+## Route Diagnostics
+
+Bragi exposes a read-only route diagnostic endpoint:
+
+```text
+POST /diagnostics/route
+```
+
+The endpoint accepts either:
+
+```json
+{"text": "send daily brief now"}
+```
+
+or:
+
+```json
+{"messages": [{"role": "user", "content": "send daily brief now"}]}
+```
+
+It returns the request mode, proposed internal route, and any candidate
+canonical operation or intent. It does not call Ollama, Heimdal, Yggdrasil,
+Discord, or the automation API, and it removes the raw `user_request` field from
+candidate intents.
+
+For quick troubleshooting from Open WebUI, ask Bragi:
+
+```text
+diagnose route: how can i add a new subject to the brief?
+diagnose route: send daily brief now
+diagnose route: draft a weekday 08:00 local AI security briefing
+```
+
+This is meant to make routing decisions visible without weakening the execution
+boundary. Diagnostics are not approval, execution, or a source of authority.
+
 ## Yggdrasil Boundary
 
 Bragi forwards accepted requests to:
