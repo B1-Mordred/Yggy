@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from typing import Any
 from urllib.parse import urljoin
 
 import httpx
+
+MAX_RESPONSE_DEPTH = 5
+MAX_RESPONSE_KEYS = 25
+MAX_RESPONSE_ITEMS = 25
+MAX_RESPONSE_STRING_LENGTH = 1000
+SECRET_KEY_PARTS = ("authorization", "cookie", "password", "secret", "token", "credential")
 
 
 def run_n8n_webhook(
@@ -56,7 +63,7 @@ def run_n8n_webhook(
         timeout=int(task_config.get("runtime", {}).get("timeout_seconds", 120)),
     )
     response.raise_for_status()
-    return {
+    result = {
         "status": "ready",
         "notify": False,
         "webhook_id": webhook_id,
@@ -64,3 +71,50 @@ def run_n8n_webhook(
         "status_code": response.status_code,
         "message": f"n8n webhook {webhook_id} dispatched.",
     }
+    response_body = safe_response_body(response)
+    if response_body is not None:
+        result["response"] = response_body
+    return result
+
+
+def safe_response_body(response: httpx.Response) -> Any:
+    try:
+        body = response.json()
+    except (AttributeError, ValueError):
+        text = getattr(response, "text", "")
+        if not text:
+            return None
+        body = {"text": text}
+    return sanitize_response_value(body)
+
+
+def sanitize_response_value(value: Any, depth: int = 0) -> Any:
+    if depth >= MAX_RESPONSE_DEPTH:
+        return "<truncated>"
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= MAX_RESPONSE_KEYS:
+                sanitized["_truncated_keys"] = len(value) - MAX_RESPONSE_KEYS
+                break
+            key_text = str(key)
+            if is_secret_key(key_text):
+                sanitized[key_text] = "<redacted>"
+            else:
+                sanitized[key_text] = sanitize_response_value(item, depth + 1)
+        return sanitized
+    if isinstance(value, list):
+        sanitized_items = [sanitize_response_value(item, depth + 1) for item in value[:MAX_RESPONSE_ITEMS]]
+        if len(value) > MAX_RESPONSE_ITEMS:
+            sanitized_items.append({"_truncated_items": len(value) - MAX_RESPONSE_ITEMS})
+        return sanitized_items
+    if isinstance(value, str):
+        if len(value) > MAX_RESPONSE_STRING_LENGTH:
+            return f"{value[:MAX_RESPONSE_STRING_LENGTH]}...<truncated>"
+        return value
+    return value
+
+
+def is_secret_key(key: str) -> bool:
+    lower_key = key.lower()
+    return any(part in lower_key for part in SECRET_KEY_PARTS)

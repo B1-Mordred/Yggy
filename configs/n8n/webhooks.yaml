@@ -2,9 +2,9 @@ version: 1
 
 webhooks:
   - id: daily_briefing_stub
-    name: Daily briefing webhook stub
+    name: Daily briefing payload normalizer
     path: /webhook/yggy-daily-briefing
     method: POST
     enabled: true
     max_payload_keys: 10
-    description: Internal-only stub for testing approved automation dispatch to n8n.
+    description: Internal-only workflow that normalizes an approved Yggy digest payload and returns a bounded result.

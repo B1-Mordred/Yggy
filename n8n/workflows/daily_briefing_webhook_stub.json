@@ -1,6 +1,6 @@
 {
   "id": "yggyDailyBriefingStub01",
-  "name": "Daily Briefing Webhook Stub",
+  "name": "Daily Briefing Payload Normalizer",
   "nodes": [
     {
       "parameters": {
@@ -25,10 +25,10 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "{\"ok\":true,\"received\":true}"
+        "responseBody": "={{ { ok: true, received: true, action: \"normalize_digest_payload\", task_id: $json.body.task_id, task_name: $json.body.task_name, run_id: $json.body.run_id, webhook_id: $json.body.webhook_id, dry_run: $json.body.dry_run, payload_keys: Object.keys($json.body.payload || {}).sort(), delivery_target: $json.body.payload?.delivery_target || null, purpose: $json.body.payload?.purpose || null, normalized: { title: $json.body.payload?.title || \"Daily briefing payload\", summary: $json.body.payload?.summary || \"\", item_count: Array.isArray($json.body.payload?.items) ? $json.body.payload.items.length : 0, source_count: Array.isArray($json.body.payload?.sources) ? $json.body.payload.sources.length : 0, items: Array.isArray($json.body.payload?.items) ? $json.body.payload.items.slice(0, 10) : [] } } }}"
       },
       "id": "stub-response",
-      "name": "Stub Response",
+      "name": "Normalize Digest Payload",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
       "position": [560, 300]
@@ -39,7 +39,7 @@
       "main": [
         [
           {
-            "node": "Stub Response",
+            "node": "Normalize Digest Payload",
             "type": "main",
             "index": 0
           }

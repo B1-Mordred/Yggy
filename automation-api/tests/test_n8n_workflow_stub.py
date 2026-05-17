@@ -36,9 +36,22 @@ def test_n8n_stub_workflow_does_not_embed_secret_material():
     assert "test-shared-secret" not in raw
 
 
-def test_n8n_stub_connects_webhook_only_to_stub_response():
+def test_n8n_stub_connects_webhook_only_to_normalizer_response():
     workflow = load_workflow()
     connections = workflow["connections"]["Yggy Daily Briefing Webhook"]["main"][0]
 
-    assert connections == [{"node": "Stub Response", "type": "main", "index": 0}]
+    assert connections == [{"node": "Normalize Digest Payload", "type": "main", "index": 0}]
     assert not any(node["type"] == "n8n-nodes-base.if" for node in workflow["nodes"])
+
+
+def test_n8n_stub_response_normalizes_digest_payload_without_headers():
+    workflow = load_workflow()
+    response = next(node for node in workflow["nodes"] if node["type"] == "n8n-nodes-base.respondToWebhook")
+    body = response["parameters"]["responseBody"]
+
+    assert response["name"] == "Normalize Digest Payload"
+    assert "normalize_digest_payload" in body
+    assert "$json.body.task_id" in body
+    assert "$json.body.payload" in body
+    assert "payload_keys" in body
+    assert "headers" not in body

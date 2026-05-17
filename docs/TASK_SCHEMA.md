@@ -127,13 +127,22 @@ type: n8n_webhook
 output:
   channel: internal
   target: n8n
-  format: "bounded webhook dispatch status"
+  format: "bounded webhook normalization status"
 n8n:
   webhook_id: daily_briefing_stub
   path: /webhook/yggy-daily-briefing
   method: POST
   payload:
-    purpose: daily_briefing_stub
+    purpose: daily_briefing_payload_normalizer
+    delivery_target: briefings
+    title: Daily Local AI Security Briefing
+    summary: Example approved digest payload for n8n normalization.
+    items:
+      - title: Example local AI security item
+        impact: Demonstrates bounded payload normalization without external posting.
+        url: https://example.com/feed.xml
+    sources:
+      - https://example.com/feed.xml
 ```
 
 The shared webhook secret is read from `N8N_WEBHOOK_SHARED_SECRET` by the
@@ -141,6 +150,10 @@ worker. n8n should validate the same header through its credential store, for
 example with a Header Auth credential named `Yggy Webhook Header Auth`. Do not
 place webhook secrets, URLs with credentials, n8n credential values, or API
 tokens in task YAML.
+
+Live n8n webhook responses are recorded in the run log as bounded, redacted JSON
+when the workflow returns JSON. The starter workflow returns a normalized digest
+payload summary and intentionally omits inbound request headers.
 
 ## Secret References
 

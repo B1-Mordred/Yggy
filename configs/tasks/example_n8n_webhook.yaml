@@ -1,5 +1,5 @@
 id: daily_briefing_n8n_stub
-name: Daily Briefing n8n Webhook Stub
+name: Daily Briefing n8n Payload Normalizer
 type: n8n_webhook
 enabled: false
 owner: local_user
@@ -13,7 +13,7 @@ trigger:
 output:
   channel: internal
   target: n8n
-  format: "bounded webhook dispatch status"
+  format: "bounded webhook normalization status"
 
 policy:
   approval_level: L1_NOTIFY_ONLY
@@ -46,5 +46,13 @@ n8n:
   path: /webhook/yggy-daily-briefing
   method: POST
   payload:
-    purpose: daily_briefing_stub
+    purpose: daily_briefing_payload_normalizer
     delivery_target: briefings
+    title: Daily Local AI Security Briefing
+    summary: Example approved digest payload for n8n normalization.
+    items:
+      - title: Example local AI security item
+        impact: Demonstrates bounded payload normalization without external posting.
+        url: https://example.com/feed.xml
+    sources:
+      - https://example.com/feed.xml

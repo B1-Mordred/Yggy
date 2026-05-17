@@ -29,12 +29,14 @@ configs/tasks/example_n8n_webhook.yaml
 It is disabled and dry-run by default. Dry-run mode records the dispatch payload
 shape but does not call n8n.
 
-## Stub Workflow
+## Payload Normalizer Workflow
 
 `workflows/daily_briefing_webhook_stub.json` is a minimal importable starting
 point. It uses n8n's built-in Header Auth on the Webhook node, so requests with
 missing or wrong `X-Yggy-Webhook-Token` values are rejected before the workflow
-body runs.
+body runs. After authentication, it normalizes the approved Yggy dispatch payload
+and returns a bounded JSON result to the worker. It does not send Discord
+messages, call external APIs, write files, or execute commands.
 
 Before activating the workflow, create an n8n credential named:
 
@@ -57,6 +59,10 @@ The imported Webhook node path is:
 ```text
 yggy-daily-briefing
 ```
+
+The response includes fields such as `action`, `task_id`, `run_id`,
+`payload_keys`, `delivery_target`, `purpose`, and a bounded `normalized` object.
+The workflow intentionally does not return inbound request headers.
 
 Avoid Execute Command and filesystem nodes. Keep any n8n credentials in n8n's
 credential store.

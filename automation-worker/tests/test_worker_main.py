@@ -237,7 +237,7 @@ def test_process_n8n_webhook_records_internal_decision(monkeypatch):
             "enabled": True,
             "config": {
                 "id": "daily_briefing_n8n_stub",
-                "name": "Daily Briefing n8n Webhook Stub",
+                "name": "Daily Briefing n8n Payload Normalizer",
                 "type": "n8n_webhook",
                 "runtime": {"dry_run": True},
                 "output": {"channel": "internal", "target": "n8n"},
