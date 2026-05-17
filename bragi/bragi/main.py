@@ -84,6 +84,20 @@ SOURCE_ALIASES = {
     "docker": "docker_blog",
     "docker blog": "docker_blog",
 }
+SOURCE_SEARCH_ALIASES = {
+    "cisa": "cisa_news_events",
+    "cisa news": "cisa_news_events",
+    "kev": "cisa_known_exploited_vulnerabilities_catalog",
+    "known exploited vulnerabilities": "cisa_known_exploited_vulnerabilities_catalog",
+    "known exploited vulnerability": "cisa_known_exploited_vulnerabilities_catalog",
+    "nvd": "nist_national_vulnerability_database",
+    "national vulnerability database": "nist_national_vulnerability_database",
+    "nasa": "nasa_news",
+    "wikipedia": "wikipedia",
+    "tagesschau": "tagesschau_rss_alle_meldungen",
+    "netzpolitik": "netzpolitik_org_rss",
+    "heise": "heise_online_newsticker",
+}
 CHECK_ALIASES = {
     "open webui": "open_webui",
     "open-webui": "open_webui",
@@ -673,7 +687,8 @@ def build_context(query: str, *, user_id: str = DEFAULT_USER_ID, category: str |
 
 
 def approved_source_summaries(*, limit: int) -> list[dict[str, Any]]:
-    sources = read_yaml_registry("sources/approved_sources.yaml", "sources")
+    response = api_request("GET", "/sources")
+    sources = response.get("data") if isinstance(response.get("data"), list) else response if isinstance(response, list) else []
     return [
         {
             "id": source.get("id"),
@@ -682,9 +697,12 @@ def approved_source_summaries(*, limit: int) -> list[dict[str, Any]]:
             "enabled": source.get("enabled"),
             "categories": source.get("categories", []),
             "trust_level": source.get("trust_level"),
+            "ai_safe_fit": source.get("ai_safe_fit"),
+            "ingestion_mode": source.get("ingestion_mode"),
             "max_items": source.get("max_items"),
         }
         for source in sources[:limit]
+        if isinstance(source, dict)
     ]
 
 
@@ -839,7 +857,10 @@ def format_context_answer(context: dict[str, Any]) -> str:
         lines.extend(["", "Approved sources:"])
         for source in sources[:10]:
             categories = ", ".join(source.get("categories") or [])
-            lines.append(f"- `{source.get('id')}`: {source.get('name')} ({source.get('type')}, {source.get('trust_level')}, {categories})")
+            lines.append(
+                f"- `{source.get('id')}`: {source.get('name')} "
+                f"({source.get('type')}, {source.get('trust_level')}, mode `{source.get('ingestion_mode')}`, {categories})"
+            )
     research = data.get("research")
     if isinstance(research, dict):
         lines.extend(["", "Approved-source research:"])
@@ -1172,16 +1193,21 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
         )
         return diagnostic
     if is_confirmation(user_text):
+        source_selection = pending_source_selection_from_prior(prior)
         pending = pending_intent_from_prior(prior)
         diagnostic.update(
             {
                 "mode": "confirmation",
-                "route": "heimdal_prepare_yggdrasil_request" if pending else "none",
+                "route": "heimdal_validate_intent" if source_selection else "heimdal_prepare_yggdrasil_request" if pending else "none",
                 "reason": (
+                    "Confirmation with pending approved-source selection."
+                    if source_selection
+                    else
                     "Confirmation with pending canonical intent."
                     if pending
                     else "Confirmation phrase without a pending canonical intent."
                 ),
+                "pending_source_selection_found": bool(source_selection),
                 "pending_intent_found": bool(pending),
                 "candidate_intent": diagnostic_intent(pending),
             }
@@ -1221,6 +1247,15 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
                 "route": "yggdrasil_canonical_action",
                 "reason": "Request maps to a deterministic task operation.",
                 "operation": operation,
+            }
+        )
+        return diagnostic
+
+    if source_search_requested(user_text):
+        diagnostic.update(
+            {
+                "route": "source_selection",
+                "reason": "Request changes a topic digest using natural approved-source names; Bragi must resolve sources before building a canonical intent.",
             }
         )
         return diagnostic
@@ -1286,6 +1321,10 @@ def is_confirmation(text: str) -> bool:
         "do it",
         "yes go ahead",
         "yes, go ahead",
+        "confirm sources",
+        "confirm source selection",
+        "use those sources",
+        "use these sources",
     }
 
 
@@ -1297,6 +1336,18 @@ def pending_intent_from_prior(text: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict) and payload.get("intent") in {"draft_task", "propose_task_change"} and payload.get("capability_id"):
+            return payload
+    return None
+
+
+def pending_source_selection_from_prior(text: str) -> dict[str, Any] | None:
+    matches = list(re.finditer(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL))
+    for match in reversed(matches):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("source_selection_action") == "confirm_topic_digest_sources":
             return payload
     return None
 
@@ -1586,6 +1637,245 @@ def n8n_intent(user_text: str) -> dict[str, Any]:
     }
 
 
+def approved_sources_from_api() -> list[dict[str, Any]]:
+    response = api_request("GET", "/sources")
+    if isinstance(response, dict) and isinstance(response.get("data"), list):
+        sources = response["data"]
+    elif isinstance(response, list):
+        sources = response
+    else:
+        sources = []
+    return [source for source in sources if isinstance(source, dict) and source.get("enabled", True)]
+
+
+def normalize_match_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def source_search_terms_from_text(text: str) -> list[str]:
+    subject_terms = brief_subject_terms_from_text(text)
+    if not subject_terms:
+        topic = topic_from_text(text)
+        subject_terms = [topic] if topic else []
+    terms: list[str] = []
+    for subject in subject_terms:
+        for part in re.split(r"\band\b|,|/|&|\+", subject, flags=re.IGNORECASE):
+            cleaned = re.sub(
+                r"\b(source|sources|feed|feeds|rss|news|updates|brief|briefing|digest|security|local ai)\b",
+                " ",
+                part,
+                flags=re.IGNORECASE,
+            )
+            cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,-")
+            if len(cleaned) >= 2 and cleaned.lower() not in {item.lower() for item in terms}:
+                terms.append(cleaned[:80])
+    return terms[:8]
+
+
+def source_search_requested(text: str) -> bool:
+    lowered = text.lower()
+    if not is_topic_digest_subject_change_request(text):
+        return False
+    terms = source_search_terms_from_text(text)
+    if not terms:
+        return False
+    if source_ids_from_text(text):
+        return False
+    known_aliases = set(SOURCE_SEARCH_ALIASES)
+    return any(
+        term.lower() in known_aliases
+        or len(term) <= 6
+        or re.search(r"\b(source|sources|feed|feeds|rss)\b", lowered)
+        for term in terms
+    )
+
+
+def source_haystack(source: dict[str, Any]) -> str:
+    pieces = [
+        str(source.get("id") or ""),
+        str(source.get("name") or ""),
+        str(source.get("description") or ""),
+        str(source.get("trust_level") or ""),
+        str(source.get("ai_safe_fit") or ""),
+        str(source.get("source_type_label") or ""),
+        " ".join(str(item) for item in source.get("categories", []) if str(item).strip())
+        if isinstance(source.get("categories"), list)
+        else "",
+    ]
+    return normalize_match_text(" ".join(pieces).replace("_", " "))
+
+
+def score_source_match(term: str, source: dict[str, Any]) -> int:
+    normalized_term = normalize_match_text(term)
+    if not normalized_term:
+        return 0
+    source_id = str(source.get("id") or "")
+    name = normalize_match_text(str(source.get("name") or ""))
+    haystack = source_haystack(source)
+    if SOURCE_SEARCH_ALIASES.get(normalized_term) == source_id:
+        return 1000
+    score = 0
+    if normalized_term == normalize_match_text(source_id):
+        score += 500
+    if normalized_term == name:
+        score += 400
+    if normalized_term in normalize_match_text(source_id):
+        score += 180
+    if normalized_term in name:
+        score += 160
+    words = [word for word in normalized_term.split() if len(word) >= 2]
+    if words and all(word in haystack for word in words):
+        score += 90
+    elif any(word in haystack for word in words):
+        score += 25
+    return score
+
+
+def match_sources_for_terms(terms: list[str], sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    for term in terms:
+        scored = sorted(
+            (
+                {"term": term, "score": score_source_match(term, source), "source": source}
+                for source in sources
+            ),
+            key=lambda item: item["score"],
+            reverse=True,
+        )
+        viable = [item for item in scored if item["score"] >= 80]
+        if not viable:
+            matches.append({"term": term, "selected": None, "alternatives": []})
+            continue
+        selected = viable[0]["source"]
+        selected_id = str(selected.get("id") or "")
+        if selected_id in selected_ids and len(viable) > 1:
+            for candidate in viable[1:]:
+                candidate_id = str(candidate["source"].get("id") or "")
+                if candidate_id not in selected_ids:
+                    selected = candidate["source"]
+                    selected_id = candidate_id
+                    break
+        if selected_id:
+            selected_ids.add(selected_id)
+        alternatives = [
+            item["source"]
+            for item in viable[1:4]
+            if str(item["source"].get("id") or "") != selected_id
+        ]
+        matches.append({"term": term, "selected": selected, "alternatives": alternatives})
+    return matches
+
+
+def source_descriptor(source: dict[str, Any]) -> str:
+    return (
+        f"`{source.get('id')}`: {source.get('name')} "
+        f"({source.get('type')}, mode `{source.get('ingestion_mode') or 'unknown'}`, "
+        f"fit `{source.get('ai_safe_fit') or source.get('trust_level') or 'unknown'}`)"
+    )
+
+
+def source_selection_intent(text: str) -> dict[str, Any] | None:
+    if not source_search_requested(text):
+        return None
+    terms = source_search_terms_from_text(text)
+    sources = approved_sources_from_api()
+    matches = match_sources_for_terms(terms, sources)
+    selected = [match["selected"] for match in matches if isinstance(match.get("selected"), dict)]
+    selected_ids = [str(source.get("id")) for source in selected if source.get("id")]
+    if not selected_ids:
+        return {
+            "status": "no_match",
+            "terms": terms,
+            "matches": matches,
+            "task_id": task_alias_from_text(text) or "daily_local_ai_security_briefing",
+            "original_request": text,
+        }
+    include_terms = [term for term in terms if len(term) >= 2]
+    return {
+        "status": "matched",
+        "terms": terms,
+        "matches": matches,
+        "selected_source_ids": selected_ids,
+        "include_terms": include_terms,
+        "task_id": task_alias_from_text(text) or "daily_local_ai_security_briefing",
+        "original_request": text,
+    }
+
+
+def format_source_selection(selection: dict[str, Any]) -> str:
+    terms = selection.get("terms") if isinstance(selection.get("terms"), list) else []
+    if selection.get("status") != "matched":
+        return "\n".join(
+            [
+                "I searched the approved source registry, but I could not find a clear source match.",
+                "",
+                f"- Search terms: {', '.join(f'`{term}`' for term in terms) if terms else '`none`'}",
+                "",
+                "Tell me the approved source IDs to use, or ask me to list matching sources first. I will not invent a source or send an arbitrary URL to Yggdrasil.",
+            ]
+        )
+    lines = [
+        "I found approved sources that can be used for that brief change:",
+        "",
+    ]
+    for match in selection.get("matches", []):
+        if not isinstance(match, dict):
+            continue
+        term = match.get("term")
+        selected = match.get("selected")
+        if isinstance(selected, dict):
+            lines.append(f"- `{term}` -> {source_descriptor(selected)}")
+        else:
+            lines.append(f"- `{term}` -> no clear match")
+        alternatives = match.get("alternatives") if isinstance(match.get("alternatives"), list) else []
+        if alternatives:
+            rendered = "; ".join(source_descriptor(source) for source in alternatives[:3] if isinstance(source, dict))
+            if rendered:
+                lines.append(f"  Other close match(es): {rendered}")
+    lines.extend(
+        [
+            "",
+            "Reply `confirm sources` to generate the canonical Yggy task-change intent from these selected source IDs.",
+            "This confirms source selection only. Yggy confirmation and approval still control whether anything changes.",
+            "",
+            "Pending source selection:",
+            f"```json\n{json.dumps(source_selection_pending_payload(selection), indent=2, sort_keys=True)}\n```",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def source_selection_pending_payload(selection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source_selection_action": "confirm_topic_digest_sources",
+        "capability_id": "topic_digest.modify_subjects.v1",
+        "task_id": selection.get("task_id") or "daily_local_ai_security_briefing",
+        "selected_source_ids": selection.get("selected_source_ids", []),
+        "include_terms": selection.get("include_terms", []),
+        "original_request": redact_diagnostic_text(str(selection.get("original_request") or ""))[:500],
+    }
+
+
+def source_selection_to_intent(selection: dict[str, Any]) -> dict[str, Any]:
+    source_ids = [str(item) for item in selection.get("selected_source_ids", []) if str(item).strip()]
+    include_terms = [str(item) for item in selection.get("include_terms", []) if str(item).strip()]
+    return {
+        "intent": "propose_task_change",
+        "capability_id": "topic_digest.modify_subjects.v1",
+        "confidence": 0.88,
+        "requires_user_confirmation": True,
+        "user_confirmation_obtained": False,
+        "user_request": str(selection.get("original_request") or "approved source selection"),
+        "slots": {
+            "task_id": str(selection.get("task_id") or "daily_local_ai_security_briefing"),
+            "name": "Daily Local AI Security Briefing",
+            "add_source_ids": source_ids,
+            "add_include": include_terms,
+        },
+    }
+
+
 def schedule_cron(text: str, *, default: str) -> str:
     match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
     if not match:
@@ -1657,13 +1947,13 @@ def include_terms_from_text(text: str) -> list[str]:
 
 def brief_subject_terms_from_text(text: str) -> list[str]:
     patterns = [
-        r"\badd\s+(.+?)\s+(?:to|into)\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
-        r"\binclude\s+(.+?)\s+in\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
-        r"\bcover\s+(.+?)\s+in\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
-        r"\bremove\s+(.+?)\s+from\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
-        r"\bdrop\s+(.+?)\s+from\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
-        r"\bexclude\s+(.+?)\s+from\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b",
-        r"\bstop\s+covering\s+(.+?)(?:\s+(?:in|from)\s+(?:the\s+)?(?:daily\s+)?(?:brief|briefing|digest)\b|$)",
+        r"\badd\s+(.+?)\s+(?:to|into)\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b",
+        r"\binclude\s+(.+?)\s+in\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b",
+        r"\bcover\s+(.+?)\s+in\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b",
+        r"\bremove\s+(.+?)\s+from\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b",
+        r"\bdrop\s+(.+?)\s+from\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b",
+        r"\bexclude\s+(.+?)\s+from\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b",
+        r"\bstop\s+covering\s+(.+?)(?:\s+(?:in|from)\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b|$)",
     ]
     subject = ""
     for pattern in patterns:
@@ -1893,6 +2183,11 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
         return format_memory_query_answer(user_id)
 
     if is_confirmation(user_text):
+        source_selection = pending_source_selection_from_prior(prior)
+        if source_selection:
+            intent = source_selection_to_intent(source_selection)
+            result = api_request("POST", "/capabilities/validate-intent", intent)
+            return format_gateway_result(result, intent)
         pending = pending_intent_from_prior(prior)
         if not pending:
             return "I do not have a pending canonical intent to confirm."
@@ -1919,6 +2214,10 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     if operation is not None:
         yggdrasil = yggdrasil_canonical_request(operation)
         return yggdrasil.get("answer") or json.dumps(yggdrasil, indent=2)
+
+    source_selection = source_selection_intent(user_text)
+    if source_selection is not None:
+        return format_source_selection(source_selection)
 
     intent = build_candidate_intent(user_text)
     if intent is None:

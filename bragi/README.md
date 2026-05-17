@@ -110,6 +110,7 @@ For existing briefs, Bragi can propose bounded subject/source changes:
 
 ```text
 add Docker security updates to the daily brief
+add CISA and NVD to the security brief
 remove n8n releases from the daily brief
 include Open WebUI release notes in the daily local AI security briefing
 ```
@@ -117,6 +118,13 @@ include Open WebUI release notes in the daily local AI security briefing
 These requests become canonical `propose_task_change` intents. They may only
 use approved source IDs and filter terms, then Yggdrasil creates a pending Yggy
 task-change proposal. Bragi does not approve, apply, enable, or run the change.
+
+When the user names sources naturally instead of giving exact source IDs, Bragi
+first reads `GET /sources`, shows the matching approved source IDs with their
+ingestion modes, and asks for `confirm sources`. Only after that source-selection
+confirmation does Bragi generate the canonical `topic_digest.modify_subjects.v1`
+intent for normal Heimdal validation and Yggy confirmation. This prevents
+unsupported or ambiguous source names from being forced into Yggdrasil.
 
 Useful runtime settings:
 

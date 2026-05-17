@@ -121,7 +121,7 @@ The context layer may read:
 - service status from `GET /health`
 - capability summaries from `GET /capabilities`
 - approved-source research from `POST /research/query`
-- approved sources from `configs/sources/approved_sources.yaml`
+- approved sources from `GET /sources`
 - approved health checks from `configs/metrics/services.yaml`
 - approved n8n webhook IDs from `configs/n8n/webhooks.yaml`
 - static non-secret Bragi memory from `configs/bragi/memory.yaml`
@@ -168,6 +168,21 @@ That endpoint returns only suggested canonical-intent slots such as approved
 resulting canonical intent to Heimdal, show the user the confirmation summary,
 and wait for user confirmation before Yggdrasil receives a deterministic
 request.
+
+For brief-change requests that name sources naturally, such as:
+
+```text
+add CISA and NVD to the security brief
+```
+
+Bragi first searches `GET /sources` and shows matching approved source IDs,
+source type, AI-safe fit, and ingestion mode. The reply contains a pending
+source-selection object, not a canonical task-change intent. If the user replies
+`confirm sources`, Bragi then creates a `topic_digest.modify_subjects.v1`
+canonical intent and sends it through Heimdal validation. The usual canonical
+intent confirmation and Yggy approval path still apply after that. This keeps
+natural source matching out of Yggdrasil and prevents arbitrary URLs or
+unsupported sources from being smuggled into task YAML.
 
 See `docs/RESEARCH_GATEWAY.md`.
 
