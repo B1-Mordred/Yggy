@@ -25,6 +25,8 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "data-view=\"tasks\"" in allowed.text
     assert "data-view=\"proposals\"" in allowed.text
     assert "data-count=\"proposals\"" in allowed.text
+    assert "proposal-filter-q" in allowed.text
+    assert "approval-filter-q" in allowed.text
     assert "task-detail" in allowed.text
     assert "data-task-detail-id" in allowed.text
     assert "data-task-version-revert" in allowed.text
@@ -1108,6 +1110,7 @@ def test_ops_routes_are_not_in_openapi(client):
     assert "/ops" not in paths
     assert "/ops/status" not in paths
     assert "/ops/audit" not in paths
+    assert "/ops/reviews" not in paths
     assert "/ops/runs/{run_id}" not in paths
     assert "/ops/tasks/{task_id}" not in paths
     assert "/ops/tasks/{task_id}/run" not in paths

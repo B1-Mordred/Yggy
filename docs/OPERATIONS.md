@@ -156,7 +156,9 @@ It is split into views for overview, tasks, runs, proposals, approvals, audit,
 and retention so routine checks do not require scanning every table. It shows
 task state, latest runs, pending reviews, worker heartbeat, and retention status.
 The task and run views include browser-side filters for quick narrowing by text,
-state, type, or run status.
+state, type, or run status. Proposal, approval, and audit filters are backed by
+hidden server-side endpoints so larger review queues can be narrowed without
+exposing dashboard-only routes in the OpenAPI tool schema.
 Pending approvals include actions, worst-case failure mode, and the redacted task
 config. The dashboard can approve or reject pending approvals when the operator
 enters the approval nonce. It does not expose secrets, does not expose nonce
@@ -179,7 +181,9 @@ tool schema.
 The `Proposals` view contains pending draft, update, approval-request, and
 revert approvals with config diffs. The `Approvals` view is reserved for pending
 approvals that are not config proposals. This keeps routine config review
-separate from broader operational approvals as the queue grows.
+separate from broader operational approvals as the queue grows. Both views can
+filter by text, task id, requester, and approval level. Proposals can also filter
+by config change type.
 
 Prior config versions can be reverted from the task-detail panel. A revert does
 not immediately enable or run the task. It creates a new disabled

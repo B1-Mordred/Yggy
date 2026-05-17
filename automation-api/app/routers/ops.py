@@ -313,6 +313,66 @@ def ops_audit_events(
     }
 
 
+@router.get("/ops/reviews", include_in_schema=False)
+def ops_reviews(
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+    kind: Literal["all", "proposals", "approvals"] = Query(default="all"),
+    limit: int = Query(default=50, ge=1, le=100),
+    q: str | None = Query(default=None, min_length=1, max_length=128),
+    task_id: str | None = Query(default=None, min_length=1, max_length=128),
+    approval_level: str | None = Query(default=None, min_length=1, max_length=64),
+    requested_by: str | None = Query(default=None, min_length=1, max_length=128),
+    change_type: str | None = Query(default=None, min_length=1, max_length=64),
+) -> dict:
+    query = session.query(ApprovalModel).filter(ApprovalModel.status == "pending")
+    if task_id:
+        query = query.filter(ApprovalModel.task_id.ilike(f"%{task_id}%"))
+    if approval_level:
+        query = query.filter(ApprovalModel.approval_level == approval_level)
+    if requested_by:
+        query = query.filter(ApprovalModel.requested_by.ilike(f"%{requested_by}%"))
+    if q:
+        query = query.filter(
+            or_(
+                ApprovalModel.id.ilike(f"%{q}%"),
+                ApprovalModel.task_id.ilike(f"%{q}%"),
+                ApprovalModel.requested_by.ilike(f"%{q}%"),
+                ApprovalModel.approval_level.ilike(f"%{q}%"),
+                ApprovalModel.summary.ilike(f"%{q}%"),
+                ApprovalModel.risk.ilike(f"%{q}%"),
+            )
+        )
+
+    matched = []
+    for approval in query.order_by(ApprovalModel.created_at.desc()).all():
+        approval_change_type = _approval_change_type(session, approval)
+        is_proposal = approval_change_type in PROPOSAL_CHANGE_TYPES
+        if kind == "proposals" and not is_proposal:
+            continue
+        if kind == "approvals" and is_proposal:
+            continue
+        if change_type and approval_change_type != change_type:
+            continue
+        matched.append(approval)
+
+    selected = matched[:limit]
+    return {
+        "generated_at": utcnow(),
+        "kind": kind,
+        "limit": limit,
+        "filters": {
+            "q": q,
+            "task_id": task_id,
+            "approval_level": approval_level,
+            "requested_by": requested_by,
+            "change_type": change_type,
+        },
+        "counts": {"matched": len(matched), "returned": len(selected)},
+        "reviews": [_approval_summary(approval, session.get(TaskModel, approval.task_id), session=session) for approval in selected],
+    }
+
+
 @router.post("/ops/tasks/{task_id}/run", status_code=status.HTTP_202_ACCEPTED, include_in_schema=False)
 def ops_run_task(
     task_id: str,
@@ -888,8 +948,12 @@ def _approval_history_summary(approval: ApprovalModel) -> dict:
 
 
 def _approval_is_config_proposal(session: Session, approval: ApprovalModel) -> bool:
+    return _approval_change_type(session, approval) in PROPOSAL_CHANGE_TYPES
+
+
+def _approval_change_type(session: Session, approval: ApprovalModel) -> str | None:
     version = task_config_version_for_approval(session, approval.id)
-    return bool(version and version.change_type in PROPOSAL_CHANGE_TYPES)
+    return version.change_type if version else None
 
 
 def _approval_summary(
@@ -1294,10 +1358,63 @@ DASHBOARD_HTML = f"""<!doctype html>
       </section>
     </section>
     <section class="view" data-view="approvals">
-      <section class="section panel" id="approvals"></section>
+      <section class="section panel">
+        <div class="section-head">
+          <div>
+            <h2>General Approvals</h2>
+            <div class="meta" id="approval-filter-summary">Not loaded yet.</div>
+          </div>
+          <button id="approval-refresh" type="button">Refresh Approvals</button>
+        </div>
+        <div class="filter-bar" aria-label="Approval filters">
+          <input id="approval-filter-q" type="search" placeholder="Search approvals" aria-label="Search approvals">
+          <input id="approval-filter-task-id" type="search" placeholder="Task id" aria-label="Approval task id">
+          <input id="approval-filter-requested-by" type="search" placeholder="Requested by" aria-label="Approval requested by">
+          <select id="approval-filter-level" aria-label="Approval level">
+            <option value="">All levels</option>
+            <option value="L0_READ_ONLY">L0_READ_ONLY</option>
+            <option value="L1_NOTIFY_ONLY">L1_NOTIFY_ONLY</option>
+            <option value="L2_LOCAL_WRITE">L2_LOCAL_WRITE</option>
+            <option value="L3_EXTERNAL_SIDE_EFFECT">L3_EXTERNAL_SIDE_EFFECT</option>
+            <option value="L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE">L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE</option>
+          </select>
+          <button id="approval-filter-clear" type="button">Clear</button>
+        </div>
+        <div id="approvals"></div>
+      </section>
     </section>
     <section class="view" data-view="proposals">
-      <section class="section panel" id="proposals"></section>
+      <section class="section panel">
+        <div class="section-head">
+          <div>
+            <h2>Pending Proposals</h2>
+            <div class="meta" id="proposal-filter-summary">Not loaded yet.</div>
+          </div>
+          <button id="proposal-refresh" type="button">Refresh Proposals</button>
+        </div>
+        <div class="filter-bar" aria-label="Proposal filters">
+          <input id="proposal-filter-q" type="search" placeholder="Search proposals" aria-label="Search proposals">
+          <input id="proposal-filter-task-id" type="search" placeholder="Task id" aria-label="Proposal task id">
+          <input id="proposal-filter-requested-by" type="search" placeholder="Requested by" aria-label="Proposal requested by">
+          <select id="proposal-filter-level" aria-label="Proposal approval level">
+            <option value="">All levels</option>
+            <option value="L0_READ_ONLY">L0_READ_ONLY</option>
+            <option value="L1_NOTIFY_ONLY">L1_NOTIFY_ONLY</option>
+            <option value="L2_LOCAL_WRITE">L2_LOCAL_WRITE</option>
+            <option value="L3_EXTERNAL_SIDE_EFFECT">L3_EXTERNAL_SIDE_EFFECT</option>
+            <option value="L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE">L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE</option>
+          </select>
+          <select id="proposal-filter-change-type" aria-label="Proposal change type">
+            <option value="">All change types</option>
+            <option value="draft">draft</option>
+            <option value="update">update</option>
+            <option value="approval_request">approval_request</option>
+            <option value="revert_draft">revert_draft</option>
+          </select>
+          <button id="proposal-filter-clear" type="button">Clear</button>
+        </div>
+        <div id="proposals"></div>
+      </section>
     </section>
     <section class="view" data-view="audit">
       <section class="section panel">
@@ -1386,6 +1503,8 @@ DASHBOARD_HTML = f"""<!doctype html>
         button.classList.toggle('active', button.dataset.viewTarget === view);
       }});
       if (view === 'audit') loadAudit();
+      if (view === 'proposals') loadReviewQueue('proposals');
+      if (view === 'approvals') loadReviewQueue('approvals');
     }}
     function wireViewTabs() {{
       document.querySelectorAll('[data-view-target]').forEach(button => {{
@@ -1839,15 +1958,50 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     function renderProposals(proposals) {{
       const container = document.getElementById('proposals');
-      container.innerHTML = '<h2>Pending Proposals</h2><div class="meta">Draft, update, and revert approvals with config diffs.</div>'
-        + approvalCards(proposals, 'No pending config proposals.');
+      container.innerHTML = '<div class="meta">Draft, update, and revert approvals with config diffs.</div>'
+        + approvalCards(proposals, 'No pending config proposals match the current filters.');
       wireApprovalButtons(container);
     }}
     function renderApprovals(approvals) {{
       const container = document.getElementById('approvals');
-      container.innerHTML = '<h2>General Approvals</h2><div class="meta">Pending approvals that are not config proposals.</div>'
-        + approvalCards(approvals, 'No pending general approvals.');
+      container.innerHTML = '<div class="meta">Pending approvals that are not config proposals.</div>'
+        + approvalCards(approvals, 'No pending general approvals match the current filters.');
       wireApprovalButtons(container);
+    }}
+    function reviewFilterValues(kind) {{
+      const prefix = kind === 'proposals' ? 'proposal' : 'approval';
+      const filters = {{
+        q: fieldValue(`${{prefix}}-filter-q`),
+        task_id: fieldValue(`${{prefix}}-filter-task-id`),
+        requested_by: fieldValue(`${{prefix}}-filter-requested-by`),
+        approval_level: fieldValue(`${{prefix}}-filter-level`),
+      }};
+      if (kind === 'proposals') {{
+        filters.change_type = fieldValue('proposal-filter-change-type');
+      }}
+      return filters;
+    }}
+    async function loadReviewQueue(kind) {{
+      const prefix = kind === 'proposals' ? 'proposal' : 'approval';
+      const summary = byId(`${{prefix}}-filter-summary`);
+      summary.textContent = 'Loading reviews...';
+      try {{
+        const params = new URLSearchParams({{kind, limit: '100'}});
+        Object.entries(reviewFilterValues(kind)).forEach(([key, value]) => {{
+          if (value) params.set(key, value);
+        }});
+        const response = await fetch(`/ops/reviews?${{params.toString()}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const data = await response.json();
+        summary.textContent = `Showing ${{data.counts.returned}} of ${{data.counts.matched}} matching reviews.`;
+        if (kind === 'proposals') renderProposals(data.reviews || []);
+        else renderApprovals(data.reviews || []);
+      }} catch (error) {{
+        summary.textContent = `Unable to load reviews: ${{error.message}}`;
+      }}
     }}
     async function decideApproval(button) {{
       const approvalId = button.dataset.approvalId;
@@ -1968,6 +2122,28 @@ DASHBOARD_HTML = f"""<!doctype html>
         byId('run-filter-status').value = '';
         renderRuns();
       }});
+      ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by'].forEach(id => {{
+        byId(id).addEventListener('input', debounce(() => loadReviewQueue('proposals'), 350));
+      }});
+      ['proposal-filter-level', 'proposal-filter-change-type'].forEach(id => {{
+        byId(id).addEventListener('change', () => loadReviewQueue('proposals'));
+      }});
+      byId('proposal-filter-clear').addEventListener('click', () => {{
+        ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-change-type'].forEach(id => {{
+          byId(id).value = '';
+        }});
+        loadReviewQueue('proposals');
+      }});
+      ['approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by'].forEach(id => {{
+        byId(id).addEventListener('input', debounce(() => loadReviewQueue('approvals'), 350));
+      }});
+      byId('approval-filter-level').addEventListener('change', () => loadReviewQueue('approvals'));
+      byId('approval-filter-clear').addEventListener('click', () => {{
+        ['approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level'].forEach(id => {{
+          byId(id).value = '';
+        }});
+        loadReviewQueue('approvals');
+      }});
       ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'].forEach(id => {{
         byId(id).addEventListener('change', loadAudit);
       }});
@@ -1991,11 +2167,15 @@ DASHBOARD_HTML = f"""<!doctype html>
       try {{
         await loadStatus();
         if (activeView === 'audit') await loadAudit();
+        if (activeView === 'proposals') await loadReviewQueue('proposals');
+        if (activeView === 'approvals') await loadReviewQueue('approvals');
       }}
       catch (error) {{ document.getElementById('generated').textContent = `Unable to load status: ${{error.message}}`; }}
     }}
     document.getElementById('refresh').addEventListener('click', refresh);
     document.getElementById('audit-refresh').addEventListener('click', loadAudit);
+    document.getElementById('proposal-refresh').addEventListener('click', () => loadReviewQueue('proposals'));
+    document.getElementById('approval-refresh').addEventListener('click', () => loadReviewQueue('approvals'));
     wireViewTabs();
     wireFilters();
     refresh();
