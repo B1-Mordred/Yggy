@@ -203,6 +203,207 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
     assert "api_token" not in response.text
 
 
+def test_ops_task_run_requires_action_header(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_run_header", enabled=True)
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=True,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="enabled",
+                config=task,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/ops/tasks/ops_run_header/run",
+        auth=("operator", "test-dashboard-password"),
+        json={"mode": "dry_run"},
+    )
+
+    assert response.status_code == 403
+    assert "missing ops run action header" in response.text
+
+
+def test_ops_task_dry_run_queues_without_live_side_effects(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_dry_run_live_task", enabled=True, runtime={"dry_run": False})
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=True,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="enabled",
+                config=task,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        f"/ops/tasks/{task['id']}/run",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "manual-run"},
+        json={"mode": "dry_run"},
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "queued_dry_run"
+    assert body["mode"] == "dry_run"
+    with Session(get_engine()) as session:
+        run = session.get(RunModel, body["run_id"])
+        audit = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.resource_id == task["id"])
+            .order_by(AuditEventModel.created_at.desc())
+            .first()
+        )
+        assert run is not None
+        assert run.status == "queued_dry_run"
+        assert run.log["dry_run"] is True
+        assert audit is not None
+        assert audit.actor_role == "ops_dashboard"
+        assert audit.action == "task.run"
+
+
+def test_ops_task_live_run_queues_enabled_l1_with_live_override(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_live_run", enabled=True, runtime={"dry_run": True})
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=True,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="enabled",
+                config=task,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        f"/ops/tasks/{task['id']}/run",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "manual-run"},
+        json={"mode": "live"},
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["mode"] == "live"
+    with Session(get_engine()) as session:
+        run = session.get(RunModel, body["run_id"])
+        assert run is not None
+        assert run.status == "queued"
+        assert run.log["dry_run"] is False
+
+
+def test_ops_task_live_run_rejects_disabled_and_l2_tasks(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    disabled = sample_task("ops_live_disabled", enabled=False, runtime={"dry_run": False})
+    l2 = sample_task("ops_live_l2", "L2_LOCAL_WRITE", enabled=True, runtime={"dry_run": False})
+    with Session(get_engine()) as session:
+        for task in (disabled, l2):
+            session.add(
+                TaskModel(
+                    id=task["id"],
+                    name=task["name"],
+                    type=task["type"],
+                    enabled=task["enabled"],
+                    owner=task["owner"],
+                    created_by=task["created_by"],
+                    approval_level=task["policy"]["approval_level"],
+                    status="enabled" if task["enabled"] else "draft",
+                    config=task,
+                )
+            )
+        session.commit()
+
+    disabled_response = client.post(
+        "/ops/tasks/ops_live_disabled/run",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "manual-run"},
+        json={"mode": "live"},
+    )
+    l2_response = client.post(
+        "/ops/tasks/ops_live_l2/run",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "manual-run"},
+        json={"mode": "live"},
+    )
+
+    assert disabled_response.status_code == 403
+    assert "enabled" in disabled_response.text
+    assert l2_response.status_code == 403
+    assert "L2+" in l2_response.text
+
+
+def test_ops_task_live_run_preserves_recent_completion_dedupe(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_recent_live_dedupe", enabled=True, runtime={"dry_run": False})
+    recent_run_id = str(uuid.uuid4())
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=True,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="enabled",
+                config=task,
+            )
+        )
+        session.add(
+            RunModel(
+                id=recent_run_id,
+                task_id=task["id"],
+                status="completed",
+                log={"message": "recent live run"},
+                completed_at=utcnow(),
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        f"/ops/tasks/{task['id']}/run",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "manual-run"},
+        json={"mode": "live"},
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["run_id"] == recent_run_id
+    assert body["status"] == "duplicate_recent"
+    assert body["deduplicated"] is True
+    assert body["reason"] == "recent_completed_run"
+
+
 def test_ops_approval_requires_action_header(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
@@ -304,5 +505,6 @@ def test_ops_routes_are_not_in_openapi(client):
     assert "/ops" not in paths
     assert "/ops/status" not in paths
     assert "/ops/runs/{run_id}" not in paths
+    assert "/ops/tasks/{task_id}/run" not in paths
     assert "/ops/approvals/{approval_id}/approve" not in paths
     assert "/ops/approvals/{approval_id}/reject" not in paths

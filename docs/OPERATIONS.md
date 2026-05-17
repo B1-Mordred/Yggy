@@ -162,6 +162,20 @@ of the run: topic digest message and items, n8n normalizer response, notificatio
 decision, and Discord send result. It intentionally does not expose raw logs,
 API keys, approval nonces, webhook secrets, or dashboard credentials.
 
+Task rows include manual run controls:
+
+```text
+Dry run
+Live run
+```
+
+`Dry run` queues `queued_dry_run` and overrides the task runtime for that single
+run so external delivery remains suppressed by the worker. `Live run` queues a
+live run only for enabled L0/L1 tasks. L2+ live runs still require the admin API
+or a narrower future approval flow, and L4 remains manual-only. Manual run
+actions use the same active-run lock and recent-live dedupe window as the
+OpenAPI task run endpoint.
+
 Configure it with separate local credentials:
 
 ```text

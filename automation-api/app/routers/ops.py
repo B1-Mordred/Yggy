@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import secrets
 from html import escape
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
@@ -17,13 +17,15 @@ from app.config import get_settings
 from app.database import get_session
 from app.models import ApprovalModel, AuditEventModel, HeartbeatModel, RunModel, TaskModel, utcnow
 from app.routers.health import WORKER_HEARTBEAT_MAX_AGE_SECONDS, heartbeat_to_dict
-from app.schemas import ApprovalLevel
+from app.routers.tasks import queue_task_run
+from app.schemas import ApprovalLevel, approval_at_least
 from app.services.approval_service import approve_request, reject_request, verify_nonce
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(tags=["ops"])
 basic_security = HTTPBasic(auto_error=False)
 OPS_ACTION_HEADER = "approval-decision"
+OPS_RUN_ACTION_HEADER = "manual-run"
 MAX_RUN_DETAIL_ITEMS = 10
 MAX_RUN_DETAIL_ERRORS = 10
 MAX_RUN_DETAIL_TEXT = 6000
@@ -51,6 +53,10 @@ class OpsApprovalDecision(BaseModel):
 
 class OpsApprovalRejection(BaseModel):
     reason: str = Field(default="", max_length=500)
+
+
+class OpsTaskRunRequest(BaseModel):
+    mode: Literal["dry_run", "live"] = "dry_run"
 
 
 def require_ops_access(
@@ -87,6 +93,13 @@ def require_ops_access(
 def require_ops_action_header(x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action")) -> None:
     if x_yggy_ops_action != OPS_ACTION_HEADER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops action header")
+
+
+def require_ops_run_action_header(
+    x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
+) -> None:
+    if x_yggy_ops_action != OPS_RUN_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops run action header")
 
 
 @router.get("/ops", response_class=HTMLResponse, include_in_schema=False)
@@ -175,6 +188,37 @@ def ops_run_detail(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
     task = session.get(TaskModel, run.task_id)
     return _run_detail(run, task)
+
+
+@router.post("/ops/tasks/{task_id}/run", status_code=status.HTTP_202_ACCEPTED, include_in_schema=False)
+def ops_run_task(
+    task_id: str,
+    payload: OpsTaskRunRequest,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_run_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    task = session.get(TaskModel, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    level = ApprovalLevel(task.approval_level)
+    if level == ApprovalLevel.L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="L4 tasks are manual only")
+
+    dry_run = payload.mode == "dry_run"
+    if not dry_run:
+        if not task.enabled:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="task must be enabled for live run")
+        if approval_at_least(level, ApprovalLevel.L2_LOCAL_WRITE):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin API required for live L2+ task")
+
+    result = queue_task_run(session, task, dry_run=dry_run, actor_role="ops_dashboard")
+    return {
+        **result,
+        "mode": payload.mode,
+        "task_id": task.id,
+        "message": result.get("message") or f"{payload.mode.replace('_', '-')} run queued",
+    }
 
 
 @router.post("/ops/approvals/{approval_id}/approve", include_in_schema=False)
@@ -647,6 +691,9 @@ DASHBOARD_HTML = f"""<!doctype html>
     .detail-block.wide {{ grid-column: 1 / -1; }}
     .digest-items {{ margin: 0; padding-left: 22px; }}
     .digest-items li {{ margin: 7px 0; }}
+    .run-actions {{ display: flex; gap: 6px; flex-wrap: wrap; }}
+    .run-actions button {{ padding: 6px 9px; }}
+    .run-actions button:disabled {{ cursor: not-allowed; opacity: 0.55; }}
     @media (max-width: 860px) {{
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
@@ -671,6 +718,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     <section class="section">
       <h2>Tasks</h2>
       <div class="table-wrap"><table id="tasks"></table></div>
+      <div class="meta" id="run-action-status"></div>
     </section>
     <section class="section">
       <h2>Recent Runs</h2>
@@ -710,6 +758,53 @@ DASHBOARD_HTML = f"""<!doctype html>
       document.querySelectorAll('[data-run-id]').forEach(button => {{
         button.addEventListener('click', () => loadRunDetail(button.dataset.runId));
       }});
+    }}
+    const l2Plus = new Set(['L2_LOCAL_WRITE', 'L3_EXTERNAL_SIDE_EFFECT', 'L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE']);
+    function taskRunButtons(task) {{
+      const liveBlocked = !task.enabled || l2Plus.has(task.approval_level);
+      const liveTitle = !task.enabled ? 'Task must be enabled for a live run'
+        : l2Plus.has(task.approval_level) ? 'Live L2+ runs require the admin API'
+        : 'Queue live run';
+      return `<div class="run-actions">
+        <button type="button" data-task-run="true" data-task-id="${{esc(task.id)}}" data-run-mode="dry_run" title="Queue dry-run">Dry run</button>
+        <button type="button" data-task-run="true" data-task-id="${{esc(task.id)}}" data-run-mode="live" title="${{esc(liveTitle)}}"${{liveBlocked ? ' disabled' : ''}}>Live run</button>
+      </div>`;
+    }}
+    function wireTaskRunButtons() {{
+      document.querySelectorAll('[data-task-run]').forEach(button => {{
+        button.addEventListener('click', () => runTask(button));
+      }});
+    }}
+    async function runTask(button) {{
+      const taskId = button.dataset.taskId;
+      const mode = button.dataset.runMode;
+      const status = document.getElementById('run-action-status');
+      button.disabled = true;
+      status.textContent = `${{mode.replace('_', '-')}} request pending for ${{taskId}}...`;
+      status.className = 'meta';
+      try {{
+        const response = await fetch(`/ops/tasks/${{encodeURIComponent(taskId)}}/run`, {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'Content-Type': 'application/json', 'X-Yggy-Ops-Action': 'manual-run'}},
+          body: JSON.stringify({{mode}}),
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const body = await response.json();
+        status.textContent = body.deduplicated
+          ? `Run not queued: ${{body.reason}}; using ${{shortId(body.run_id)}}.`
+          : `Queued ${{mode.replace('_', '-')}} run ${{shortId(body.run_id)}}.`;
+        await refresh();
+        if (body.run_id) await loadRunDetail(body.run_id);
+      }} catch (error) {{
+        status.textContent = error.message;
+        status.className = 'meta bad';
+      }} finally {{
+        button.disabled = false;
+      }}
     }}
     function digestItems(items) {{
       return items && items.length ? `<ol class="digest-items">${{items.map(item => `
@@ -865,13 +960,14 @@ DASHBOARD_HTML = f"""<!doctype html>
         <div>Database: ${{statusLabel(data.service.database.connected, data.service.database.connected ? 'connected' : 'degraded')}}</div>
         <div>Worker: ${{statusLabel(data.service.worker.ok, data.service.worker.status)}} <span class="meta">last seen ${{text(data.service.worker.last_seen_at)}}</span></div>
       `;
-      renderTable('tasks', ['Task', 'Type', 'State', 'Trigger', 'Output', 'Latest Run'], data.tasks.map(task => [
+      renderTable('tasks', ['Task', 'Type', 'State', 'Trigger', 'Output', 'Latest Run', 'Actions'], data.tasks.map(task => [
         `<code>${{esc(task.id)}}</code><br><span class="meta">${{esc(task.name)}}</span>`,
         `<span class="pill">${{esc(task.type)}}</span><br><span class="meta">${{esc(task.approval_level)}}</span>`,
         `${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}}<br><span class="meta">dry run ${{task.dry_run}}</span>`,
         `<code>${{esc(task.trigger.cron)}}</code><br><span class="meta">${{esc(task.trigger.timezone)}}</span>`,
         `${{esc(task.output.channel)}}<br><span class="meta">${{esc(task.output.target)}}</span>`,
         task.latest_run ? `${{runButton(task.latest_run)}} ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
+        taskRunButtons(task),
       ]));
       renderTable('runs', ['Run', 'Task', 'Status', 'Result', 'Notification', 'Completed'], data.recent_runs.map(run => [
         runButton(run),
@@ -882,6 +978,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         esc(run.completed_at),
       ]));
       wireRunLinks();
+      wireTaskRunButtons();
       if (selectedRunId) loadRunDetail(selectedRunId);
       renderApprovals(data.pending_approvals);
       const latestRetention = data.retention.latest;

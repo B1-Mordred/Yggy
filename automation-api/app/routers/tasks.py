@@ -208,6 +208,17 @@ def run_task(
     if force and role != ApiRole.ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin required to force a duplicate run")
 
+    return queue_task_run(session, task, dry_run=dry_run, force=force, actor_role=role)
+
+
+def queue_task_run(
+    session: Session,
+    task: TaskModel,
+    *,
+    dry_run: bool,
+    force: bool = False,
+    actor_role: ApiRole | str,
+) -> dict:
     active_run = _latest_active_run(session, task.id)
     if active_run:
         return {
@@ -237,7 +248,7 @@ def run_task(
         log=redact_secrets({"message": "run queued", "dry_run": dry_run, "task_id": task.id}),
     )
     session.add(run)
-    audit_event(session, role, "task.run", "task", task.id, {"run_id": run.id, "dry_run": dry_run})
+    audit_event(session, actor_role, "task.run", "task", task.id, {"run_id": run.id, "dry_run": dry_run})
     session.commit()
     return {"run_id": run.id, "status": run.status, "deduplicated": False}
 
