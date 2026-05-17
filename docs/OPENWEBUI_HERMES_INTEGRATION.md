@@ -31,6 +31,11 @@ The helper stores only the model-facing `AUTOMATION_TOOL_API_KEY` in Open WebUI'
 
 The installed Yggdrasil action endpoint is intentionally scoped to this project only. Open WebUI-facing Yggdrasil requests should not be routed to older Hermes brief-management, profile-management, host-management, or proposal-queue domains.
 
+Yggdrasil may list and explain the local task template catalog for drafting
+help, but templates are not a separate execution path. Rendered templates remain
+disabled/dry-run task YAML and must go through automation API validation,
+approval, and enablement.
+
 ## Workspace Tools Warning
 
 Do not implement this system by giving Open WebUI Workspace Tools or Functions broad Python execution. Treat broad Python tools as shell-level trust. Use the automation API as the policy boundary instead.
@@ -61,3 +66,6 @@ Yggdrasil should not invent broad `web_query` sources for topic digests. Drafts
 should use approved feed IDs such as `open_webui_releases`, `ollama_releases`,
 `n8n_releases`, and `docker_blog`, then ask for approval before enabling or
 changing recurring delivery.
+
+For recurring task shapes, prefer the reviewed templates in
+`configs/task_templates/` and the workflow in `docs/TASK_TEMPLATES.md`.

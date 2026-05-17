@@ -18,6 +18,22 @@ python scripts/diff_registry.py --no-fail-on-drift
 
 See `docs/CONFIG_REGISTRY.md` for the full workflow.
 
+For common task shapes, use the template catalog instead of copying a previous
+task by hand:
+
+```bash
+python scripts/list_task_templates.py
+python scripts/render_task_template.py topic_digest \
+  --id draft_local_ai_weekday_briefing \
+  --name "Draft Local AI Weekday Briefing" \
+  --out configs/tasks/draft_local_ai_weekday_briefing.yaml
+python scripts/validate_configs.py
+```
+
+Rendered tasks are disabled and dry-run by default. They still require import,
+review, approval, and enablement through the normal control-plane workflow. See
+`docs/TASK_TEMPLATES.md`.
+
 The daily local AI/security briefing is an approved L1 notification task. It is
 scheduled for weekdays at 08:00 Europe/Berlin and sends to the whitelisted
 `briefings` Discord target. Its source list is restricted to enabled entries in

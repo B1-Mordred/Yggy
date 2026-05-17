@@ -109,6 +109,37 @@ def test_local_ai_security_draft_includes_run_safety_limits():
     assert draft["policy"]["min_seconds_between_runs"] == 300
 
 
+def test_list_task_templates_does_not_call_automation_api(monkeypatch):
+    def fail_automation_request(method: str, path: str, payload: dict | None = None):
+        raise AssertionError("template listing should be a local safe response")
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fail_automation_request)
+
+    answer = yggdrasil_action_api.route_chat(
+        [{"role": "user", "content": "list task templates"}],
+    )
+
+    assert "Task templates:" in answer
+    assert "`topic_digest`" in answer
+    assert "`server_health`" in answer
+    assert "disabled dry-run scaffolds" in answer
+
+
+def test_show_task_template_details(monkeypatch):
+    def fail_automation_request(method: str, path: str, payload: dict | None = None):
+        raise AssertionError("template details should be a local safe response")
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fail_automation_request)
+
+    answer = yggdrasil_action_api.route_chat(
+        [{"role": "user", "content": "show the backup verification template"}],
+    )
+
+    assert "Task template `backup_verification`" in answer
+    assert "Default approval: `L1_NOTIFY_ONLY`" in answer
+    assert "does not approve, enable, or run a task" in answer
+
+
 def test_show_latest_daily_brief_run(monkeypatch):
     calls: list[tuple[str, str]] = []
 

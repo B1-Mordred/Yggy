@@ -1,0 +1,75 @@
+id: n8n_webhook
+name: n8n Webhook Dispatch
+description: Draft a disabled internal n8n webhook task using an approved webhook ID and bounded static payload.
+task_type: n8n_webhook
+default_approval_level: L1_NOTIFY_ONLY
+allowed_output_targets:
+  - n8n
+required_fields:
+  - id
+  - name
+optional_fields:
+  - cron
+  - timezone
+  - output_target
+  - owner
+  - created_by
+safety_notes:
+  - Webhook IDs must exist in configs/n8n/webhooks.yaml.
+  - n8n remains an execution backend; task approval state stays in the automation API.
+  - Live webhook dispatch requires the worker-side shared secret from environment, not task YAML.
+example_prompts:
+  - Draft a disabled n8n payload normalizer task using the approved daily briefing webhook.
+  - Create an internal n8n webhook task for a bounded approved workflow.
+defaults:
+  owner: local_user
+  created_by: yggdrasil
+  trigger:
+    kind: schedule
+    cron: "15 8 * * 1-5"
+    timezone: Europe/Berlin
+  output:
+    channel: internal
+    target: n8n
+    format: "bounded webhook normalization status"
+  policy:
+    approval_level: L1_NOTIFY_ONLY
+    max_items: 1
+    require_sources: false
+    max_runs_per_hour: 3
+    max_runs_per_day: 10
+    min_seconds_between_runs: 300
+    allow_external_side_effects: false
+    allow_shell: false
+    allow_docker_socket: false
+    allow_filesystem_write: false
+  runtime:
+    dry_run: true
+    timeout_seconds: 60
+    retry_count: 1
+  notifications:
+    on_success: false
+    on_failure: true
+    on_empty_result: false
+    quiet_hours:
+      enabled: false
+      start: "22:00"
+      end: "07:00"
+      timezone: Europe/Berlin
+    collapse_repeated_failures: true
+    failure_collapse_window_minutes: 120
+  n8n:
+    webhook_id: daily_briefing_stub
+    path: /webhook/yggy-daily-briefing
+    method: POST
+    payload:
+      purpose: daily_briefing_payload_normalizer
+      delivery_target: briefings
+      title: Daily Local AI Security Briefing
+      summary: Example approved digest payload for n8n normalization.
+      items:
+        - title: Example local AI security item
+          impact: Demonstrates bounded payload normalization without external posting.
+          url: https://example.com/feed.xml
+      sources:
+        - https://example.com/feed.xml

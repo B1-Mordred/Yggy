@@ -4,6 +4,10 @@ Configuration here is declarative and non-secret. Task YAML may reference creden
 
 Use `scripts/validate_configs.py` before enabling or deploying a task.
 
+Reusable task templates live in `configs/task_templates/`. They render disabled,
+dry-run task YAML through `scripts/render_task_template.py` and must still pass
+the normal task schema and policy checks. See `docs/TASK_TEMPLATES.md`.
+
 Topic digest tasks must use source IDs from `configs/sources/approved_sources.yaml`.
 Generic `web_query` sources are disabled by policy for topic digests so the worker
 uses explicit approved feeds rather than broad search-style prompts.

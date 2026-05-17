@@ -58,6 +58,49 @@ AUTOMATION_TASK_ALIASES = {
     'local ai security briefing': 'daily_local_ai_security_briefing',
     'local ai/security briefing': 'daily_local_ai_security_briefing',
 }
+TASK_TEMPLATE_SUMMARIES = {
+    'topic_digest': {
+        'name': 'Topic Digest',
+        'task_type': 'topic_digest',
+        'approval_level': 'L1_NOTIFY_ONLY',
+        'targets': ['briefings', 'alerts'],
+        'purpose': 'Draft a bounded digest from approved source IDs and deliver it to a whitelisted Discord target.',
+    },
+    'server_health': {
+        'name': 'Server Health Check',
+        'task_type': 'server_health',
+        'approval_level': 'L1_NOTIFY_ONLY',
+        'targets': ['alerts'],
+        'purpose': 'Draft a read-only service health task that alerts only on anomalies.',
+    },
+    'backup_verification': {
+        'name': 'Backup Verification',
+        'task_type': 'backup_verification',
+        'approval_level': 'L1_NOTIFY_ONLY',
+        'targets': ['alerts'],
+        'purpose': 'Draft a read-only backup verification task for recent Yggy backup directories.',
+    },
+    'n8n_webhook': {
+        'name': 'n8n Webhook Dispatch',
+        'task_type': 'n8n_webhook',
+        'approval_level': 'L1_NOTIFY_ONLY',
+        'targets': ['n8n'],
+        'purpose': 'Draft a disabled internal n8n webhook task using an approved webhook ID.',
+    },
+}
+TASK_TEMPLATE_ALIASES = {
+    'topic digest': 'topic_digest',
+    'digest': 'topic_digest',
+    'briefing': 'topic_digest',
+    'brief': 'topic_digest',
+    'server health': 'server_health',
+    'health check': 'server_health',
+    'backup verification': 'backup_verification',
+    'backup verifier': 'backup_verification',
+    'backup check': 'backup_verification',
+    'n8n webhook': 'n8n_webhook',
+    'webhook': 'n8n_webhook',
+}
 ALLOWED_SERVICES = {
     'hermes-openwebui-api.service',
     'hermes-openwebui-api-proxy.service',
@@ -536,6 +579,15 @@ def automation_task_id_from_text(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def automation_template_id_from_text(text: str) -> str | None:
+    lowered = text.lower()
+    for phrase, template_id in TASK_TEMPLATE_ALIASES.items():
+        if phrase in lowered:
+            return template_id
+    match = re.search(r'\b(topic_digest|server_health|backup_verification|n8n_webhook)\b', lowered)
+    return match.group(1) if match else None
+
+
 def automation_run_id_from_text(text: str) -> str | None:
     match = RUN_ID_RE.search(text)
     return match.group(1).lower() if match else None
@@ -694,6 +746,35 @@ def format_task_list(tasks: list[dict[str, Any]]) -> str:
             f"- `{task.get('id')}`: {task.get('name')} "
             f"({task.get('approval_level')}, enabled `{str(task.get('enabled')).lower()}`, status `{task.get('status')}`)"
         )
+    return '\n'.join(lines)
+
+
+def format_task_template(template_id: str, template: dict[str, Any]) -> str:
+    targets = ', '.join(f'`{target}`' for target in template.get('targets', []))
+    return (
+        f"Task template `{template_id}`\n\n"
+        f"- Name: {template.get('name')}\n"
+        f"- Task type: `{template.get('task_type')}`\n"
+        f"- Default approval: `{template.get('approval_level')}`\n"
+        f"- Allowed targets: {targets}\n"
+        f"- Purpose: {template.get('purpose')}\n\n"
+        "Rendered tasks are disabled and dry-run by default, then must pass automation API validation. "
+        "A template does not approve, enable, or run a task."
+    )
+
+
+def format_task_template_list() -> str:
+    lines = ['Task templates:']
+    for template_id, template in TASK_TEMPLATE_SUMMARIES.items():
+        targets = ', '.join(template['targets'])
+        lines.append(
+            f"- `{template_id}`: {template['name']} "
+            f"({template['approval_level']}, targets: {targets})"
+        )
+    lines.extend([
+        '',
+        'Templates are disabled dry-run scaffolds. Use them to draft task YAML, then review and approve through the control plane.',
+    ])
     return '\n'.join(lines)
 
 
@@ -928,7 +1009,7 @@ def format_draft_response(status_code: int, body: Any, draft: dict[str, Any]) ->
 
 def handle_automation_request(user_text: str) -> str | None:
     lowered = user_text.lower()
-    automation_words = ('automation', 'automations', 'task', 'tasks', 'run', 'runs', 'control plane')
+    automation_words = ('automation', 'automations', 'task', 'tasks', 'run', 'runs', 'control plane', 'template', 'templates')
     project_words = (
         'daily brief',
         'daily briefing',
@@ -954,6 +1035,14 @@ def handle_automation_request(user_text: str) -> str | None:
     requested_run_id = automation_run_id_from_text(user_text)
     if not requested_run_id and not any(word in lowered for word in automation_words + project_words):
         return None
+
+    if re.search(r'\b(template|templates|scaffold|scaffolds)\b', lowered):
+        template_id = automation_template_id_from_text(user_text)
+        if template_id and re.search(r'\b(show|get|inspect|details?|describe|explain)\b', lowered):
+            template = TASK_TEMPLATE_SUMMARIES.get(template_id)
+            if template:
+                return format_task_template(template_id, template)
+        return format_task_template_list()
 
     if re.search(r'\b(list|show all|what .*tasks|tasks\?)\b', lowered) and re.search(r'\b(task|tasks|automation|automations)\b', lowered):
         status_code, body = automation_request('GET', '/tasks')
@@ -1077,7 +1166,7 @@ def handle_automation_request(user_text: str) -> str | None:
 
     return (
         'This Yggdrasil endpoint is now dedicated to the personal automation control plane. '
-        'Ask me to list, show, draft, request approval for, pause, or run approved automation tasks.'
+        'Ask me to list templates, list tasks, show, draft, request approval for, pause, or run approved automation tasks.'
     )
 
 
@@ -1201,7 +1290,7 @@ def route_chat(messages: list[dict[str, Any]]) -> str:
     return (
         'This Yggdrasil endpoint is dedicated exclusively to the personal automation control plane. '
         'I no longer route Open WebUI requests to the older Hermes brief or management domains. '
-        'Ask me to list, show, draft, request approval for, pause, or run approved automation tasks.'
+        'Ask me to list templates, list tasks, show, draft, request approval for, pause, or run approved automation tasks.'
     )
 
 

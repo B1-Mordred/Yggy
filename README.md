@@ -78,6 +78,9 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
 For registry drift checks between Git YAML and live API state, see
 [docs/CONFIG_REGISTRY.md](docs/CONFIG_REGISTRY.md).
 
+For reusable disabled task scaffolds, see
+[docs/TASK_TEMPLATES.md](docs/TASK_TEMPLATES.md).
+
 For Discord notifications about pending approvals, see
 [docs/APPROVAL_NOTIFICATIONS.md](docs/APPROVAL_NOTIFICATIONS.md).
 
@@ -92,6 +95,7 @@ For Discord notifications about pending approvals, see
 - n8n: optional execution backend, not approval authority
 - Ollama summarizer: disabled by default
 - Topic digest sources: explicit approved-source registry
+- Task templates: disabled dry-run scaffolds rendered through normal validation
 - Metrics exporter: internal-only read-only HTTP service inventory checks
 - Backup verification: read-only `/app/backups` checks with anomaly-only alerts
 
@@ -104,6 +108,7 @@ For Discord notifications about pending approvals, see
 - Pending approvals can be handled in the local `/ops` approval UI without
   exposing the admin API key to the browser.
 - Topic digests must use approved `source_id` entries instead of broad generic `web_query` sources.
+- Task templates are convenience scaffolds only; they do not approve, enable, or bypass policy.
 - The worker re-validates approved sources at execution time and records source
   health/trust metadata in digest run logs.
 - n8n webhook tasks must use approved `webhook_id` entries and internal paths.

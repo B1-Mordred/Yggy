@@ -14,10 +14,12 @@ if sys.prefix == sys.base_prefix and VENV_PYTHON.exists():
 
 sys.path.insert(0, str(ROOT / "automation-api"))
 sys.path.insert(0, str(ROOT / "metrics-exporter"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 from app.policy import PolicyViolation, load_policy, validate_policy_config, validate_task_policy  # noqa: E402
 from app.schemas import TaskConfig, TopicConfig  # noqa: E402
 from exporter.config import load_config as load_metrics_config  # noqa: E402
+from task_template_lib import load_templates, render_task_from_template  # noqa: E402
 
 
 def validate_tasks() -> list[str]:
@@ -62,8 +64,28 @@ def validate_metrics() -> list[str]:
     return errors
 
 
+def validate_task_templates() -> list[str]:
+    errors: list[str] = []
+    try:
+        templates = load_templates()
+    except Exception as exc:
+        return [f"{ROOT / 'configs' / 'task_templates'}: {exc}"]
+    for template_id, template in templates.items():
+        try:
+            render_task_from_template(
+                template_id,
+                {
+                    "id": f"test_{template_id}_from_template",
+                    "name": f"Test {template.name}",
+                },
+            )
+        except Exception as exc:
+            errors.append(f"{ROOT / 'configs' / 'task_templates' / (template_id + '.yaml')}: {exc}")
+    return errors
+
+
 def main() -> int:
-    errors = validate_policies() + validate_topics() + validate_tasks() + validate_metrics()
+    errors = validate_policies() + validate_topics() + validate_tasks() + validate_metrics() + validate_task_templates()
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

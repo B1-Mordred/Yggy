@@ -1,0 +1,81 @@
+id: topic_digest
+name: Topic Digest
+description: Draft a bounded digest from approved source IDs and deliver it to a whitelisted Discord target.
+task_type: topic_digest
+default_approval_level: L1_NOTIFY_ONLY
+allowed_output_targets:
+  - briefings
+  - alerts
+required_fields:
+  - id
+  - name
+optional_fields:
+  - cron
+  - timezone
+  - output_target
+  - source_ids
+  - include
+  - exclude
+  - max_items
+  - owner
+  - created_by
+default_source_ids:
+  - open_webui_releases
+  - ollama_releases
+  - n8n_releases
+  - docker_blog
+safety_notes:
+  - Sources are rendered only from enabled entries in configs/sources/approved_sources.yaml.
+  - Retrieved source content is treated as untrusted data and never as command authority.
+  - Discord delivery stays disabled until the task is explicitly approved and enabled.
+example_prompts:
+  - Draft a weekday 08:00 local AI security briefing to Discord, but keep it disabled.
+  - Create a Docker and local AI release digest from approved feeds only.
+defaults:
+  owner: local_user
+  created_by: yggdrasil
+  trigger:
+    kind: schedule
+    cron: "0 8 * * 1-5"
+    timezone: Europe/Berlin
+  sources: []
+  filters:
+    include:
+      - Open WebUI
+      - Ollama
+      - Hermes
+      - Docker
+      - n8n
+    exclude:
+      - sponsored
+      - rumor
+  output:
+    channel: discord
+    target: briefings
+    format: "5 bullets, impact, source links, recommended action"
+  policy:
+    approval_level: L1_NOTIFY_ONLY
+    max_items: 10
+    require_sources: true
+    max_runs_per_hour: 3
+    max_runs_per_day: 10
+    min_seconds_between_runs: 300
+    allow_external_side_effects: false
+    allow_shell: false
+    allow_docker_socket: false
+    allow_filesystem_write: false
+  runtime:
+    dry_run: true
+    timeout_seconds: 120
+    retry_count: 1
+  notifications:
+    on_success: true
+    on_failure: true
+    on_empty_result: false
+    quiet_hours:
+      enabled: true
+      start: "22:00"
+      end: "07:00"
+      timezone: Europe/Berlin
+    collapse_repeated_failures: true
+    failure_collapse_window_minutes: 360
