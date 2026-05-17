@@ -215,6 +215,43 @@ class N8nWebhookConfig(BaseModel):
         return value
 
 
+class BackupVerificationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    backup_root: str = "/app/backups"
+    max_age_hours: int = Field(default=26, ge=1, le=720)
+    min_mysql_dump_bytes: int = Field(default=1024, ge=1, le=10_000_000_000)
+    secret_scan_enabled: bool = True
+    max_scan_bytes_per_file: int = Field(default=2_000_000, ge=1024, le=25_000_000)
+    required_files: list[str] = Field(
+        default_factory=lambda: [
+            "manifest.json",
+            "mysql/automation.sql",
+            "api/health.json",
+            "api/tasks.json",
+            "api/topics.json",
+            "api/openapi.json",
+            "git-commit.txt",
+        ]
+    )
+
+    @field_validator("backup_root")
+    @classmethod
+    def backup_root_must_be_worker_backup_mount(cls, value: str) -> str:
+        normalized = value.rstrip("/") or value
+        if not normalized.startswith("/app/backups"):
+            raise ValueError("backup_root must be under the worker read-only /app/backups mount")
+        return normalized
+
+    @field_validator("required_files")
+    @classmethod
+    def required_files_must_be_relative(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if item.startswith("/") or ".." in item.split("/"):
+                raise ValueError("backup required_files entries must be relative paths")
+        return value
+
+
 class TaskConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -233,6 +270,7 @@ class TaskConfig(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     notifications: NotificationPreferencesConfig = Field(default_factory=NotificationPreferencesConfig)
     n8n: N8nWebhookConfig | None = None
+    backup: BackupVerificationConfig | None = None
 
     @field_validator("id")
     @classmethod
@@ -245,6 +283,8 @@ class TaskConfig(BaseModel):
     def validate_type_specific_config(self) -> "TaskConfig":
         if self.type == "n8n_webhook" and self.n8n is None:
             raise ValueError("n8n_webhook task requires n8n config")
+        if self.type == "backup_verification" and self.backup is None:
+            raise ValueError("backup_verification task requires backup config")
         return self
 
 

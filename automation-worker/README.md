@@ -4,6 +4,14 @@ The worker polls the automation API for approved enabled tasks and runs bounded 
 
 `DISCORD_DRY_RUN=true` keeps notification execution non-networked by default.
 
+## Backup Verification
+
+`backup_verification` tasks read only the configured `/app/backups:ro` mount.
+The handler validates the newest `yggy-*` backup, required files, manifest
+no-secret flags, MySQL dump header/size, and bounded secret-marker scan results.
+It reports paths and counts only, never matched secret values. It does not run
+restore scripts, Docker commands, MySQL clients, or arbitrary shell commands.
+
 ## Ollama Summarizer
 
 Topic digests can use a local Ollama model when `LLM_SUMMARIZER_ENABLED=true`. The worker still fetches sources through bounded RSS/HTTP clients, treats all source text as untrusted data, and falls back to deterministic formatting when Ollama is unavailable, times out, or returns an empty response.

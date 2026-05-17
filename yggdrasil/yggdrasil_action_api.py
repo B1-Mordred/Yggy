@@ -35,6 +35,13 @@ AUTOMATION_TOOL_API_KEY = os.environ.get('AUTOMATION_TOOL_API_KEY', '').strip()
 PROPOSAL_RE = re.compile(r'\b(\d{14}_[A-Za-z0-9._-]+)\b')
 RUN_ID_RE = re.compile(r'\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b')
 AUTOMATION_TASK_ALIASES = {
+    'yggy backup verification': 'yggy_backup_verification',
+    'backup verification': 'yggy_backup_verification',
+    'backup verifier': 'yggy_backup_verification',
+    'backup check': 'yggy_backup_verification',
+    'backup health': 'yggy_backup_verification',
+    'backup status': 'yggy_backup_verification',
+    'backups': 'yggy_backup_verification',
     'server health': 'morning_server_health_check',
     'server health check': 'morning_server_health_check',
     'morning server health': 'morning_server_health_check',
@@ -790,9 +797,50 @@ def format_health_run(run: dict[str, Any], result: dict[str, Any]) -> str:
     return '\n'.join(lines)
 
 
+def format_backup_run(run: dict[str, Any], result: dict[str, Any]) -> str:
+    values = run_summary_values(run)
+    latest = result.get('latest_backup') if isinstance(result.get('latest_backup'), dict) else {}
+    restore = result.get('restore_dry_run') if isinstance(result.get('restore_dry_run'), dict) else {}
+    secret_scan = result.get('secret_scan') if isinstance(result.get('secret_scan'), dict) else {}
+    anomalies = result.get('anomalies') if isinstance(result.get('anomalies'), list) else []
+    notify = result.get('notify')
+    if notify is False:
+        delivery = 'alert suppressed; no anomalies detected'
+    else:
+        delivery = values['delivery']
+
+    lines = [
+        f"Run `{run.get('id')}`",
+        "",
+        f"- Task: `{run.get('task_id')}`",
+        f"- Status: `{run.get('status')}`",
+        f"- Backup verification: `{result.get('status', 'unknown')}`",
+        f"- Delivery: {delivery}",
+        f"- Dry run: `{str(values['dry_run']).lower()}`",
+        f"- Backups found: `{result.get('backup_count', 'n/a')}`",
+        f"- Latest backup: `{latest.get('name', 'n/a')}`",
+        f"- Backup age: `{latest.get('age_hours', 'n/a')}h`",
+        f"- MySQL dump bytes: `{latest.get('mysql_dump_bytes', 'n/a')}`",
+        f"- Restore dry-run: `{'ok' if restore.get('ok') else 'failed'}`",
+        f"- Secret scan: `{secret_scan.get('status', 'n/a')}`",
+        f"- Failed checks: `{result.get('failed_count', 0)}`",
+        f"- Created: `{run.get('created_at')}`",
+        f"- Completed: `{run.get('completed_at') or 'not completed'}`",
+    ]
+    if anomalies:
+        lines.extend(["", "Anomalies:"])
+        for anomaly in anomalies[:8]:
+            if not isinstance(anomaly, dict):
+                continue
+            lines.append(f"- `{anomaly.get('check', 'check')}`: {anomaly.get('detail', anomaly.get('status', 'failed'))}")
+    return '\n'.join(lines)
+
+
 def format_run(run: dict[str, Any]) -> str:
     log = run.get('log') if isinstance(run.get('log'), dict) else {}
     result = log.get('result') if isinstance(log.get('result'), dict) else {}
+    if isinstance(result.get('latest_backup'), dict) or isinstance(result.get('restore_dry_run'), dict):
+        return format_backup_run(run, result)
     if isinstance(result.get('checks'), list):
         return format_health_run(run, result)
 
@@ -894,6 +942,11 @@ def handle_automation_request(user_text: str) -> str | None:
         'server health check',
         'morning server health',
         'morning server health check',
+        'backup',
+        'backups',
+        'backup check',
+        'backup verification',
+        'backup health',
         'open webui',
         'ollama',
         'yggdrasil',
@@ -943,16 +996,23 @@ def handle_automation_request(user_text: str) -> str | None:
         and re.search(r'\b(server health|health check|morning server health)\b', lowered)
         and 'task' not in lowered
     )
+    backup_status_request = bool(
+        re.search(r'\b(show|get|inspect|status|latest|last)\b', lowered)
+        and re.search(r'\b(backup|backups|backup check|backup verification|backup health)\b', lowered)
+        and 'task' not in lowered
+    )
     explicit_run_request = bool(re.search(r'^\s*(run|execute|dry run|send|deliver|post|generate)\b', lowered))
     run_status_request = (
         re.search(r'\b(latest|last|recent|failed|failures?|runs?)\b', lowered)
         or re.search(r'\bdid\b.*\bsend\b', lowered)
         or re.search(r'\b(sent|delivery|deliver(?:ed)?)\b', lowered)
         or server_health_status_request
+        or backup_status_request
     )
     if run_status_request and not explicit_run_request and (
         re.search(r'\b(run|runs|sent|send|delivery|delivered|failed|failure)\b', lowered)
         or server_health_status_request
+        or backup_status_request
     ):
         task_id = automation_task_id_from_text(user_text)
         if re.search(r'\b(failed|failures?)\b', lowered):
@@ -963,7 +1023,7 @@ def handle_automation_request(user_text: str) -> str | None:
                 return format_run_list(body, title=title)
             return f'Automation API returned status `{status_code}` while listing failed runs:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 
-        limit = 1 if server_health_status_request or re.search(r'\b(latest|last|did\b.*\bsend|sent|delivery|delivered)\b', lowered) else 5
+        limit = 1 if server_health_status_request or backup_status_request or re.search(r'\b(latest|last|did\b.*\bsend|sent|delivery|delivered)\b', lowered) else 5
         path = query_runs_path(task_id=task_id, limit=limit)
         status_code, body = automation_request('GET', path)
         if status_code == 200 and isinstance(body, list):

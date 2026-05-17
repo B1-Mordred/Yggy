@@ -15,7 +15,13 @@ SECRET_KEY_MARKERS = (
     "cookie",
     "webhook",
 )
-NON_SECRET_KEY_EXACT = {"webhook_id"}
+NON_SECRET_KEY_EXACT = {
+    "webhook_id",
+    "secret_scan",
+    "secret_scan_enabled",
+    "secret_scan_status",
+    "potential_secret_file_count",
+}
 SECRET_VALUE_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),

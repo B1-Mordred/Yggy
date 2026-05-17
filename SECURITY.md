@@ -19,6 +19,11 @@ which performs only allowlisted HTTP GET checks from static YAML. It does not
 run shell commands, mount host filesystems, use host networking, or access the
 Docker socket.
 
+Backup verification is similarly bounded: the worker mounts only
+`./backups:/app/backups:ro`, rejects configured roots outside `/app/backups`, and
+performs restore dry-run checks in Python without invoking shell, Docker, MySQL,
+or host filesystem operations.
+
 Allowed model-facing pattern:
 
 ```text

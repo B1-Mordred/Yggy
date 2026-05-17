@@ -87,6 +87,35 @@ def test_process_topic_digest_sends_discord_dry_run(monkeypatch):
     assert client.completed_calls[0]["log"]["notification_decision"]["classification"] == "empty"
 
 
+def test_process_backup_verification_suppresses_clean_anomaly_only_result(monkeypatch):
+    client = FakeClient()
+
+    def fake_backup_verification(config: dict) -> dict:
+        return {"status": "ok", "message": "backup ok", "notify": False, "failed_count": 0}
+
+    monkeypatch.setattr("worker.main.run_backup_verification", fake_backup_verification)
+
+    result = process_task(
+        client,
+        {
+            "enabled": True,
+            "config": {
+                "id": "yggy_backup_verification",
+                "name": "Yggy Backup Verification",
+                "type": "backup_verification",
+                "runtime": {"dry_run": True},
+                "output": {"channel": "discord", "target": "alerts", "format": "anomalies only"},
+                "notifications": {"on_success": False, "on_failure": True},
+            },
+        },
+    )
+
+    assert result["status"] == "completed_dry_run"
+    assert client.discord_calls == []
+    assert client.completed_calls[0]["log"]["result"]["status"] == "ok"
+    assert client.completed_calls[0]["log"]["notification_decision"]["reason"] == "handler_suppressed"
+
+
 def test_process_queued_run_uses_existing_run_and_sends_live(monkeypatch):
     client = FakeClient()
     task = {

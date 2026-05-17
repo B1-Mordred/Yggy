@@ -79,6 +79,30 @@ def test_n8n_webhook_requires_n8n_config():
         raise AssertionError("n8n_webhook task without n8n config was accepted")
 
 
+def test_backup_verification_requires_backup_config():
+    data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_backup_verification.yaml").read_text(encoding="utf-8"))
+    data["id"] = "missing_backup_config"
+    data.pop("backup")
+    try:
+        TaskConfig.model_validate(data)
+    except Exception as exc:
+        assert "backup_verification task requires backup config" in str(exc)
+    else:
+        raise AssertionError("backup_verification task without backup config was accepted")
+
+
+def test_backup_verification_backup_root_must_use_worker_mount():
+    data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_backup_verification.yaml").read_text(encoding="utf-8"))
+    data["id"] = "bad_backup_root"
+    data["backup"]["backup_root"] = "/srv/Yggy/backups"
+    try:
+        TaskConfig.model_validate(data)
+    except Exception as exc:
+        assert "backup_root must be under" in str(exc)
+    else:
+        raise AssertionError("backup_verification task accepted a host backup path")
+
+
 def test_n8n_webhook_rejects_absolute_url_path():
     data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_n8n_webhook.yaml").read_text(encoding="utf-8"))
     data["id"] = "bad_n8n_absolute_url"

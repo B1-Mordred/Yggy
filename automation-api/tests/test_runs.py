@@ -30,6 +30,35 @@ def test_run_logs_redact_secret_values(client):
     assert log["nested"]["password"] == "[REDACTED]"
 
 
+def test_run_logs_keep_backup_secret_scan_metadata(client):
+    run_id = str(uuid.uuid4())
+    with Session(get_engine()) as session:
+        session.add(
+            RunModel(
+                id=run_id,
+                task_id="backup_task",
+                status="completed",
+                log={
+                    "result": {
+                        "secret_scan": {
+                            "enabled": True,
+                            "status": "clean",
+                            "potential_secret_file_count": 0,
+                            "files": [],
+                        }
+                    }
+                },
+            )
+        )
+        session.commit()
+
+    response = client.get(f"/runs/{run_id}", headers=TOOL_HEADERS)
+    assert response.status_code == 200
+    secret_scan = response.json()["log"]["result"]["secret_scan"]
+    assert secret_scan["status"] == "clean"
+    assert secret_scan["potential_secret_file_count"] == 0
+
+
 def test_worker_can_complete_run_with_redacted_log(client):
     run_id = str(uuid.uuid4())
     with Session(get_engine()) as session:

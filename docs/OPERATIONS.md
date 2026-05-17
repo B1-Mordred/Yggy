@@ -42,6 +42,42 @@ network mode, inspect containers, write host files, or expose credentials. The
 `morning_server_health_check` task reads the exporter through a `service_metrics`
 check and can alert on failed configured services.
 
+## Backup Verification
+
+Yggy includes a first-class `backup_verification` task type for read-only backup
+health checks. The worker mounts only:
+
+```text
+./backups:/app/backups:ro
+```
+
+and runs with `YGGY_WORKER_UID:YGGY_WORKER_GID` so it can read local backup
+directories created by the backup script without granting write access. The task
+schema rejects backup roots outside `/app/backups`. The handler does not run
+`scripts/restore_yggy.sh`, `docker`, `mysql`, or arbitrary shell commands.
+Instead, it performs the restore dry-run checks directly:
+
+- newest `yggy-*` backup exists
+- backup age is below the configured threshold
+- `manifest.json` parses and does not claim embedded secrets
+- required API export, OpenAPI, git commit, and MySQL dump files exist
+- MySQL dump is large enough and contains a dump header
+- bounded secret-marker scan reports paths and match counts only
+
+Example task:
+
+```text
+configs/tasks/example_backup_verification.yaml
+```
+
+The example sends to the whitelisted `alerts` Discord target only on anomalies
+and starts disabled/dry-run until approved. Manual restore remains an
+operator-controlled procedure through:
+
+```bash
+scripts/restore_yggy.sh --backup-dir backups/yggy-YYYYmmdd-HHMMSSZ
+```
+
 Notification preferences are stored in each task config. The worker records a
 `notification_decision` in every run log so you can see whether a message was
 sent, skipped for quiet hours, skipped because the result was empty, or collapsed

@@ -25,6 +25,7 @@ Open WebUI
           -> Discord dry-run or whitelisted webhooks
           -> RSS / HTTP sources
           -> optional Ollama summarizer
+          -> read-only backup verification
 ```
 
 ## Quickstart
@@ -86,6 +87,7 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
 - Ollama summarizer: disabled by default
 - Topic digest sources: explicit approved-source registry
 - Metrics exporter: internal-only read-only HTTP service inventory checks
+- Backup verification: read-only `/app/backups` checks with anomaly-only alerts
 
 ## Safety Model
 
@@ -105,6 +107,8 @@ Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_
   leases, and stale-run recovery before new runs are queued.
 - Service health visibility uses a narrow metrics exporter with static
   allowlisted HTTP checks, not Docker socket or shell access.
+- Backup verification uses a narrow read-only project backup mount and performs
+  restore dry-run checks without invoking Docker, MySQL, or shell commands.
 - Secrets stay in `.env`, Docker secrets, n8n credentials, or a local secret manager.
 - Task YAML, Open WebUI Knowledge, prompts, chat history, and logs must not contain secrets.
 
@@ -119,3 +123,7 @@ scripts/backup_yggy.sh
 ```
 
 Restore is dry-run by default and requires `--apply` before importing MySQL. See [docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md).
+
+The `yggy_backup_verification` task type checks recent backups from
+`/app/backups:ro`, validates manifest and MySQL dump structure, runs a bounded
+secret-marker scan, and sends Discord alerts only on anomalies.

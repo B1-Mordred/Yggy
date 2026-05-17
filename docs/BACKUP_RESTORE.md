@@ -54,12 +54,19 @@ scripts/restore_yggy.sh --backup-dir backups/yggy-YYYYmmdd-HHMMSSZ
 
 Dry-run prints the manifest and dump metadata. It does not modify MySQL.
 
+The `backup_verification` task type performs the same style of dry-run
+validation automatically from inside the worker. It reads only
+`/app/backups:ro`, checks age, manifest flags, required files, MySQL dump
+header/size, and bounded secret-marker scan results, and alerts only on
+anomalies when configured with `format: "anomalies only"`. It does not execute
+this restore script or run Docker/MySQL commands.
+
 ## Apply Restore
 
 Stop API and worker first so no run state changes while MySQL is being restored:
 
 ```bash
-docker compose -f docker-compose.automation.yml -f docker-compose.https.yml stop automation-worker automation-api
+docker compose -f docker-compose.automation.yml -f docker-compose.https.yml stop automation-worker metrics-exporter automation-api
 ```
 
 Apply the restore:
@@ -71,7 +78,7 @@ scripts/restore_yggy.sh --backup-dir backups/yggy-YYYYmmdd-HHMMSSZ --apply
 Restart:
 
 ```bash
-docker compose -f docker-compose.automation.yml -f docker-compose.https.yml up -d automation-api automation-worker
+docker compose -f docker-compose.automation.yml -f docker-compose.https.yml up -d automation-api metrics-exporter automation-worker
 ```
 
 Validate:

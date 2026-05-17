@@ -20,3 +20,8 @@ Service health metrics are configured in `configs/metrics/services.yaml`. This
 file is a static allowlist for the internal metrics exporter. Add only local
 HTTP health or inventory endpoints that are safe to read and do not require
 secrets.
+
+Backup verification tasks use an explicit `backup:` block and may read only the
+worker's read-only `/app/backups` mount. They validate backup age, manifest
+flags, required files, MySQL dump headers, and bounded secret-scan markers, then
+alert only on anomalies when configured with `format: "anomalies only"`.

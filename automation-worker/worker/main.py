@@ -6,6 +6,7 @@ from datetime import datetime, time as clock_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from worker.clients.automation_api import AutomationApiClient
+from worker.handlers.backup_verification import run_backup_verification
 from worker.handlers.n8n_webhook import run_n8n_webhook
 from worker.handlers.server_health import run_server_health
 from worker.handlers.topic_digest import run_topic_digest
@@ -283,6 +284,8 @@ def execute_task(
             result = maybe_run_topic_digest_n8n(effective_config, result, run_id=run_id)
         elif task_type == "server_health":
             result = run_server_health(effective_config)
+        elif task_type == "backup_verification":
+            result = run_backup_verification(effective_config)
         elif task_type == "n8n_webhook":
             result = run_n8n_webhook(effective_config, run_id=run_id)
         else:

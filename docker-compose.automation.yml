@@ -43,6 +43,7 @@ services:
         required: false
     environment:
       AUTOMATION_SOURCE_REGISTRY_FILE: /app/configs/sources/approved_sources.yaml
+      YGGY_BACKUP_VERIFY_ROOT: /app/backups
     networks:
       - automation_net
       - notify_net
@@ -51,8 +52,10 @@ services:
     depends_on:
       automation-api:
         condition: service_healthy
+    user: "${YGGY_WORKER_UID:-1000}:${YGGY_WORKER_GID:-1000}"
     volumes:
       - ./configs:/app/configs:ro
+      - ./backups:/app/backups:ro
     read_only: true
     tmpfs:
       - /tmp

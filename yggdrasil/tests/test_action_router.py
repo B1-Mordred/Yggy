@@ -31,6 +31,33 @@ def sample_run(**overrides):
     return run
 
 
+def sample_backup_run(**overrides):
+    run = sample_run(
+        id="33333333-3333-3333-3333-333333333333",
+        task_id="yggy_backup_verification",
+        status="completed_dry_run",
+        log={
+            "notification": None,
+            "result": {
+                "status": "ok",
+                "notify": False,
+                "backup_count": 30,
+                "latest_backup": {
+                    "name": "yggy-20260517-130725Z",
+                    "age_hours": 0.2,
+                    "mysql_dump_bytes": 214689,
+                },
+                "restore_dry_run": {"ok": True},
+                "secret_scan": {"status": "clean", "potential_secret_file_count": 0, "files": []},
+                "failed_count": 0,
+                "anomalies": [],
+            },
+        },
+    )
+    run.update(overrides)
+    return run
+
+
 def test_send_daily_brief_now_queues_automation_run(monkeypatch):
     calls: list[tuple[str, str]] = []
 
@@ -169,6 +196,44 @@ def test_run_server_health_check_now(monkeypatch):
     assert calls == [("POST", "/tasks/morning_server_health_check/run")]
     assert "Run queued" in answer
     assert "morning_server_health_check" in answer
+
+
+def test_run_backup_verification_now(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path))
+        return 202, {"run_id": "backup-run-1", "status": "queued_dry_run"}
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    answer = yggdrasil_action_api.route_chat(
+        [{"role": "user", "content": "run backup verification now"}],
+    )
+
+    assert calls == [("POST", "/tasks/yggy_backup_verification/run")]
+    assert "Run queued" in answer
+    assert "yggy_backup_verification" in answer
+
+
+def test_show_latest_backup_verification_run(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path))
+        return 200, [sample_backup_run()]
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    answer = yggdrasil_action_api.route_chat(
+        [{"role": "user", "content": "show latest backup check"}],
+    )
+
+    assert calls == [("GET", "/runs?task_id=yggy_backup_verification&limit=1")]
+    assert "Backup verification: `ok`" in answer
+    assert "Latest backup: `yggy-20260517-130725Z`" in answer
+    assert "Secret scan: `clean`" in answer
+    assert "alert suppressed" in answer
 
 
 def test_show_server_health_uses_latest_run(monkeypatch):

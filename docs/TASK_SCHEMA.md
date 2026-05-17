@@ -148,6 +148,48 @@ The `service_metrics` check reports failed configured services from the
 metrics-exporter allowlist without exposing Docker, process, filesystem, or
 secret data.
 
+## Backup Verification Tasks
+
+`backup_verification` tasks verify recent Yggy backups without shell access,
+Docker socket access, database imports, or host filesystem mounts. The worker
+reads only the project backup directory mounted at `/app/backups:ro` and rejects
+backup roots outside that mount.
+
+```yaml
+type: backup_verification
+backup:
+  backup_root: /app/backups
+  max_age_hours: 26
+  min_mysql_dump_bytes: 1024
+  secret_scan_enabled: true
+  max_scan_bytes_per_file: 2000000
+  required_files:
+    - manifest.json
+    - mysql/automation.sql
+    - api/health.json
+    - api/tasks.json
+    - api/topics.json
+    - api/openapi.json
+    - git-commit.txt
+output:
+  channel: discord
+  target: alerts
+  format: "anomalies only"
+notifications:
+  on_success: false
+  on_failure: true
+```
+
+The worker selects the newest `yggy-*` backup, checks age, parses
+`manifest.json`, verifies required files, checks the MySQL dump size and header,
+checks the manifest's no-secrets flags, and scans bounded file prefixes for
+secret markers. It records file paths and match counts only; it does not record
+matched secret values.
+
+This is a restore dry-run validation, not an import. Manual restore still uses
+`scripts/restore_yggy.sh --backup-dir <backup> --apply` after local operator
+review.
+
 ## Run Safety Limits
 
 Task policies can bound how often a task may be queued:
