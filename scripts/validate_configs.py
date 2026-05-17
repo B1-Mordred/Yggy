@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from app.policy import PolicyViolation, load_policy, validate_policy_config, validate_task_policy  # noqa: E402
 from app.schemas import TaskConfig, TopicConfig  # noqa: E402
+from app.services.capability_gateway import CapabilityError, validate_capability_registry  # noqa: E402
 from exporter.config import load_config as load_metrics_config  # noqa: E402
 from task_template_lib import load_templates, render_task_from_template  # noqa: E402
 
@@ -84,8 +85,25 @@ def validate_task_templates() -> list[str]:
     return errors
 
 
+def validate_capabilities() -> list[str]:
+    try:
+        validate_capability_registry(ROOT / "configs" / "capabilities.yaml")
+    except CapabilityError as exc:
+        return [f"{ROOT / 'configs' / 'capabilities.yaml'}: {exc}"]
+    except Exception as exc:
+        return [f"{ROOT / 'configs' / 'capabilities.yaml'}: {exc}"]
+    return []
+
+
 def main() -> int:
-    errors = validate_policies() + validate_topics() + validate_tasks() + validate_metrics() + validate_task_templates()
+    errors = (
+        validate_policies()
+        + validate_topics()
+        + validate_tasks()
+        + validate_metrics()
+        + validate_task_templates()
+        + validate_capabilities()
+    )
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

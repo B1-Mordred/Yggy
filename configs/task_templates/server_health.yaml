@@ -12,6 +12,7 @@ optional_fields:
   - cron
   - timezone
   - output_target
+  - check_ids
   - owner
   - created_by
 safety_notes:

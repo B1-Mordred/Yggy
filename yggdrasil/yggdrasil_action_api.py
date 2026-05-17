@@ -1103,6 +1103,33 @@ def format_draft_response(status_code: int, body: Any, draft: dict[str, Any], *,
     return f'Automation API rejected the draft with status `{status_code}`:\n\n```json\n{json.dumps(body, indent=2)}\n```'
 
 
+def handle_canonical_action(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    action = str(payload.get('action') or '').strip()
+    capability_id = str(payload.get('capability_id') or '').strip()
+    template_id = str(payload.get('template_id') or '').strip()
+    template_values = payload.get('template_values')
+    if action != 'draft_task_from_template':
+        return 422, {'status': 'rejected', 'detail': 'unsupported canonical action'}
+    if template_id not in {'server_health', 'topic_digest', 'n8n_webhook'}:
+        return 422, {'status': 'rejected', 'detail': 'unsupported template_id'}
+    if not re.fullmatch(r'[a-z][a-z0-9_]*\.v[0-9]+', capability_id):
+        return 422, {'status': 'rejected', 'detail': 'invalid capability_id'}
+    if not isinstance(template_values, dict):
+        return 422, {'status': 'rejected', 'detail': 'template_values must be an object'}
+    if 'user_request' in template_values or 'raw_text' in template_values:
+        return 422, {'status': 'rejected', 'detail': 'raw natural language is not accepted on the canonical action path'}
+    status_code, body = automation_request('POST', f'/task-templates/{template_id}/draft', template_values)
+    answer = format_draft_response(status_code, body, template_values, template_id=template_id)
+    return 200, {
+        'status': 'ok' if status_code == 201 else 'automation_api_rejected',
+        'capability_id': capability_id,
+        'template_id': template_id,
+        'automation_api_status': status_code,
+        'automation_api_body': body,
+        'answer': answer,
+    }
+
+
 def handle_automation_request(user_text: str) -> str | None:
     lowered = user_text.lower()
     automation_words = ('automation', 'automations', 'task', 'tasks', 'run', 'runs', 'control plane', 'template', 'templates')
@@ -1486,6 +1513,20 @@ class Handler(BaseHTTPRequestHandler):
         json_response(self, 404, {'error': {'message': 'not found'}})
 
     def do_POST(self) -> None:
+        if self.path == '/v1/yggdrasil/canonical-actions':
+            if not self.authorized():
+                json_response(self, 401, {'error': {'message': 'unauthorized'}})
+                return
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                payload = json.loads(self.rfile.read(length).decode('utf-8'))
+                if not isinstance(payload, dict):
+                    raise ValueError('canonical action payload must be an object')
+                status_code, response_payload = handle_canonical_action(payload)
+                json_response(self, status_code, response_payload)
+            except Exception as exc:
+                json_response(self, 500, {'error': {'message': str(exc), 'type': exc.__class__.__name__}})
+            return
         if self.path != '/v1/chat/completions':
             json_response(self, 404, {'error': {'message': 'not found'}})
             return

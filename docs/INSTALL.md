@@ -12,10 +12,10 @@
 cd /srv/Yggy
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e "automation-api[test]" -e "automation-worker[test]"
+python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]" -e "bragi[test]"
 python scripts/validate_configs.py
-pytest automation-api/tests automation-worker/tests
-docker compose -f docker-compose.automation.yml config
+pytest automation-api/tests automation-worker/tests metrics-exporter/tests bragi/tests yggdrasil/tests
+docker compose -f docker-compose.automation.yml config >/dev/null
 ```
 
 ## MySQL
@@ -37,7 +37,24 @@ Do not commit `.env`.
 Deployment is manual:
 
 ```bash
-docker compose -f docker-compose.automation.yml up -d automation-mysql automation-api automation-worker
+docker compose -f docker-compose.automation.yml up -d automation-mysql
+docker compose -f docker-compose.automation.yml up -d --build automation-api metrics-exporter automation-worker bragi
 ```
 
-Do not run deployment commands from an automation model session.
+`bragi` is optional but recommended for natural human-facing interaction. Keep
+the existing Yggdrasil provider strict and add Bragi as a separate
+OpenAI-compatible provider in Open WebUI. Do not give Bragi the admin API key,
+approval nonces, shell tools, Docker access, filesystem write tools, or secrets.
+
+If Open WebUI is in a separate Docker stack and cannot reach `http://bragi:8650`,
+set `BRAGI_LAN_PUBLISHED_HOST` to the host LAN address and use the LAN override
+to expose only Bragi's OpenAI-compatible endpoint:
+
+```bash
+docker compose -f docker-compose.automation.yml -f docker-compose.lan.yml up -d bragi
+```
+
+The Yggdrasil canonical action endpoint is part of the host-side Yggdrasil
+action API. Review `docs/BRAGI_HEIMDAL_INTEGRATION.md` before replacing or
+restarting any existing Hermes/Yggdrasil service. Do not run deployment commands
+from an automation model session.

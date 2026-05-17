@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -27,6 +28,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timezone", help="Timezone override.")
     parser.add_argument("--output-target", help="Output target override.")
     parser.add_argument("--source-id", action="append", dest="source_ids", help="Approved source id. Repeatable.")
+    parser.add_argument("--check-id", action="append", dest="check_ids", help="Approved service check id. Repeatable.")
+    parser.add_argument("--webhook-id", help="Approved n8n webhook id.")
+    parser.add_argument("--n8n-payload-json", help="Small JSON object to place in n8n.payload.")
     parser.add_argument("--include", action="append", help="Include filter term. Repeatable.")
     parser.add_argument("--exclude", action="append", help="Exclude filter term. Repeatable.")
     parser.add_argument("--max-items", type=int, help="Maximum item count override.")
@@ -37,6 +41,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def values_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    n8n_payload = None
+    if args.n8n_payload_json is not None:
+        try:
+            n8n_payload = json.loads(args.n8n_payload_json)
+        except json.JSONDecodeError as exc:
+            raise TemplateError(f"--n8n-payload-json must be valid JSON: {exc}") from exc
+        if not isinstance(n8n_payload, dict):
+            raise TemplateError("--n8n-payload-json must decode to a JSON object")
+
     values: dict[str, Any] = {
         "id": args.task_id,
         "name": args.name,
@@ -44,6 +57,9 @@ def values_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "timezone": args.timezone,
         "output_target": args.output_target,
         "source_ids": args.source_ids,
+        "check_ids": args.check_ids,
+        "webhook_id": args.webhook_id,
+        "n8n_payload": n8n_payload,
         "include": args.include,
         "exclude": args.exclude,
         "max_items": args.max_items,

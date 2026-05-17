@@ -5,7 +5,7 @@ Yggy is a local, self-hosted automation control plane for Open WebUI, Hermes/ygg
 The core boundary is:
 
 ```text
-Open WebUI -> Hermes/yggdrasil -> Automation API -> approved worker actions
+Open WebUI -> Bragi or Hermes/yggdrasil -> Automation API -> approved worker actions
 ```
 
 The model-facing side can draft and inspect automations. It cannot approve higher-risk actions, run arbitrary shell commands, access the Docker socket, write arbitrary host files, or receive secrets.
@@ -14,6 +14,9 @@ The model-facing side can draft and inspect automations. It cannot approve highe
 
 ```text
 Open WebUI
+  -> Bragi natural agent
+      -> Heimdal capability gateway
+          -> yggdrasil canonical action path
   -> yggdrasil / Hermes
   -> automation-api
       -> MySQL
@@ -38,23 +41,25 @@ cp .env.example .env
 # edit .env manually; do not commit it
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]"
+python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]" -e "bragi[test]"
 python scripts/validate_configs.py
-docker compose -f docker-compose.automation.yml config
+docker compose -f docker-compose.automation.yml config >/dev/null
 ```
 
 Run tests locally:
 
 ```bash
-pytest automation-api/tests automation-worker/tests metrics-exporter/tests yggdrasil/tests
+pytest automation-api/tests automation-worker/tests metrics-exporter/tests bragi/tests yggdrasil/tests
 python scripts/validate_configs.py
 ```
 
 When ready, bring up only the new automation scaffold:
 
 ```bash
-docker compose -f docker-compose.automation.yml up -d automation-mysql automation-api metrics-exporter automation-worker
+docker compose -f docker-compose.automation.yml up -d automation-mysql
+docker compose -f docker-compose.automation.yml up -d --build automation-api metrics-exporter automation-worker bragi
 curl http://127.0.0.1:8088/health
+curl http://127.0.0.1:8650/health
 ```
 
 The API port is published on localhost by default. For trusted LAN access to the operations dashboard, set `AUTOMATION_API_LAN_PUBLISHED_HOST` in `.env` to the host's LAN address and include the LAN override:
@@ -64,6 +69,16 @@ docker compose -f docker-compose.automation.yml -f docker-compose.lan.yml up -d 
 ```
 
 Then open `http://<lan-ip>:8088/ops`.
+
+The same LAN override can intentionally expose Bragi for an Open WebUI
+container that is not on Yggy's internal Docker network. Set
+`BRAGI_LAN_PUBLISHED_HOST` and use:
+
+```bash
+docker compose -f docker-compose.automation.yml -f docker-compose.lan.yml up -d bragi
+```
+
+Then configure Open WebUI with `http://<lan-ip>:8650/v1`.
 
 For encrypted LAN access without touching Technitium's `80/443` listeners, use the HTTPS override:
 
@@ -82,6 +97,9 @@ For reusable disabled task scaffolds, see
 [docs/TASK_TEMPLATES.md](docs/TASK_TEMPLATES.md).
 The automation API exposes these as guarded OpenAPI endpoints under
 `/task-templates` for Yggdrasil/Open WebUI.
+
+For the natural Bragi layer and strict Heimdal capability gateway, see
+[docs/BRAGI_HEIMDAL_INTEGRATION.md](docs/BRAGI_HEIMDAL_INTEGRATION.md).
 
 For changing existing automations through reviewed diffs, see
 [docs/TASK_CHANGE_PROPOSALS.md](docs/TASK_CHANGE_PROPOSALS.md).
@@ -109,6 +127,9 @@ For Discord notifications about pending approvals, see
 - No arbitrary shell execution by the LLM.
 - No Docker socket exposed to the API, worker, Hermes, or Open WebUI tools.
 - Separate tool, worker, and admin API keys.
+- Bragi is the natural concierge; Yggdrasil stays deterministic.
+- Heimdal capability validation accepts only registered canonical intents before
+  anything reaches Yggdrasil.
 - L2+ approvals require an admin-controlled process.
 - Pending approvals can be handled in the local `/ops` approval UI without
   exposing the admin API key to the browser.

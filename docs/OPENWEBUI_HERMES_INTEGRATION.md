@@ -2,6 +2,53 @@
 
 The existing setup has Open WebUI connected to Hermes/yggdrasil. Preserve that separation. Add this control plane as a narrow OpenAPI tool server only.
 
+Bragi is a separate optional OpenAI-compatible model/provider for natural human
+conversation. Keep it separate from the strict Yggdrasil profile. Bragi should
+not receive Workspace Python tools, shell tools, Docker tools, filesystem write
+tools, admin keys, approval nonces, webhook URLs, or secrets.
+
+See `docs/BRAGI_HEIMDAL_INTEGRATION.md` for the Bragi -> Heimdal -> Yggdrasil
+boundary model.
+
+## Bragi Provider
+
+When the Bragi service is running, add it to Open WebUI as a separate
+OpenAI-compatible provider:
+
+```text
+Base URL: http://bragi:8650/v1
+Model: bragi
+API key: BRAGI_API_KEY from the private .env
+```
+
+If Open WebUI is not on Yggy's Docker network, expose Bragi intentionally with
+`docker-compose.lan.yml` and use:
+
+```text
+Base URL: http://<lan-ip>:8650/v1
+```
+
+Bind `BRAGI_LAN_PUBLISHED_HOST` to the specific LAN address, not `0.0.0.0`.
+
+Use Bragi for natural requests:
+
+```text
+Bragi, can you keep an eye on my AI server and tell me if something breaks?
+Bragi, draft a weekday 08:00 local AI security briefing to Discord, but keep it disabled.
+```
+
+Bragi will ask for confirmation, send only canonical intents to Heimdal, and
+forward only accepted deterministic actions to Yggdrasil. User confirmation is
+not Yggy approval.
+
+Keep the existing Yggdrasil provider available for strict commands:
+
+```text
+Yggdrasil, list my automation tasks.
+Yggdrasil, show task daily_local_ai_security_briefing.
+Yggdrasil, run approved task daily_local_ai_security_briefing dry-run.
+```
+
 ## Tool Server
 
 Expose from Open WebUI:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -153,6 +153,9 @@ class TaskTemplateRenderRequest(BaseModel):
     timezone: str | None = None
     output_target: str | None = None
     source_ids: list[str] | None = None
+    check_ids: list[str] | None = None
+    webhook_id: str | None = None
+    n8n_payload: dict[str, Any] | None = None
     include: list[str] | None = None
     exclude: list[str] | None = None
     max_items: int | None = Field(default=None, ge=1, le=100)
@@ -176,6 +179,23 @@ class TaskTemplateRenderRequest(BaseModel):
                 raise ValueError("source_ids must be slug-like")
         return value
 
+    @field_validator("check_ids")
+    @classmethod
+    def check_ids_must_be_slug_like(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        for check_id in value:
+            if not re.match(r"^[a-z0-9][a-z0-9_.-]{1,127}$", check_id):
+                raise ValueError("check_ids must be slug-like")
+        return value
+
+    @field_validator("webhook_id")
+    @classmethod
+    def template_webhook_id_must_be_slug_like(cls, value: str | None) -> str | None:
+        if value is not None and not SLUG_RE.match(value):
+            raise ValueError("webhook_id must be slug-like")
+        return value
+
 
 class TaskTemplateSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -190,6 +210,45 @@ class TaskTemplateSummary(BaseModel):
     optional_fields: list[str] = Field(default_factory=list)
     safety_notes: list[str] = Field(default_factory=list)
     example_prompts: list[str] = Field(default_factory=list)
+
+
+class GatewayOutcome(str, Enum):
+    ACCEPT = "ACCEPT"
+    ASK_CLARIFICATION = "ASK_CLARIFICATION"
+    REJECT_UNSUPPORTED = "REJECT_UNSUPPORTED"
+    REJECT_UNSAFE = "REJECT_UNSAFE"
+    PROPOSE_NEW_CAPABILITY = "PROPOSE_NEW_CAPABILITY"
+
+
+class CanonicalIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent: Literal["draft_task"] = "draft_task"
+    capability_id: str
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    requires_user_confirmation: bool = True
+    user_confirmation_obtained: bool = False
+    slots: dict[str, Any] = Field(default_factory=dict)
+    user_request: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("capability_id")
+    @classmethod
+    def capability_id_must_be_versioned(cls, value: str) -> str:
+        if not re.match(r"^[a-z][a-z0-9_]*\.v[0-9]+$", value):
+            raise ValueError("capability_id must look like name.v1")
+        return value
+
+
+class CapabilityGatewayResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: GatewayOutcome
+    capability_id: str | None = None
+    message: str
+    missing_slots: list[str] = Field(default_factory=list)
+    unsafe_reasons: list[str] = Field(default_factory=list)
+    confirmation_summary: dict[str, Any] | None = None
+    yggdrasil_request: dict[str, Any] | None = None
 
 
 class QuietHoursConfig(BaseModel):

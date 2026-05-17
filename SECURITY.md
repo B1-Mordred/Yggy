@@ -24,10 +24,16 @@ Backup verification is similarly bounded: the worker mounts only
 performs restore dry-run checks in Python without invoking shell, Docker, MySQL,
 or host filesystem operations.
 
+Bragi is intentionally separate from Yggdrasil. Bragi may hold personality,
+conversation, and non-secret preferences, but it does not receive admin keys,
+approval nonces, shell tools, Docker access, filesystem write tools, or direct
+execution privileges. Its write path is limited to canonical intents sent to the
+Heimdal capability gateway in the automation API.
+
 Allowed model-facing pattern:
 
 ```text
-LLM -> narrow OpenAPI endpoint -> validation and policy -> approved worker action
+LLM -> canonical intent or narrow OpenAPI endpoint -> validation and policy -> approved worker action
 ```
 
 ## API Keys
@@ -52,6 +58,11 @@ RSS feeds, webpages, emails, Discord messages, logs, documents, and search resul
 
 Research/summarizer code may read untrusted content and summarize it. Operator code may call the automation API. The same agent flow must not both consume untrusted content as instructions and approve or execute actions.
 
+The Bragi/Heimdal path preserves that split: Bragi may discuss user requests,
+Heimdal validates only structured slots and registered IDs, Yggdrasil receives
+deterministic canonical actions, and the automation API remains the authority
+for approval and execution state.
+
 ## Secrets
 
 Never put secrets in:
@@ -73,8 +84,13 @@ Compose publishes the automation API on `127.0.0.1` by default. If `docker-compo
 Security expectations for LAN exposure:
 
 - Bind to a specific LAN address, not `0.0.0.0`.
+- Expose Bragi on LAN only if Open WebUI cannot reach it through a trusted
+  internal Docker network.
 - Keep `AUTOMATION_OPS_DASHBOARD_PASSWORD` long and unique.
+- Keep `BRAGI_API_KEY` long and unique if Bragi is reachable from LAN.
 - Restrict the published API/dashboard port with UFW or equivalent host firewall rules.
+- Restrict the published Bragi port the same way if `BRAGI_LAN_PUBLISHED_HOST`
+  is enabled.
 - Do not expose `8088` through router port forwarding or a public reverse proxy.
 - Treat `/docs` and `/openapi.json` as visible to LAN clients on that interface.
 - Never place `AUTOMATION_ADMIN_API_KEY` or other API keys in browser bookmarks, chat, Open WebUI Knowledge, or task YAML.

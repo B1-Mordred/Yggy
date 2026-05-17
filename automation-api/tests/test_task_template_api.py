@@ -69,6 +69,42 @@ def test_admin_key_can_create_disabled_draft_from_template(client):
     assert data["rendered_config"]["runtime"]["dry_run"] is True
 
 
+def test_server_health_template_accepts_approved_check_ids(client):
+    response = client.post(
+        "/task-templates/server_health/draft",
+        headers=TOOL_HEADERS,
+        json={
+            "id": "template_api_selected_health",
+            "name": "Selected Health Checks",
+            "check_ids": ["automation_api", "automation_worker", "n8n"],
+        },
+    )
+
+    assert response.status_code == 201
+    checks = response.json()["rendered_config"]["checks"]
+    assert [check["name"] for check in checks] == ["automation_api", "automation_worker", "n8n"]
+    assert all(check["url"].startswith("http://") for check in checks)
+
+
+def test_n8n_webhook_template_accepts_approved_webhook_id(client):
+    response = client.post(
+        "/task-templates/n8n_webhook/draft",
+        headers=TOOL_HEADERS,
+        json={
+            "id": "template_api_n8n_selected",
+            "name": "Selected n8n Webhook",
+            "webhook_id": "daily_briefing_stub",
+            "n8n_payload": {"description": "bounded test payload"},
+        },
+    )
+
+    assert response.status_code == 201
+    n8n = response.json()["rendered_config"]["n8n"]
+    assert n8n["webhook_id"] == "daily_briefing_stub"
+    assert n8n["path"] == "/webhook/yggy-daily-briefing"
+    assert n8n["payload"] == {"description": "bounded test payload"}
+
+
 def test_template_draft_unknown_template_returns_404(client):
     response = client.post(
         "/task-templates/not_a_template/draft",

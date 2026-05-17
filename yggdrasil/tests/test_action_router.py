@@ -214,6 +214,88 @@ def test_draft_daily_brief_uses_template_endpoint(monkeypatch):
     assert "Approval request created" in answer
 
 
+def test_canonical_action_drafts_from_template(monkeypatch):
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def fake_automation_request(method: str, path: str, payload: dict | None = None):
+        calls.append((method, path, payload))
+        return 201, {
+            "task": {
+                "id": "daily_ai_stack_health",
+                "name": "Daily AI Stack Health Check",
+                "type": "server_health",
+                "enabled": False,
+                "status": "pending_approval",
+                "approval_level": "L1_NOTIFY_ONLY",
+                "config": {
+                    "trigger": {"cron": "0 8 * * *", "timezone": "Europe/Berlin"},
+                    "output": {"channel": "discord", "target": "alerts"},
+                    "runtime": {"dry_run": True},
+                    "policy": {"allow_shell": False, "allow_docker_socket": False},
+                },
+            },
+            "approval": {"id": "approval-1", "approval_level": "L1_NOTIFY_ONLY", "status": "pending"},
+            "rendered_config": {
+                "id": "daily_ai_stack_health",
+                "name": "Daily AI Stack Health Check",
+                "type": "server_health",
+                "enabled": False,
+                "runtime": {"dry_run": True},
+                "policy": {"allow_shell": False, "allow_docker_socket": False},
+            },
+        }
+
+    monkeypatch.setattr(yggdrasil_action_api, "automation_request", fake_automation_request)
+
+    status_code, body = yggdrasil_action_api.handle_canonical_action(
+        {
+            "action": "draft_task_from_template",
+            "capability_id": "server_health.v1",
+            "template_id": "server_health",
+            "template_values": {
+                "id": "daily_ai_stack_health",
+                "name": "Daily AI Stack Health Check",
+                "cron": "0 8 * * *",
+                "timezone": "Europe/Berlin",
+                "output_target": "alerts",
+                "check_ids": ["automation_api"],
+            },
+        }
+    )
+
+    assert status_code == 200
+    assert body["status"] == "ok"
+    assert calls == [
+        (
+            "POST",
+            "/task-templates/server_health/draft",
+            {
+                "id": "daily_ai_stack_health",
+                "name": "Daily AI Stack Health Check",
+                "cron": "0 8 * * *",
+                "timezone": "Europe/Berlin",
+                "output_target": "alerts",
+                "check_ids": ["automation_api"],
+            },
+        )
+    ]
+    assert "Draft task `daily_ai_stack_health`" in body["answer"]
+
+
+def test_canonical_action_rejects_raw_natural_language():
+    status_code, body = yggdrasil_action_api.handle_canonical_action(
+        {
+            "action": "draft_task_from_template",
+            "capability_id": "server_health.v1",
+            "template_id": "server_health",
+            "template_values": {"raw_text": "Can you keep an eye on my AI server?"},
+        }
+    )
+
+    assert status_code == 422
+    assert "raw natural language" in body["detail"]
+
+
 def test_schedule_change_creates_task_change_proposal(monkeypatch):
     calls: list[tuple[str, str, dict | None]] = []
     task_config = yggdrasil_action_api.local_ai_security_briefing_draft("draft weekday 08:00 brief")

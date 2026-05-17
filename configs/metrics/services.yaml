@@ -45,3 +45,12 @@ services:
     timeout_seconds: 3
     enabled: true
     description: Open WebUI HTTP health endpoint when reachable on the Docker network.
+
+  - id: n8n
+    name: n8n Automation UI
+    type: http_health
+    url: http://n8n:5678/healthz
+    expected_status: 200
+    timeout_seconds: 3
+    enabled: true
+    description: n8n health endpoint on the internal automation network.

@@ -96,6 +96,43 @@ services:
       retries: 12
     restart: unless-stopped
 
+  bragi:
+    build:
+      context: ./bragi
+      network: host
+    container_name: bragi
+    environment:
+      BRAGI_MODEL_ID: ${BRAGI_MODEL_ID:-bragi}
+      BRAGI_API_KEY: ${BRAGI_API_KEY:-}
+      BRAGI_HTTP_TIMEOUT: ${BRAGI_HTTP_TIMEOUT:-30}
+      AUTOMATION_TOOL_API_KEY: ${AUTOMATION_TOOL_API_KEY:-}
+      AUTOMATION_API_BASE_URL: http://automation-api:8088
+      YGGDRASIL_BASE_URL: http://host.docker.internal:8642
+      BRAGI_YGGDRASIL_API_KEY: ${BRAGI_YGGDRASIL_API_KEY:-}
+    networks:
+      - automation_net
+      - notify_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      automation-api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${BRAGI_PORT:-8650}:8650"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8650/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
   automation-mysql:
     image: mysql:8.4
     container_name: automation-mysql

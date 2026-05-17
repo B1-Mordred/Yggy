@@ -2,11 +2,31 @@
 
 ## Daily Use
 
-1. Ask yggdrasil to draft an automation.
-2. Review the generated task config.
-3. The automation API validates and stores the task disabled.
-4. Approve through the local CLI or local approval UI.
-5. The worker executes only approved enabled tasks.
+1. Ask Bragi when you want to speak naturally.
+2. Bragi turns supported requests into a canonical intent and asks for user confirmation when it would create or change an automation.
+3. Heimdal, inside the automation API, validates the intent against `configs/capabilities.yaml`.
+4. Accepted intents are forwarded to strict Yggdrasil as deterministic canonical actions.
+5. The automation API validates and stores the task disabled.
+6. Approve through the local CLI or local approval UI.
+7. The worker executes only approved enabled tasks.
+
+Use Yggdrasil directly only for deterministic control-plane commands such as
+listing tasks, showing known task details, requesting approval, pausing tasks,
+or running an already approved task. Yggdrasil is intentionally not the friendly
+interpreter; Bragi is the friendly one, with just enough sarcasm to remind you
+that automation is still mostly a way to create faster paperwork.
+
+The first Bragi/Heimdal milestone accepts only these capabilities:
+
+```text
+server_health.v1
+topic_digest.v1
+n8n_webhook.v1
+```
+
+Unsupported or unsafe natural requests are not forwarded to Yggdrasil. Useful
+but unsupported requests should become a new capability proposal, not a forced
+match to an existing task type.
 
 Use the configuration registry scripts to compare Git YAML with live MySQL-backed
 API state before and after operational changes:

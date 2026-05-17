@@ -66,6 +66,9 @@ unknown templates
 missing required values
 output targets outside the template allowlist
 topic digest source IDs not enabled in configs/sources/approved_sources.yaml
+server health check IDs not enabled in configs/metrics/services.yaml
+n8n webhook IDs not enabled in configs/n8n/webhooks.yaml
+arbitrary n8n webhook URLs
 configs that fail the normal task policy validator
 ```
 
@@ -76,6 +79,20 @@ configs/sources/approved_sources.yaml
 ```
 
 This keeps broad web-query drafting out of routine tasks and preserves the approved-source audit trail.
+
+For server health tasks, rendering can select checks by approved registry IDs:
+
+```text
+configs/metrics/services.yaml
+```
+
+For n8n webhook tasks, rendering can select only approved webhook IDs:
+
+```text
+configs/n8n/webhooks.yaml
+```
+
+The renderer never accepts arbitrary absolute webhook URLs.
 
 ## List Templates
 
@@ -99,6 +116,35 @@ python scripts/render_task_template.py topic_digest \
   --source-id n8n_releases \
   --source-id docker_blog \
   --out configs/tasks/draft_local_ai_weekday_briefing.yaml
+```
+
+Render a selected service-health draft:
+
+```bash
+python scripts/render_task_template.py server_health \
+  --id draft_ai_stack_health \
+  --name "Draft AI Stack Health" \
+  --cron "0 8 * * *" \
+  --output-target alerts \
+  --check-id open_webui \
+  --check-id ollama \
+  --check-id automation_api \
+  --check-id automation_worker \
+  --check-id n8n \
+  --out configs/tasks/draft_ai_stack_health.yaml
+```
+
+Render a selected n8n webhook draft:
+
+```bash
+python scripts/render_task_template.py n8n_webhook \
+  --id draft_daily_briefing_n8n_stub \
+  --name "Draft Daily Briefing n8n Stub" \
+  --cron "15 8 * * 1-5" \
+  --output-target n8n \
+  --webhook-id daily_briefing_stub \
+  --n8n-payload-json '{"description":"bounded internal workflow payload"}' \
+  --out configs/tasks/draft_daily_briefing_n8n_stub.yaml
 ```
 
 Validate the rendered YAML:
@@ -137,10 +183,14 @@ path as `POST /tasks/draft`.
 Useful prompts:
 
 ```text
+Bragi, can you keep an eye on my AI server and tell me if something breaks?
+Bragi, draft a weekday 08:00 local AI security briefing to Discord, but keep it disabled.
 Yggdrasil, list task templates.
 Yggdrasil, show available automation templates.
-Yggdrasil, draft a weekday 08:00 local AI security briefing to Discord, keep it disabled, and show the approval requirement.
 ```
+
+Use Bragi for natural requests. Use Yggdrasil for deterministic template and
+task operations after the request is already known.
 
 ## Adding A Template
 

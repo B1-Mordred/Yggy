@@ -15,13 +15,13 @@ if [[ ! -x "${PYTEST_BIN}" ]]; then
   PYTEST_BIN="pytest"
 fi
 
-"${PYTEST_BIN}" automation-api/tests automation-worker/tests metrics-exporter/tests yggdrasil/tests
+"${PYTEST_BIN}" automation-api/tests automation-worker/tests metrics-exporter/tests yggdrasil/tests bragi/tests
 "${PYTHON_BIN}" scripts/validate_configs.py
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   docker compose -f docker-compose.automation.yml config >/dev/null
   echo "Compose config validation passed"
-  AUTOMATION_API_LAN_PUBLISHED_HOST=127.0.0.1 docker compose -f docker-compose.automation.yml -f docker-compose.lan.yml config >/dev/null
+  AUTOMATION_API_LAN_PUBLISHED_HOST=127.0.0.1 BRAGI_LAN_PUBLISHED_HOST=127.0.0.1 docker compose -f docker-compose.automation.yml -f docker-compose.lan.yml config >/dev/null
   echo "LAN compose config validation passed"
   YGGY_HTTPS_PUBLISHED_HOST=127.0.0.1 docker compose -f docker-compose.automation.yml -f docker-compose.https.yml config >/dev/null
   echo "HTTPS compose config validation passed"

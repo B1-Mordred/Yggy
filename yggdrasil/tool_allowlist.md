@@ -4,6 +4,11 @@ Expose only the automation API OpenAPI server to yggdrasil.
 
 This Yggdrasil profile is dedicated exclusively to the personal automation control plane. Do not expose older Hermes brief-management, profile-management, host-management, terminal, Docker, filesystem, or proposal-queue tools through this profile.
 
+Bragi may call Yggdrasil through the local canonical action endpoint after
+Heimdal capability validation. That endpoint accepts structured canonical
+requests only and must not be exposed as a broad natural-language execution
+surface.
+
 Allowed:
 
 - `GET /health`

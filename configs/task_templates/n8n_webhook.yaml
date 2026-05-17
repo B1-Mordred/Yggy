@@ -12,6 +12,8 @@ optional_fields:
   - cron
   - timezone
   - output_target
+  - webhook_id
+  - n8n_payload
   - owner
   - created_by
 safety_notes:

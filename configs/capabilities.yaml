@@ -1,0 +1,117 @@
+version: 1
+
+capabilities:
+  - id: server_health.v1
+    purpose: Monitor known local service endpoints and notify on anomalies.
+    maps_to_task_type: server_health
+    maps_to_template: server_health
+    deterministic_action: draft_task_from_template
+    allowed_approval_levels:
+      - L0_READ_ONLY
+      - L1_NOTIFY_ONLY
+    default_approval_level: L1_NOTIFY_ONLY
+    allowed_output_targets:
+      - alerts
+    required_slots:
+      - task_id
+      - name
+      - cron
+      - timezone
+      - check_ids
+      - output_target
+    optional_slots:
+      - notification_policy
+    allowed_check_ids:
+      - automation_api
+      - automation_worker
+      - yggdrasil_action_api
+      - open_webui
+      - ollama
+      - n8n
+    safety_rules:
+      - Rendered tasks must remain disabled and dry-run.
+      - Checks must come from the approved metrics service registry.
+      - Alerts must go only to a whitelisted Discord target.
+      - The capability must not restart services, use shell commands, or access the Docker socket.
+    unsafe_keywords:
+      - restart docker
+      - docker socket
+      - docker exec
+      - shell
+      - firewall
+      - delete files
+      - reorganize files
+
+  - id: topic_digest.v1
+    purpose: Create recurring summaries from approved source IDs.
+    maps_to_task_type: topic_digest
+    maps_to_template: topic_digest
+    deterministic_action: draft_task_from_template
+    allowed_approval_levels:
+      - L0_READ_ONLY
+      - L1_NOTIFY_ONLY
+    default_approval_level: L1_NOTIFY_ONLY
+    allowed_output_targets:
+      - briefings
+      - alerts
+    required_slots:
+      - task_id
+      - name
+      - cron
+      - timezone
+      - source_ids
+      - output_target
+    optional_slots:
+      - include
+      - exclude
+      - max_items
+    allowed_source_ids:
+      - open_webui_releases
+      - ollama_releases
+      - n8n_releases
+      - docker_blog
+    safety_rules:
+      - Source content is untrusted data, never instruction authority.
+      - Sources must be enabled in the approved source registry.
+      - Broad web_query sources are not allowed.
+      - Rendered tasks must remain disabled and dry-run.
+    unsafe_keywords:
+      - web_query
+      - arbitrary website
+      - scrape everything
+      - ignore instructions
+      - post publicly
+
+  - id: n8n_webhook.v1
+    purpose: Trigger an approved internal n8n workflow with bounded static payload metadata.
+    maps_to_task_type: n8n_webhook
+    maps_to_template: n8n_webhook
+    deterministic_action: draft_task_from_template
+    allowed_approval_levels:
+      - L1_NOTIFY_ONLY
+    default_approval_level: L1_NOTIFY_ONLY
+    allowed_output_targets:
+      - n8n
+    required_slots:
+      - task_id
+      - name
+      - cron
+      - timezone
+      - webhook_id
+      - output_target
+    optional_slots:
+      - payload_description
+    allowed_webhook_ids:
+      - daily_briefing_stub
+    safety_rules:
+      - Webhook IDs must come from the approved n8n webhook registry.
+      - Arbitrary absolute webhook URLs are forbidden.
+      - n8n remains an execution backend, not the policy authority.
+      - Rendered tasks must remain disabled and dry-run.
+    unsafe_keywords:
+      - webhook url
+      - arbitrary webhook
+      - public webhook
+      - execute command
+      - read file
+      - write file

@@ -9,7 +9,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import get_settings
-from app.policy import load_policy, load_source_registry, validate_task_policy
+from app.policy import load_n8n_webhook_registry, load_policy, load_source_registry, validate_task_policy
 from app.schemas import ApprovalLevel, SourceConfig, TaskConfig, TaskTemplateRenderRequest, TaskTemplateSummary
 from app.services.validation_service import find_secret_paths
 
@@ -158,6 +158,10 @@ def render_task_from_template(template_id: str, request: TaskTemplateRenderReque
 
     if template.task_type == "topic_digest":
         apply_topic_digest_fields(task, template, values)
+    if template.task_type == "server_health":
+        apply_server_health_fields(task, values)
+    if template.task_type == "n8n_webhook":
+        apply_n8n_webhook_fields(task, values)
 
     task_config = TaskConfig.model_validate(task)
     validate_task_policy(task_config, load_policy())
@@ -262,3 +266,61 @@ def apply_topic_digest_fields(task: dict[str, Any], template: TaskTemplate, valu
         filters["include"] = coerce_string_list(values["include"], "include")
     if values.get("exclude") is not None:
         filters["exclude"] = coerce_string_list(values["exclude"], "exclude")
+
+
+def apply_server_health_fields(task: dict[str, Any], values: dict[str, Any]) -> None:
+    if values.get("check_ids") is None:
+        return
+    check_ids = coerce_string_list(values["check_ids"], "check_ids")
+    approved_checks = load_enabled_service_checks()
+    checks: list[dict[str, Any]] = []
+    for check_id in check_ids:
+        service = approved_checks.get(check_id)
+        if service is None:
+            raise TemplateError(f"check_id `{check_id}` is not enabled in metrics/services.yaml")
+        check = {
+            "type": service.get("type", "http_health"),
+            "name": service["id"],
+            "url": service["url"],
+        }
+        if service.get("expected_status") is not None:
+            check["expected_status"] = int(service["expected_status"])
+        if service.get("type") == "worker_heartbeat":
+            check["max_age_seconds"] = int(service.get("max_age_seconds") or 180)
+        checks.append(check)
+    task["checks"] = checks
+
+
+def apply_n8n_webhook_fields(task: dict[str, Any], values: dict[str, Any]) -> None:
+    n8n = task.setdefault("n8n", {})
+    webhook_id = str(values.get("webhook_id") or n8n.get("webhook_id") or "").strip()
+    if not webhook_id:
+        raise TemplateError("n8n_webhook templates require webhook_id")
+    approved = {webhook.id: webhook for webhook in load_n8n_webhook_registry(load_policy()).webhooks if webhook.enabled}
+    webhook = approved.get(webhook_id)
+    if webhook is None:
+        raise TemplateError(f"webhook_id `{webhook_id}` is not enabled in n8n/webhooks.yaml")
+    n8n["webhook_id"] = webhook.id
+    n8n["path"] = webhook.path
+    n8n["method"] = webhook.method
+    if values.get("n8n_payload") is not None:
+        payload = values["n8n_payload"]
+        if not isinstance(payload, dict):
+            raise TemplateError("n8n_payload must be an object")
+        n8n["payload"] = payload
+
+
+def load_enabled_service_checks() -> dict[str, dict[str, Any]]:
+    metrics_path = config_root() / "metrics" / "services.yaml"
+    if not metrics_path.exists():
+        return {}
+    data = yaml.safe_load(metrics_path.read_text(encoding="utf-8")) or {}
+    services = data.get("services") if isinstance(data, dict) else []
+    enabled: dict[str, dict[str, Any]] = {}
+    for service in services if isinstance(services, list) else []:
+        if not isinstance(service, dict) or service.get("enabled") is False:
+            continue
+        service_id = str(service.get("id") or "").strip()
+        if service_id:
+            enabled[service_id] = service
+    return enabled

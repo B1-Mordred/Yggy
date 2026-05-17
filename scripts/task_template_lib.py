@@ -11,7 +11,7 @@ from registry_lib import ROOT, RegistryError, ensure_import_paths, load_yaml_fil
 
 ensure_import_paths()
 
-from app.schemas import ApprovalLevel, SourceRegistryConfig  # noqa: E402
+from app.schemas import ApprovalLevel, N8nWebhookRegistryConfig, SourceRegistryConfig  # noqa: E402
 
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{2,127}$")
@@ -146,6 +146,10 @@ def render_task_from_template(
 
     if template.task_type == "topic_digest":
         apply_topic_digest_fields(task, template, render_values, config_root)
+    if template.task_type == "server_health":
+        apply_server_health_fields(task, render_values, config_root)
+    if template.task_type == "n8n_webhook":
+        apply_n8n_webhook_fields(task, render_values, config_root)
 
     validated = validate_task_against_policy(task)
     return drop_none_values(validated)
@@ -271,10 +275,72 @@ def apply_topic_digest_fields(
         filters["exclude"] = coerce_string_list(values["exclude"], "exclude")
 
 
+def apply_server_health_fields(task: dict[str, Any], values: dict[str, Any], config_dir: Path) -> None:
+    if values.get("check_ids") is None:
+        return
+    check_ids = coerce_string_list(values["check_ids"], "check_ids")
+    approved_checks = load_enabled_service_checks(config_dir)
+    checks: list[dict[str, Any]] = []
+    for check_id in check_ids:
+        service = approved_checks.get(check_id)
+        if service is None:
+            raise TemplateError(f"check_id `{check_id}` is not enabled in metrics/services.yaml")
+        check = {
+            "type": service.get("type", "http_health"),
+            "name": service["id"],
+            "url": service["url"],
+        }
+        if service.get("expected_status") is not None:
+            check["expected_status"] = int(service["expected_status"])
+        if service.get("type") == "worker_heartbeat":
+            check["max_age_seconds"] = int(service.get("max_age_seconds") or 180)
+        checks.append(check)
+    task["checks"] = checks
+
+
+def apply_n8n_webhook_fields(task: dict[str, Any], values: dict[str, Any], config_dir: Path) -> None:
+    n8n = task.setdefault("n8n", {})
+    webhook_id = str(values.get("webhook_id") or n8n.get("webhook_id") or "").strip()
+    if not webhook_id:
+        raise TemplateError("n8n_webhook templates require webhook_id")
+    approved = load_enabled_n8n_webhooks(config_dir)
+    webhook = approved.get(webhook_id)
+    if webhook is None:
+        raise TemplateError(f"webhook_id `{webhook_id}` is not enabled in n8n/webhooks.yaml")
+    n8n["webhook_id"] = webhook.id
+    n8n["path"] = webhook.path
+    n8n["method"] = webhook.method
+    if values.get("n8n_payload") is not None:
+        payload = values["n8n_payload"]
+        if not isinstance(payload, dict):
+            raise TemplateError("n8n_payload must be an object")
+        n8n["payload"] = payload
+
+
 def load_enabled_sources(config_dir: Path) -> dict[str, Any]:
     registry_path = config_dir / "sources" / "approved_sources.yaml"
     registry = SourceRegistryConfig.model_validate(load_yaml_file(registry_path))
     return {source.id: source for source in registry.sources if source.enabled}
+
+
+def load_enabled_service_checks(config_dir: Path) -> dict[str, dict[str, Any]]:
+    registry_path = config_dir / "metrics" / "services.yaml"
+    data = load_yaml_file(registry_path)
+    services = data.get("services") if isinstance(data, dict) else []
+    enabled: dict[str, dict[str, Any]] = {}
+    for service in services if isinstance(services, list) else []:
+        if not isinstance(service, dict) or service.get("enabled") is False:
+            continue
+        service_id = str(service.get("id") or "").strip()
+        if service_id:
+            enabled[service_id] = service
+    return enabled
+
+
+def load_enabled_n8n_webhooks(config_dir: Path) -> dict[str, Any]:
+    registry_path = config_dir / "n8n" / "webhooks.yaml"
+    registry = N8nWebhookRegistryConfig.model_validate(load_yaml_file(registry_path))
+    return {webhook.id: webhook for webhook in registry.webhooks if webhook.enabled}
 
 
 def drop_none_values(value: Any) -> Any:
