@@ -154,6 +154,8 @@ class TaskTemplateRenderRequest(BaseModel):
     output_target: str | None = None
     source_ids: list[str] | None = None
     check_ids: list[str] | None = None
+    printer_ids: list[str] | None = None
+    low_threshold_percent: int | None = Field(default=None, ge=1, le=100)
     webhook_id: str | None = None
     n8n_payload: dict[str, Any] | None = None
     include: list[str] | None = None
@@ -187,6 +189,16 @@ class TaskTemplateRenderRequest(BaseModel):
         for check_id in value:
             if not re.match(r"^[a-z0-9][a-z0-9_.-]{1,127}$", check_id):
                 raise ValueError("check_ids must be slug-like")
+        return value
+
+    @field_validator("printer_ids")
+    @classmethod
+    def printer_ids_must_be_slug_like(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        for printer_id in value:
+            if not SLUG_RE.match(printer_id):
+                raise ValueError("printer_ids must be slug-like")
         return value
 
     @field_validator("webhook_id")
@@ -359,6 +371,93 @@ class BackupVerificationConfig(BaseModel):
         return value
 
 
+class PrinterSupplyEndpointConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    printer_id: str
+    name: str
+    type: Literal["http_json"] = "http_json"
+    url: str
+    low_threshold_percent: int = Field(default=20, ge=1, le=100)
+    expected_status: int = Field(default=200, ge=100, le=599)
+
+    @field_validator("printer_id")
+    @classmethod
+    def printer_id_must_be_slug(cls, value: str) -> str:
+        if not SLUG_RE.match(value):
+            raise ValueError("printer_id must be slug-like")
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def printer_url_must_be_plain_http(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("printer supply URL scheme must be http or https")
+        if parsed.username or parsed.password:
+            raise ValueError("printer supply URL must not contain credentials")
+        return value
+
+
+class ApprovedPrinterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    type: Literal["http_json"] = "http_json"
+    url: str
+    enabled: bool = True
+    default_low_threshold_percent: int = Field(default=20, ge=1, le=100)
+    expected_status: int = Field(default=200, ge=100, le=599)
+    description: str = ""
+
+    @field_validator("id")
+    @classmethod
+    def id_must_be_slug(cls, value: str) -> str:
+        if not SLUG_RE.match(value):
+            raise ValueError("printer id must be slug-like")
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def url_must_be_plain_http(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("printer supply URL scheme must be http or https")
+        if parsed.username or parsed.password:
+            raise ValueError("printer supply URL must not contain credentials")
+        return value
+
+    def to_task_endpoint(self, *, low_threshold_percent: int | None = None) -> PrinterSupplyEndpointConfig:
+        return PrinterSupplyEndpointConfig(
+            printer_id=self.id,
+            name=self.name,
+            type=self.type,
+            url=self.url,
+            low_threshold_percent=low_threshold_percent or self.default_low_threshold_percent,
+            expected_status=self.expected_status,
+        )
+
+
+class PrinterRegistryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 1
+    printers: list[ApprovedPrinterConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_registry(self) -> "PrinterRegistryConfig":
+        if self.version != 1:
+            raise ValueError("printers.yaml version must be 1")
+        ids = [printer.id for printer in self.printers]
+        if len(ids) != len(set(ids)):
+            raise ValueError("printer ids must be unique")
+        urls = [(printer.type, printer.url) for printer in self.printers]
+        if len(urls) != len(set(urls)):
+            raise ValueError("printer supply endpoints must be unique")
+        return self
+
+
 class TaskConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -378,6 +477,7 @@ class TaskConfig(BaseModel):
     notifications: NotificationPreferencesConfig = Field(default_factory=NotificationPreferencesConfig)
     n8n: N8nWebhookConfig | None = None
     backup: BackupVerificationConfig | None = None
+    printer_supplies: list[PrinterSupplyEndpointConfig] = Field(default_factory=list)
 
     @field_validator("id")
     @classmethod
@@ -392,6 +492,8 @@ class TaskConfig(BaseModel):
             raise ValueError("n8n_webhook task requires n8n config")
         if self.type == "backup_verification" and self.backup is None:
             raise ValueError("backup_verification task requires backup config")
+        if self.type == "printer_supply_status" and not self.printer_supplies:
+            raise ValueError("printer_supply_status task requires printer_supplies config")
         return self
 
 

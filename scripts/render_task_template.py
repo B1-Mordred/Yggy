@@ -29,6 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-target", help="Output target override.")
     parser.add_argument("--source-id", action="append", dest="source_ids", help="Approved source id. Repeatable.")
     parser.add_argument("--check-id", action="append", dest="check_ids", help="Approved service check id. Repeatable.")
+    parser.add_argument("--printer-id", action="append", dest="printer_ids", help="Approved printer id. Repeatable.")
+    parser.add_argument("--low-threshold-percent", type=int, help="Printer supply low-threshold percentage.")
     parser.add_argument("--webhook-id", help="Approved n8n webhook id.")
     parser.add_argument("--n8n-payload-json", help="Small JSON object to place in n8n.payload.")
     parser.add_argument("--include", action="append", help="Include filter term. Repeatable.")
@@ -58,6 +60,8 @@ def values_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "output_target": args.output_target,
         "source_ids": args.source_ids,
         "check_ids": args.check_ids,
+        "printer_ids": args.printer_ids,
+        "low_threshold_percent": args.low_threshold_percent,
         "webhook_id": args.webhook_id,
         "n8n_payload": n8n_payload,
         "include": args.include,

@@ -11,7 +11,7 @@ from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import get_settings
-from app.policy import load_n8n_webhook_registry, load_policy, load_source_registry
+from app.policy import load_n8n_webhook_registry, load_policy, load_printer_registry, load_source_registry
 from app.schemas import ApprovalLevel, CanonicalIntent, CapabilityGatewayResult, GatewayOutcome, TaskTemplateRenderRequest
 from app.services.task_template_service import get_template
 from app.services.validation_service import find_secret_paths
@@ -61,6 +61,7 @@ class CapabilityDefinition(BaseModel):
     allowed_source_ids: list[str] = Field(default_factory=list)
     allow_any_approved_source: bool = False
     allowed_check_ids: list[str] = Field(default_factory=list)
+    allowed_printer_ids: list[str] = Field(default_factory=list)
     allowed_webhook_ids: list[str] = Field(default_factory=list)
     safety_rules: list[str] = Field(default_factory=list)
     unsafe_keywords: list[str] = Field(default_factory=list)
@@ -85,6 +86,7 @@ class CapabilityDefinition(BaseModel):
         "optional_slots",
         "allowed_source_ids",
         "allowed_check_ids",
+        "allowed_printer_ids",
         "allowed_webhook_ids",
     )
     @classmethod
@@ -153,6 +155,7 @@ def validate_capability_registry(path: str | Path | None = None) -> None:
     policy = load_policy()
     source_ids = {source.id for source in load_source_registry(policy).sources if source.enabled}
     webhook_ids = {webhook.id for webhook in load_n8n_webhook_registry(policy).webhooks if webhook.enabled}
+    printer_ids = {printer.id for printer in load_printer_registry(policy).printers if printer.enabled}
     errors: list[str] = []
     for capability in registry.capabilities:
         try:
@@ -171,6 +174,9 @@ def validate_capability_registry(path: str | Path | None = None) -> None:
         for webhook_id in capability.allowed_webhook_ids:
             if webhook_id not in webhook_ids:
                 errors.append(f"{capability.id}: webhook_id {webhook_id} is not enabled in approved n8n registry")
+        for printer_id in capability.allowed_printer_ids:
+            if printer_id not in printer_ids:
+                errors.append(f"{capability.id}: printer_id {printer_id} is not enabled in approved printer registry")
     if errors:
         raise CapabilityError("; ".join(errors))
 
@@ -244,6 +250,8 @@ def validate_intent(intent: CanonicalIntent, *, prepare: bool = False) -> Capabi
 
 
 def new_capability_reason(intent: CanonicalIntent) -> str | None:
+    if intent.capability_id == "printer_supply_status.v1":
+        return None
     text = searchable_text(intent)
     if any(term in text for term in ("printer", "toner", "ink level", "cartridge")):
         return "This looks useful, but no printer or toner capability is registered yet."
@@ -339,6 +347,13 @@ def validate_capability_specific_slots(slots: dict[str, Any], capability: Capabi
                 errors.append(f"check_id {check_id} is not allowed for {capability.id}")
             if not SERVICE_ID_RE.match(check_id):
                 errors.append(f"check_id {check_id} is not valid")
+    if capability.id == "printer_supply_status.v1":
+        printer_ids = list_slot(slots.get("printer_ids"))
+        for printer_id in printer_ids:
+            if printer_id not in capability.allowed_printer_ids:
+                errors.append(f"printer_id {printer_id} is not allowed for {capability.id}")
+            if not SLUG_RE.match(printer_id):
+                errors.append(f"printer_id {printer_id} is not valid")
     if capability.id == "n8n_webhook.v1":
         webhook_id = str(slots.get("webhook_id") or "")
         if webhook_id not in capability.allowed_webhook_ids:
@@ -399,6 +414,10 @@ def template_values_from_slots(intent: CanonicalIntent, capability: CapabilityDe
             values["max_items"] = slots.get("max_items")
     if capability.id == "server_health.v1":
         values["check_ids"] = list_slot(slots.get("check_ids"))
+    if capability.id == "printer_supply_status.v1":
+        values["printer_ids"] = list_slot(slots.get("printer_ids"))
+        if slots.get("low_threshold_percent") is not None:
+            values["low_threshold_percent"] = slots.get("low_threshold_percent")
     if capability.id == "n8n_webhook.v1":
         values["webhook_id"] = slots.get("webhook_id")
         if slots.get("payload_description"):
@@ -438,6 +457,7 @@ def confirmation_summary(intent: CanonicalIntent, capability: CapabilityDefiniti
         "schedule": schedule,
         "sources": list_slot(slots.get("source_ids")) if capability.id == "topic_digest.v1" else [],
         "checks": list_slot(slots.get("check_ids")) if capability.id == "server_health.v1" else [],
+        "printers": list_slot(slots.get("printer_ids")) if capability.id == "printer_supply_status.v1" else [],
         "webhook_id": slots.get("webhook_id") if capability.id == "n8n_webhook.v1" else None,
         "output_target": slots.get("output_target"),
         "dry_run": True,
@@ -455,6 +475,8 @@ def worst_case_failure_mode(capability: CapabilityDefinition) -> str:
         return "A noisy, incomplete, or incorrect digest could be sent to a whitelisted Discord target after approval."
     if capability.id == "topic_digest.modify_subjects.v1":
         return "The existing digest could become noisy, incomplete, or less relevant after the approved change is applied."
+    if capability.id == "printer_supply_status.v1":
+        return "A noisy, stale, or incorrect low-supply alert could be sent to the whitelisted alerts target after approval."
     if capability.id == "n8n_webhook.v1":
         return "An approved internal n8n workflow could receive an incorrect but bounded payload after approval."
     return "The task could produce incorrect output or fail within its configured policy."

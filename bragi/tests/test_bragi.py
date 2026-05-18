@@ -29,12 +29,6 @@ def gateway_response_for(payload: dict) -> dict:
             "unsafe_reasons": ["unsafe keyword or capability: restart docker"],
             "confirmation_summary": {},
         }
-    if "printer" in payload["user_request"].lower():
-        return {
-            "outcome": "PROPOSE_NEW_CAPABILITY",
-            "capability_id": "server_health.v1",
-            "message": "This looks useful, but no printer or toner capability is registered yet.",
-        }
     missing = []
     if payload["capability_id"] == "topic_digest.v1" and not payload["slots"].get("source_ids"):
         missing.append("source_ids")
@@ -45,6 +39,8 @@ def gateway_response_for(payload: dict) -> dict:
         missing.append("subject_change")
     if payload["capability_id"] == "server_health.v1" and not payload["slots"].get("check_ids"):
         missing.append("check_ids")
+    if payload["capability_id"] == "printer_supply_status.v1" and not payload["slots"].get("printer_ids"):
+        missing.append("printer_ids")
     if payload["capability_id"] == "n8n_webhook.v1" and not payload["slots"].get("webhook_id"):
         missing.append("webhook_id")
     if not payload.get("user_confirmation_obtained"):
@@ -61,6 +57,7 @@ def gateway_response_for(payload: dict) -> dict:
                 "name": payload["slots"].get("name"),
                 "schedule": {"cron": payload["slots"].get("cron"), "timezone": payload["slots"].get("timezone")},
                 "checks": payload["slots"].get("check_ids", []),
+                "printers": payload["slots"].get("printer_ids", []),
                 "sources": payload["slots"].get("source_ids", []),
                 "change_type": "topic_digest_subjects" if payload["capability_id"] == "topic_digest.modify_subjects.v1" else None,
                 "add_source_ids": payload["slots"].get("add_source_ids", []),
@@ -173,21 +170,11 @@ def test_unsafe_request_is_not_forwarded(monkeypatch):
     assert "restart docker" in answer.lower()
 
 
-def test_printer_toner_becomes_new_capability_proposal(monkeypatch):
+def test_printer_toner_request_needs_approved_printer_id(monkeypatch):
     calls = []
 
     def fake_api_request(method, path, payload=None):
         calls.append((method, path, payload))
-        if path == "/capability-proposals/draft":
-            return {
-                "id": "cap-prop-1",
-                "status": "pending",
-                "suggested_capability_id": payload["suggested_capability_id"],
-                "suggested_task_type": payload["suggested_task_type"],
-                "likely_approval_level": payload["likely_approval_level"],
-                "purpose": payload["purpose"],
-                "execution": {"creates_task": False, "creates_approval": False, "can_be_applied": False},
-            }
         return gateway_response_for(payload)
 
     monkeypatch.setattr(bragi, "api_request", fake_api_request)
@@ -195,28 +182,31 @@ def test_printer_toner_becomes_new_capability_proposal(monkeypatch):
 
     answer = bragi.route_chat([{"role": "user", "content": "Check my printer toner and warn me before it runs out."}])
 
-    assert "no printer or toner capability" in answer
-    assert "Capability proposal drafted" in answer
-    assert "`printer_supply_status.v1`" in answer
-    assert "did not create a task, approval, run, or Yggdrasil request" in answer
+    assert "`printer_ids`" in answer
+    assert "approved printer IDs" in answer
+    assert "Canonical intent awaiting details" in answer
     assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
-    assert calls[1][0:2] == ("POST", "/capability-proposals/draft")
-    assert calls[1][2]["required_inputs"]
-    assert calls[1][2]["safety_rules"]
+    assert calls[0][2]["capability_id"] == "printer_supply_status.v1"
+    assert calls[0][2]["slots"]["printer_ids"] == []
 
 
-def test_printer_toner_proposal_falls_back_if_storage_fails(monkeypatch):
+def test_printer_toner_with_approved_id_asks_for_confirmation(monkeypatch):
+    calls = []
+
     def fake_api_request(method, path, payload=None):
-        if path == "/capability-proposals/draft":
-            raise RuntimeError("down")
+        calls.append((method, path, payload))
         return gateway_response_for(payload)
 
     monkeypatch.setattr(bragi, "api_request", fake_api_request)
 
-    answer = bragi.route_chat([{"role": "user", "content": "Check my printer toner and warn me before it runs out."}])
+    answer = bragi.route_chat(
+        [{"role": "user", "content": "Check printer_status_exporter_example toner every morning and warn me at 15%."}]
+    )
 
-    assert "could not store it in Yggy" in answer
-    assert "Nothing was sent to Yggdrasil" in answer
+    assert "Reply `confirm`" in answer
+    assert "`printer_supply_status.v1`" in answer
+    assert "Printers: `printer_status_exporter_example`" in answer
+    assert calls[0][2]["slots"]["low_threshold_percent"] == 15
 
 
 def test_n8n_request_without_known_webhook_asks_clarification(monkeypatch):
@@ -1354,14 +1344,14 @@ def test_route_diagnostic_for_draft_omits_raw_user_request():
     assert "user_request" not in diagnostic["candidate_intent"]
 
 
-def test_route_diagnostic_for_capability_proposal_is_read_only():
+def test_route_diagnostic_for_printer_supply_uses_gateway():
     diagnostic = bragi.diagnose_route([{"role": "user", "content": "Check my printer toner and warn me before it runs out."}])
 
-    assert diagnostic["mode"] == "capability_proposal"
-    assert diagnostic["route"] == "bragi_capability_proposal"
+    assert diagnostic["mode"] == "draft"
+    assert diagnostic["route"] == "heimdal_validate_intent"
     assert diagnostic["calls_external_services"] is False
-    assert diagnostic["capability_proposal"]["suggested_capability_id"] == "printer_supply_status.v1"
-    assert "original_request_preview" not in diagnostic["capability_proposal"]
+    assert diagnostic["candidate_intent"]["capability_id"] == "printer_supply_status.v1"
+    assert "user_request" not in diagnostic["candidate_intent"]
 
 
 def test_route_diagnostic_for_conversational_source_details_uses_source_selection():

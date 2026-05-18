@@ -116,6 +116,35 @@ def test_process_backup_verification_suppresses_clean_anomaly_only_result(monkey
     assert client.completed_calls[0]["log"]["notification_decision"]["reason"] == "handler_suppressed"
 
 
+def test_process_printer_supply_status_suppresses_clean_anomaly_only_result(monkeypatch):
+    client = FakeClient()
+
+    def fake_printer_supply(config: dict) -> dict:
+        return {"status": "ok", "message": "printer supplies ok", "notify": False, "failed_count": 0}
+
+    monkeypatch.setattr("worker.main.run_printer_supply_status", fake_printer_supply)
+
+    result = process_task(
+        client,
+        {
+            "enabled": True,
+            "config": {
+                "id": "daily_printer_supply_status",
+                "name": "Daily Printer Supply Status",
+                "type": "printer_supply_status",
+                "runtime": {"dry_run": True},
+                "output": {"channel": "discord", "target": "alerts", "format": "anomalies only"},
+                "notifications": {"on_success": False, "on_failure": True},
+            },
+        },
+    )
+
+    assert result["status"] == "completed_dry_run"
+    assert client.discord_calls == []
+    assert client.completed_calls[0]["log"]["result"]["status"] == "ok"
+    assert client.completed_calls[0]["log"]["notification_decision"]["reason"] == "handler_suppressed"
+
+
 def test_process_queued_run_uses_existing_run_and_sends_live(monkeypatch):
     client = FakeClient()
     task = {

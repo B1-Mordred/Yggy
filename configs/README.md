@@ -60,6 +60,12 @@ file is a static allowlist for the internal metrics exporter. Add only local
 HTTP health or inventory endpoints that are safe to read and do not require
 secrets.
 
+Printer supply monitoring uses `configs/printers/printers.yaml` as a static
+allowlist of read-only HTTP JSON supply endpoints. Add only explicit printer
+status exporter URLs that do not require credentials in the URL. The worker uses
+these endpoints only for `printer_supply_status` tasks and does not scan the
+LAN, use SNMP directly, submit print jobs, or change printer settings.
+
 Backup verification tasks use an explicit `backup:` block and may read only the
 worker's read-only `/app/backups` mount. They validate backup age, manifest
 flags, required files, MySQL dump headers, and bounded secret-scan markers, then

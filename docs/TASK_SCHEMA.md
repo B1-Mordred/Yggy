@@ -148,6 +148,39 @@ The `service_metrics` check reports failed configured services from the
 metrics-exporter allowlist without exposing Docker, process, filesystem, or
 secret data.
 
+## Printer Supply Tasks
+
+`printer_supply_status` tasks check read-only supply endpoints from the approved
+printer registry. A task must include at least one `printer_supplies` entry:
+
+```yaml
+type: printer_supply_status
+printer_supplies:
+  - printer_id: printer_status_exporter_example
+    name: Printer Status Exporter Example
+    type: http_json
+    url: http://printer-status-exporter:8091/printers/example/supplies
+    low_threshold_percent: 20
+    expected_status: 200
+output:
+  channel: discord
+  target: alerts
+  format: "anomalies only"
+notifications:
+  on_success: false
+  on_failure: true
+```
+
+Policy validation requires `printer_id` values to exist and be enabled in:
+
+```text
+configs/printers/printers.yaml
+```
+
+The task URL must match the approved registry URL for that printer ID. The task
+does not accept credentials in URLs, arbitrary printer endpoints, LAN discovery,
+printer administration, or print-job actions.
+
 ## Backup Verification Tasks
 
 `backup_verification` tasks verify recent Yggy backups without shell access,

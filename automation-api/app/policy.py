@@ -11,6 +11,7 @@ from .config import get_settings
 from .schemas import (
     ApprovalLevel,
     N8nWebhookRegistryConfig,
+    PrinterRegistryConfig,
     SourceConfig,
     SourceRegistryConfig,
     TaskConfig,
@@ -52,6 +53,11 @@ def default_policy() -> dict[str, Any]:
             "approved_webhooks_file": "",
             "require_approved_webhooks_for_task_types": [],
             "require_webhook_ids": False,
+        },
+        "printer_policy": {
+            "approved_printers_file": "",
+            "require_approved_printers_for_task_types": [],
+            "require_printer_ids": False,
         },
     }
 
@@ -102,6 +108,17 @@ def validate_policy_config(policy: dict[str, Any]) -> None:
             load_n8n_webhook_registry(policy)
         except Exception as exc:
             errors.append(f"approved n8n webhook registry is invalid: {exc}")
+    printer_policy = policy.get("printer_policy", {})
+    if not isinstance(printer_policy.get("require_approved_printers_for_task_types", []), list):
+        errors.append("printer_policy.require_approved_printers_for_task_types must be a list")
+    if not isinstance(printer_policy.get("require_printer_ids", False), bool):
+        errors.append("printer_policy.require_printer_ids must be a boolean")
+    printer_registry_path = printer_policy.get("approved_printers_file")
+    if printer_registry_path:
+        try:
+            load_printer_registry(policy)
+        except Exception as exc:
+            errors.append(f"approved printer registry is invalid: {exc}")
     if errors:
         raise PolicyViolation(errors)
 
@@ -135,6 +152,11 @@ def validate_task_policy(task: TaskConfig, policy: dict[str, Any] | None = None)
     n8n_required_task_types = set(n8n_policy.get("require_approved_webhooks_for_task_types", []))
     if task.n8n is not None or task.type in n8n_required_task_types:
         errors.extend(validate_task_n8n_webhook(task, active_policy))
+
+    printer_policy = active_policy.get("printer_policy", {})
+    printer_required_task_types = set(printer_policy.get("require_approved_printers_for_task_types", []))
+    if task.printer_supplies or task.type in printer_required_task_types:
+        errors.extend(validate_task_printer_supplies(task, active_policy))
 
     secret_paths = find_secret_paths(task.model_dump(mode="json"))
     if secret_paths:
@@ -329,6 +351,21 @@ def load_n8n_webhook_registry(policy: dict[str, Any]) -> N8nWebhookRegistryConfi
     return N8nWebhookRegistryConfig.model_validate(data)
 
 
+def load_printer_registry(policy: dict[str, Any]) -> PrinterRegistryConfig:
+    printer_policy = policy.get("printer_policy", {})
+    registry_file = printer_policy.get("approved_printers_file")
+    if not registry_file:
+        return PrinterRegistryConfig(version=1, printers=[])
+    registry_path = Path(registry_file)
+    if not registry_path.is_absolute():
+        policy_file = Path(policy.get("_policy_file", get_settings().policy_file))
+        registry_path = policy_file.parent / registry_path
+    if not registry_path.exists():
+        raise FileNotFoundError(registry_path)
+    data = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    return PrinterRegistryConfig.model_validate(data)
+
+
 def validate_task_n8n_webhook(task: TaskConfig, policy: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     n8n_policy = policy.get("n8n_policy", {})
@@ -351,4 +388,31 @@ def validate_task_n8n_webhook(task: TaskConfig, policy: dict[str, Any]) -> list[
         errors.append(f"n8n.webhook_id {approved.id} does not match the configured webhook method")
     if len(task.n8n.payload) > approved.max_payload_keys:
         errors.append(f"n8n payload has more than {approved.max_payload_keys} top-level keys")
+    return errors
+
+
+def validate_task_printer_supplies(task: TaskConfig, policy: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    printer_policy = policy.get("printer_policy", {})
+    require_printer_ids = bool(printer_policy.get("require_printer_ids", False))
+    if not task.printer_supplies:
+        return ["printer_supply_status task requires printer_supplies config"]
+
+    registry = load_printer_registry(policy)
+    approved_by_id = {printer.id: printer for printer in registry.printers if printer.enabled}
+    for index, printer in enumerate(task.printer_supplies):
+        location = f"printer_supplies[{index}]"
+        if require_printer_ids and not printer.printer_id:
+            errors.append(f"{location}: printer_id is required by printer policy")
+            continue
+        approved = approved_by_id.get(printer.printer_id)
+        if approved is None:
+            errors.append(f"{location}: printer_id {printer.printer_id} is not enabled in printers.yaml")
+            continue
+        if printer.type != approved.type:
+            errors.append(f"{location}: printer_id {approved.id} does not match the configured printer type")
+        if printer.url != approved.url:
+            errors.append(f"{location}: printer_id {approved.id} does not match the configured printer supply URL")
+        if printer.expected_status != approved.expected_status:
+            errors.append(f"{location}: printer_id {approved.id} does not match the configured expected status")
     return errors

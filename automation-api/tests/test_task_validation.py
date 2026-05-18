@@ -91,6 +91,32 @@ def test_backup_verification_requires_backup_config():
         raise AssertionError("backup_verification task without backup config was accepted")
 
 
+def test_printer_supply_status_requires_printer_supplies_config():
+    data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_printer_supply_status.yaml").read_text(encoding="utf-8"))
+    data["id"] = "missing_printer_supplies_config"
+    data.pop("printer_supplies")
+    try:
+        TaskConfig.model_validate(data)
+    except Exception as exc:
+        assert "printer_supply_status task requires printer_supplies config" in str(exc)
+    else:
+        raise AssertionError("printer_supply_status task without printer_supplies config was accepted")
+
+
+def test_printer_supply_status_rejects_unapproved_printer_id():
+    policy = load_policy(str(ROOT / "configs" / "policies.yaml"))
+    data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_printer_supply_status.yaml").read_text(encoding="utf-8"))
+    data["id"] = "unapproved_printer_supply"
+    data["printer_supplies"][0]["printer_id"] = "unknown_printer"
+    task = TaskConfig.model_validate(data)
+    try:
+        validate_task_policy(task, policy)
+    except Exception as exc:
+        assert "not enabled in printers.yaml" in str(exc)
+    else:
+        raise AssertionError("printer_supply_status task accepted an unapproved printer_id")
+
+
 def test_backup_verification_backup_root_must_use_worker_mount():
     data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_backup_verification.yaml").read_text(encoding="utf-8"))
     data["id"] = "bad_backup_root"

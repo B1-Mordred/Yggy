@@ -129,6 +129,11 @@ CHECK_ALIASES = {
     "yggdrasil": "yggdrasil_action_api",
     "n8n": "n8n",
 }
+PRINTER_ALIASES = {
+    "printer_status_exporter_example": "printer_status_exporter_example",
+    "example printer": "printer_status_exporter_example",
+    "printer status exporter": "printer_status_exporter_example",
+}
 GENERAL_CHAT_SYSTEM_PROMPT = """You are Bragi, the user's natural human-facing AI concierge.
 
 Speak naturally and helpfully. You may have a restrained Norse-skald flavor, dry wit, and occasional dark humor when it fits, but do not overdo it.
@@ -1620,8 +1625,8 @@ def build_candidate_intent(user_text: str) -> dict[str, Any] | None:
     lowered = user_text.lower()
     if is_topic_digest_subject_change_request(user_text):
         return topic_digest_subject_change_intent(user_text)
-    if any(term in lowered for term in ("printer", "toner", "cartridge", "ink level")):
-        return server_health_intent(user_text)
+    if is_printer_supply_request(user_text):
+        return printer_supply_intent(user_text)
     if any(term in lowered for term in ("restart docker", "docker socket", "reorganize all files", "delete files")):
         return server_health_intent(user_text)
     if any(term in lowered for term in ("keep an eye", "monitor", "watch", "health", "broken", "server")):
@@ -1639,7 +1644,7 @@ def classify_request(text: str) -> str:
         return "help"
     if is_list_tasks_request(lowered) or operation_from_text(text) is not None:
         return "operation"
-    if any(term in lowered for term in ("printer", "toner", "cartridge", "ink level", "restart docker", "docker socket", "reorganize all files", "delete files")):
+    if is_printer_supply_request(text) or any(term in lowered for term in ("restart docker", "docker socket", "reorganize all files", "delete files")):
         return "draft"
     draft_verbs = (
         "draft",
@@ -1795,6 +1800,30 @@ def server_health_intent(user_text: str) -> dict[str, Any]:
             "output_target": "alerts",
             "notification_policy": "only notify on anomalies",
         },
+    }
+
+
+def printer_supply_intent(user_text: str) -> dict[str, Any]:
+    printer_ids = printer_ids_from_text(user_text)
+    slots: dict[str, Any] = {
+        "task_id": "daily_printer_supply_status",
+        "name": "Daily Printer Supply Status",
+        "cron": schedule_cron(user_text, default="0 8 * * *"),
+        "timezone": "Europe/Berlin",
+        "printer_ids": printer_ids,
+        "output_target": "alerts",
+    }
+    threshold = low_threshold_from_text(user_text)
+    if threshold is not None:
+        slots["low_threshold_percent"] = threshold
+    return {
+        "intent": "draft_task",
+        "capability_id": "printer_supply_status.v1",
+        "confidence": 0.82 if printer_ids else 0.70,
+        "requires_user_confirmation": True,
+        "user_confirmation_obtained": False,
+        "user_request": user_text,
+        "slots": slots,
     }
 
 
@@ -2797,6 +2826,34 @@ def check_ids_from_text(text: str) -> list[str]:
     return ids
 
 
+def printer_ids_from_text(text: str) -> list[str]:
+    lowered = text.lower()
+    ids: list[str] = []
+    for phrase, printer_id in PRINTER_ALIASES.items():
+        if phrase in lowered and printer_id not in ids:
+            ids.append(printer_id)
+    for printer_id in PRINTER_ALIASES.values():
+        if printer_id in lowered and printer_id not in ids:
+            ids.append(printer_id)
+    return ids
+
+
+def is_printer_supply_request(text: str) -> bool:
+    lowered = text.lower()
+    return bool(
+        re.search(r"\b(printer|toner|ink|cartridge|consumable|supplies|supply)\b", lowered)
+        and re.search(r"\b(toner|ink|cartridge|consumable|supplies|supply|low|empty|warn|monitor|check)\b", lowered)
+    )
+
+
+def low_threshold_from_text(text: str) -> int | None:
+    match = re.search(r"\b([1-9]\d?)\s*%", text)
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if 1 <= value <= 100 else None
+
+
 def topic_from_text(text: str) -> str:
     patterns = [
         r"\babout\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",
@@ -2892,6 +2949,13 @@ def merge_intent_slots(intent: dict[str, Any], user_text: str) -> dict[str, Any]
             slots["include"] = include_terms_from_text(user_text)
     if merged.get("capability_id") == "server_health.v1" and not slots.get("check_ids"):
         slots["check_ids"] = check_ids_from_text(user_text)
+    if merged.get("capability_id") == "printer_supply_status.v1":
+        if not slots.get("printer_ids"):
+            slots["printer_ids"] = printer_ids_from_text(user_text)
+        if slots.get("low_threshold_percent") is None:
+            threshold = low_threshold_from_text(user_text)
+            if threshold is not None:
+                slots["low_threshold_percent"] = threshold
     if merged.get("capability_id") == "n8n_webhook.v1" and not slots.get("webhook_id"):
         match = re.search(r"\b([a-z][a-z0-9_]{2,127})\b", user_text)
         if match and "webhook" in user_text.lower():
@@ -2973,6 +3037,8 @@ def format_confirmation(summary: dict[str, Any], intent: dict[str, Any], intake:
     ]
     if summary.get("checks"):
         lines.append(f"- Checks: {', '.join(f'`{item}`' for item in summary['checks'])}")
+    if summary.get("printers"):
+        lines.append(f"- Printers: {', '.join(f'`{item}`' for item in summary['printers'])}")
     if summary.get("sources"):
         lines.append(f"- Sources: {', '.join(f'`{item}`' for item in summary['sources'])}")
     research_basis = (intent.get("slots") or {}).get("research_basis") if isinstance(intent.get("slots"), dict) else None
@@ -3012,6 +3078,8 @@ def format_confirmation(summary: dict[str, Any], intent: dict[str, Any], intake:
 def capability_proposal_candidate(text: str) -> bool:
     lowered = text.lower()
     if any(term in lowered for term in ("restart docker", "docker socket", "reorganize all files", "delete files", "firewall", "purchase", "buy ")):
+        return False
+    if is_printer_supply_request(text):
         return False
     return bool(any(term in lowered for term in ("printer", "toner", "cartridge", "ink level")))
 
@@ -3136,6 +3204,11 @@ def format_gateway_result(
         ]
         intake_id = str((intake or {}).get("id") or "")
         if intake_id:
+            example = (
+                f"use printer_status_exporter_example for intake {intake_id}"
+                if "printer_ids" in {str(slot) for slot in missing}
+                else f"use docker_blog for intake {intake_id}"
+            )
             lines.extend(
                 [
                     "",
@@ -3144,7 +3217,7 @@ def format_gateway_result(
                     f"- Intake expires: `{intake.get('expires_at')}`",
                     "",
                     "Options:",
-                    f"- Complete it: reply with the missing details and include `for intake {intake_id}`. Example: `use docker_blog for intake {intake_id}`.",
+                    f"- Complete it: reply with the missing details and include `for intake {intake_id}`. Example: `{example}`.",
                     f"- Delete it: reply `delete intake {intake_id}` or `cancel intake {intake_id}`.",
                 ]
             )
@@ -3184,6 +3257,7 @@ def slot_hint(slot: str) -> str:
     hints = {
         "source_ids": "approved source IDs such as `open_webui_releases`, `ollama_releases`, `n8n_releases`, or `docker_blog`",
         "check_ids": "approved check IDs such as `open_webui`, `ollama`, `automation_api`, `automation_worker`, or `n8n`",
+        "printer_ids": "approved printer IDs such as `printer_status_exporter_example`; configure real read-only printer endpoints in the printer registry first",
         "webhook_id": "an approved n8n webhook ID, not a raw URL",
         "subject_change": "the subject/filter terms or approved source IDs to add or remove",
         "output_target": "a whitelisted target such as `briefings` or `alerts`",
@@ -3522,6 +3596,16 @@ def incomplete_intake_options(intake: dict[str, Any]) -> str:
                 f"- Complete with approved IDs: `use docker_blog and send it to briefings for intake {intake_id}`.",
                 f"- If source options were already shown: `use sources 1 and 3 for intake {intake_id}`.",
                 "- Arbitrary URLs are not accepted here; propose them as new approved sources first.",
+            ]
+        )
+    if "printer_ids" in {str(slot) for slot in missing}:
+        lines.extend(
+            [
+                "",
+                "Printer help:",
+                "- Use approved printer IDs from `configs/printers/printers.yaml`.",
+                f"- Complete with an approved ID: `use printer_status_exporter_example for intake {intake_id}`.",
+                "- Arbitrary printer URLs are not accepted here; add a read-only exporter endpoint to the registry first.",
             ]
         )
     lines.extend(

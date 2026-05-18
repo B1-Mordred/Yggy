@@ -9,7 +9,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import get_settings
-from app.policy import load_n8n_webhook_registry, load_policy, load_source_registry, validate_task_policy
+from app.policy import load_n8n_webhook_registry, load_policy, load_printer_registry, load_source_registry, validate_task_policy
 from app.schemas import ApprovalLevel, SourceConfig, TaskConfig, TaskTemplateRenderRequest, TaskTemplateSummary
 from app.services.validation_service import find_secret_paths
 
@@ -160,6 +160,8 @@ def render_task_from_template(template_id: str, request: TaskTemplateRenderReque
         apply_topic_digest_fields(task, template, values)
     if template.task_type == "server_health":
         apply_server_health_fields(task, values)
+    if template.task_type == "printer_supply_status":
+        apply_printer_supply_fields(task, values)
     if template.task_type == "n8n_webhook":
         apply_n8n_webhook_fields(task, values)
 
@@ -289,6 +291,28 @@ def apply_server_health_fields(task: dict[str, Any], values: dict[str, Any]) -> 
             check["max_age_seconds"] = int(service.get("max_age_seconds") or 180)
         checks.append(check)
     task["checks"] = checks
+
+
+def apply_printer_supply_fields(task: dict[str, Any], values: dict[str, Any]) -> None:
+    if values.get("printer_ids") is None:
+        return
+    printer_ids = coerce_string_list(values["printer_ids"], "printer_ids")
+    threshold = values.get("low_threshold_percent")
+    if threshold is not None:
+        try:
+            threshold = int(threshold)
+        except Exception as exc:
+            raise TemplateError("low_threshold_percent must be an integer") from exc
+        if threshold < 1 or threshold > 100:
+            raise TemplateError("low_threshold_percent must be between 1 and 100")
+    approved_printers = {printer.id: printer for printer in load_printer_registry(load_policy()).printers if printer.enabled}
+    supplies: list[dict[str, Any]] = []
+    for printer_id in printer_ids:
+        printer = approved_printers.get(printer_id)
+        if printer is None:
+            raise TemplateError(f"printer_id `{printer_id}` is not enabled in printers.yaml")
+        supplies.append(printer.to_task_endpoint(low_threshold_percent=threshold).model_dump(mode="json"))
+    task["printer_supplies"] = supplies
 
 
 def apply_n8n_webhook_fields(task: dict[str, Any], values: dict[str, Any]) -> None:

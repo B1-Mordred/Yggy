@@ -17,6 +17,7 @@ Current templates:
 ```text
 topic_digest
 server_health
+printer_supply_status
 backup_verification
 n8n_webhook
 ```
@@ -67,6 +68,7 @@ missing required values
 output targets outside the template allowlist
 topic digest source IDs not enabled in configs/sources/approved_sources.yaml
 server health check IDs not enabled in configs/metrics/services.yaml
+printer IDs not enabled in configs/printers/printers.yaml
 n8n webhook IDs not enabled in configs/n8n/webhooks.yaml
 arbitrary n8n webhook URLs
 configs that fail the normal task policy validator
@@ -85,6 +87,15 @@ For server health tasks, rendering can select checks by approved registry IDs:
 ```text
 configs/metrics/services.yaml
 ```
+
+For printer supply tasks, rendering can select only approved printer IDs:
+
+```text
+configs/printers/printers.yaml
+```
+
+This is for read-only HTTP JSON supply exporters. It does not discover printers,
+use SNMP directly, submit print jobs, or change printer settings.
 
 For n8n webhook tasks, rendering can select only approved webhook IDs:
 
@@ -145,6 +156,19 @@ python scripts/render_task_template.py n8n_webhook \
   --webhook-id daily_briefing_stub \
   --n8n-payload-json '{"description":"bounded internal workflow payload"}' \
   --out configs/tasks/draft_daily_briefing_n8n_stub.yaml
+```
+
+Render a selected printer supply draft:
+
+```bash
+python scripts/render_task_template.py printer_supply_status \
+  --id draft_printer_supply_status \
+  --name "Draft Printer Supply Status" \
+  --cron "0 8 * * *" \
+  --output-target alerts \
+  --printer-id printer_status_exporter_example \
+  --low-threshold-percent 20 \
+  --out configs/tasks/draft_printer_supply_status.yaml
 ```
 
 Validate the rendered YAML:

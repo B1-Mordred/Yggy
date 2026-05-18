@@ -24,6 +24,7 @@ Open WebUI
       -> audit log
       -> automation-worker
           -> metrics-exporter
+          -> read-only printer supply exporters
           -> n8n webhooks
           -> Discord dry-run or whitelisted webhooks
           -> RSS / HTTP sources

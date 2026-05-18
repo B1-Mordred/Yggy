@@ -50,3 +50,9 @@ n8n_policy:
   require_approved_webhooks_for_task_types:
     - n8n_webhook
   require_webhook_ids: true
+
+printer_policy:
+  approved_printers_file: printers/printers.yaml
+  require_approved_printers_for_task_types:
+    - printer_supply_status
+  require_printer_ids: true

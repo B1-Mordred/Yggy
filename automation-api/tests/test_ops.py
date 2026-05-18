@@ -29,8 +29,8 @@ def capability_proposal_payload(**overrides) -> dict:
         "source_channel": "discord",
         "original_request_preview": "Check my printer toner and warn me before it runs out.",
         "purpose": "Monitor approved printer supply status and notify before toner or ink levels become low.",
-        "suggested_capability_id": "printer_supply_status.v1",
-        "suggested_task_type": "printer_supply_status",
+        "suggested_capability_id": "printer_supply_snmp.v1",
+        "suggested_task_type": "printer_supply_snmp",
         "likely_approval_level": "L1_NOTIFY_ONLY",
         "required_inputs": ["approved printer ID", "polling schedule", "low-supply threshold"],
         "safety_rules": ["must not scan the LAN", "must not change printer configuration"],
@@ -252,7 +252,7 @@ def test_ops_status_and_queue_show_capability_proposals(client):
     list_body = list_response.json()
     assert list_body["pagination"]["min_page_size"] == 5
     assert list_body["counts"]["matched"] == 1
-    assert list_body["proposals"][0]["suggested_capability_id"] == "printer_supply_status.v1"
+    assert list_body["proposals"][0]["suggested_capability_id"] == "printer_supply_snmp.v1"
     assert detail_response.status_code == 200
     assert detail_response.json()["original_request_preview"] == "Check my printer toner and warn me before it runs out."
     assert too_small.status_code == 422
@@ -398,12 +398,12 @@ def test_ops_can_plan_and_supersede_accepted_capability_proposal(client):
         "can_be_applied": False,
     }
     assert "configs/capabilities.yaml" in planned["implementation_plan"]["files_to_change"]
-    assert "automation-worker/worker/handlers/printer_supply_status.py" in planned["implementation_plan"]["files_to_change"]
+    assert "automation-worker/worker/handlers/printer_supply_snmp.py" in planned["implementation_plan"]["files_to_change"]
     assert repeat_plan.status_code == 409
     assert mark_implemented.status_code == 409
     assert "not registered yet" in mark_implemented.text
     assert list_response.status_code == 200
-    assert list_response.json()[0]["implementation_plan"]["capability_id"] == "printer_supply_status.v1"
+    assert list_response.json()[0]["implementation_plan"]["capability_id"] == "printer_supply_snmp.v1"
     assert ops_list_response.status_code == 200
     assert ops_list_response.json()["proposals"][0]["implementation_plan"]["required_decisions"]
     assert supersede_response.status_code == 200

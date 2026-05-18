@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "automation-api"))
 sys.path.insert(0, str(ROOT / "metrics-exporter"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from app.policy import PolicyViolation, load_policy, validate_policy_config, validate_task_policy  # noqa: E402
+from app.policy import PolicyViolation, load_policy, load_printer_registry, validate_policy_config, validate_task_policy  # noqa: E402
 from app.schemas import TaskConfig, TopicConfig  # noqa: E402
 from app.services.capability_gateway import CapabilityError, validate_capability_registry  # noqa: E402
 from exporter.config import load_config as load_metrics_config  # noqa: E402
@@ -98,6 +98,14 @@ def validate_metrics() -> list[str]:
         except Exception as exc:
             errors.append(f"{path}: {exc}")
     return errors
+
+
+def validate_printers() -> list[str]:
+    try:
+        load_printer_registry(load_policy(str(ROOT / "configs" / "policies.yaml")))
+    except Exception as exc:
+        return [f"{ROOT / 'configs' / 'printers' / 'printers.yaml'}: {exc}"]
+    return []
 
 
 def validate_task_templates() -> list[str]:
@@ -227,6 +235,7 @@ def main() -> int:
         + validate_topics()
         + validate_tasks()
         + validate_metrics()
+        + validate_printers()
         + validate_task_templates()
         + validate_capabilities()
         + validate_identities()

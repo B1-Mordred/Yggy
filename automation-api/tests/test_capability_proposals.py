@@ -10,8 +10,8 @@ def capability_proposal_payload(**overrides):
         "source_channel": "discord",
         "original_request_preview": "Check my printer toner and warn me before it runs out.",
         "purpose": "Monitor approved printer supply status and notify before toner or ink levels become low.",
-        "suggested_capability_id": "printer_supply_status.v1",
-        "suggested_task_type": "printer_supply_status",
+        "suggested_capability_id": "printer_supply_snmp.v1",
+        "suggested_task_type": "printer_supply_snmp",
         "likely_approval_level": "L1_NOTIFY_ONLY",
         "required_inputs": ["approved printer ID", "polling schedule", "low-supply threshold"],
         "safety_rules": ["must not scan the LAN", "must not change printer configuration"],
@@ -28,7 +28,7 @@ def test_tool_can_draft_capability_proposal_without_task_or_approval(client):
     assert response.status_code == 201
     body = response.json()
     assert body["status"] == "pending"
-    assert body["suggested_capability_id"] == "printer_supply_status.v1"
+    assert body["suggested_capability_id"] == "printer_supply_snmp.v1"
     assert body["execution"] == {"creates_task": False, "creates_approval": False, "can_be_applied": False}
     assert "nonce" not in response.text.lower()
 

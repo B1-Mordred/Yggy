@@ -11,7 +11,7 @@ from registry_lib import ROOT, RegistryError, ensure_import_paths, load_yaml_fil
 
 ensure_import_paths()
 
-from app.schemas import ApprovalLevel, N8nWebhookRegistryConfig, SourceRegistryConfig  # noqa: E402
+from app.schemas import ApprovalLevel, N8nWebhookRegistryConfig, PrinterRegistryConfig, SourceRegistryConfig  # noqa: E402
 
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{2,127}$")
@@ -148,6 +148,8 @@ def render_task_from_template(
         apply_topic_digest_fields(task, template, render_values, config_root)
     if template.task_type == "server_health":
         apply_server_health_fields(task, render_values, config_root)
+    if template.task_type == "printer_supply_status":
+        apply_printer_supply_fields(task, render_values, config_root)
     if template.task_type == "n8n_webhook":
         apply_n8n_webhook_fields(task, render_values, config_root)
 
@@ -298,6 +300,28 @@ def apply_server_health_fields(task: dict[str, Any], values: dict[str, Any], con
     task["checks"] = checks
 
 
+def apply_printer_supply_fields(task: dict[str, Any], values: dict[str, Any], config_dir: Path) -> None:
+    if values.get("printer_ids") is None:
+        return
+    printer_ids = coerce_string_list(values["printer_ids"], "printer_ids")
+    threshold = values.get("low_threshold_percent")
+    if threshold is not None:
+        try:
+            threshold = int(threshold)
+        except Exception as exc:
+            raise TemplateError("low_threshold_percent must be an integer") from exc
+        if threshold < 1 or threshold > 100:
+            raise TemplateError("low_threshold_percent must be between 1 and 100")
+    approved = load_enabled_printers(config_dir)
+    supplies: list[dict[str, Any]] = []
+    for printer_id in printer_ids:
+        printer = approved.get(printer_id)
+        if printer is None:
+            raise TemplateError(f"printer_id `{printer_id}` is not enabled in printers.yaml")
+        supplies.append(printer.to_task_endpoint(low_threshold_percent=threshold).model_dump(mode="json"))
+    task["printer_supplies"] = supplies
+
+
 def apply_n8n_webhook_fields(task: dict[str, Any], values: dict[str, Any], config_dir: Path) -> None:
     n8n = task.setdefault("n8n", {})
     webhook_id = str(values.get("webhook_id") or n8n.get("webhook_id") or "").strip()
@@ -335,6 +359,12 @@ def load_enabled_service_checks(config_dir: Path) -> dict[str, dict[str, Any]]:
         if service_id:
             enabled[service_id] = service
     return enabled
+
+
+def load_enabled_printers(config_dir: Path) -> dict[str, Any]:
+    registry_path = config_dir / "printers" / "printers.yaml"
+    registry = PrinterRegistryConfig.model_validate(load_yaml_file(registry_path))
+    return {printer.id: printer for printer in registry.printers if printer.enabled}
 
 
 def load_enabled_n8n_webhooks(config_dir: Path) -> dict[str, Any]:

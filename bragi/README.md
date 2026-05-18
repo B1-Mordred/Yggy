@@ -111,6 +111,7 @@ Milestone-one capabilities:
 - `server_health.v1`
 - `topic_digest.v1`
 - `topic_digest.modify_subjects.v1`
+- `printer_supply_status.v1`
 - `n8n_webhook.v1`
 
 Bragi may ask for user confirmation before forwarding a request. That

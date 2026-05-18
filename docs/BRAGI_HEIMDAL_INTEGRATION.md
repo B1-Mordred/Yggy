@@ -38,13 +38,14 @@ allows only:
 - `server_health.v1`
 - `topic_digest.v1`
 - `topic_digest.modify_subjects.v1`
+- `printer_supply_status.v1`
 - `n8n_webhook.v1`
 
 Draft capabilities map to existing task templates. The topic-digest subject
 change capability maps to an existing task-change proposal flow. Unknown
 capabilities, unsafe requests, unapproved source IDs, unapproved health checks,
-unapproved n8n webhook IDs, and broad `web_query` style requests are rejected
-before reaching Yggdrasil.
+unapproved printer IDs, unapproved n8n webhook IDs, and broad `web_query` style
+requests are rejected before reaching Yggdrasil.
 
 ## Canonical Intent
 
@@ -273,13 +274,25 @@ POST /capability-proposals/{id}/accept
 POST /capability-proposals/{id}/reject
 ```
 
-Example:
+Printer supply monitoring is now a registered capability:
 
 ```text
-Check my printer toner and warn me before it runs out.
+printer_supply_status.v1
 ```
 
-This becomes a review object such as `printer_supply_status.v1`, with purpose,
+Bragi can draft it only when the request names approved printer IDs from
+`configs/printers/printers.yaml`; otherwise it asks for the missing
+`printer_ids` slot. The capability uses read-only HTTP JSON supply endpoints and
+does not scan the LAN, use SNMP directly, submit print jobs, or administer
+printers.
+
+Example of a still-unsupported idea:
+
+```text
+Monitor printer page counts through SNMP.
+```
+
+This may become a review object such as `printer_page_count.v1`, with purpose,
 required inputs, likely approval level, safety rules, and non-goals. It does not
 create a task, approval, run, task template, or Yggdrasil request. Tool role may
 draft and list proposals. Admin role may accept, reject, or close them. There is

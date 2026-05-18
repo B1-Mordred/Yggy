@@ -21,6 +21,7 @@ The first Bragi/Heimdal milestone accepts only these capabilities:
 ```text
 server_health.v1
 topic_digest.v1
+printer_supply_status.v1
 n8n_webhook.v1
 ```
 
@@ -101,6 +102,49 @@ allowlist. It does not mount the Docker socket, run shell commands, use host
 network mode, inspect containers, write host files, or expose credentials. The
 `morning_server_health_check` task reads the exporter through a `service_metrics`
 check and can alert on failed configured services.
+
+## Printer Supply Checks
+
+Yggy includes a bounded `printer_supply_status` task type for read-only supply
+monitoring. It reads only printer IDs configured in:
+
+```text
+configs/printers/printers.yaml
+```
+
+The first implementation supports `http_json` endpoints intended for a small
+read-only printer status exporter. It does not scan the LAN, use SNMP directly,
+submit print jobs, administer printers, or store printer credentials.
+
+Expected endpoint shape:
+
+```json
+{
+  "supplies": [
+    {"name": "Black toner", "level_percent": 75},
+    {"name": "Cyan toner", "percent": "18%"}
+  ]
+}
+```
+
+The worker also accepts:
+
+```json
+{"supplies": {"black": 75, "cyan": "18%"}}
+```
+
+Render a disabled dry-run task with:
+
+```bash
+python scripts/render_task_template.py printer_supply_status \
+  --id daily_printer_supply_status \
+  --name "Daily Printer Supply Status" \
+  --printer-id printer_status_exporter_example \
+  --low-threshold-percent 20
+```
+
+Replace the example printer registry entry with a real read-only exporter before
+enabling a live task.
 
 ## Backup Verification
 

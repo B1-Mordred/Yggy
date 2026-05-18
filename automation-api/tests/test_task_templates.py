@@ -16,6 +16,7 @@ from task_template_lib import TemplateError, load_templates, render_task_from_te
 EXPECTED_TEMPLATE_IDS = {
     "topic_digest",
     "server_health",
+    "printer_supply_status",
     "backup_verification",
     "n8n_webhook",
 }
@@ -83,6 +84,22 @@ def test_server_health_template_renders_approved_check_ids():
     assert task["checks"][1]["type"] == "worker_heartbeat"
 
 
+def test_printer_supply_template_renders_approved_printer_ids():
+    task = render_task_from_template(
+        "printer_supply_status",
+        {
+            "id": "rendered_selected_printer_supply",
+            "name": "Rendered Selected Printer Supply",
+            "printer_ids": ["printer_status_exporter_example"],
+            "low_threshold_percent": 15,
+        },
+    )
+
+    assert [printer["printer_id"] for printer in task["printer_supplies"]] == ["printer_status_exporter_example"]
+    assert task["printer_supplies"][0]["low_threshold_percent"] == 15
+    assert task["printer_supplies"][0]["url"].startswith("http://printer-status-exporter:")
+
+
 def test_n8n_template_renders_approved_webhook_id():
     task = render_task_from_template(
         "n8n_webhook",
@@ -109,6 +126,8 @@ def test_render_script_values_support_gateway_fields():
             output_target="n8n",
             source_ids=None,
             check_ids=["automation_api"],
+            printer_ids=["printer_status_exporter_example"],
+            low_threshold_percent=20,
             webhook_id="daily_briefing_stub",
             n8n_payload_json='{"description":"bounded"}',
             include=None,
@@ -120,6 +139,8 @@ def test_render_script_values_support_gateway_fields():
     )
 
     assert values["check_ids"] == ["automation_api"]
+    assert values["printer_ids"] == ["printer_status_exporter_example"]
+    assert values["low_threshold_percent"] == 20
     assert values["webhook_id"] == "daily_briefing_stub"
     assert values["n8n_payload"] == {"description": "bounded"}
 
@@ -135,6 +156,8 @@ def test_render_script_values_reject_invalid_n8n_payload_json():
                 output_target=None,
                 source_ids=None,
                 check_ids=None,
+                printer_ids=None,
+                low_threshold_percent=None,
                 webhook_id=None,
                 n8n_payload_json="[]",
                 include=None,
@@ -202,3 +225,17 @@ def test_unknown_source_id_is_rejected():
         )
 
     assert "not enabled in approved_sources.yaml" in str(exc.value)
+
+
+def test_unknown_printer_id_is_rejected():
+    with pytest.raises(TemplateError) as exc:
+        render_task_from_template(
+            "printer_supply_status",
+            {
+                "id": "bad_printer_supply",
+                "name": "Bad Printer Supply",
+                "printer_ids": ["not_registered"],
+            },
+        )
+
+    assert "not enabled in printers.yaml" in str(exc.value)
