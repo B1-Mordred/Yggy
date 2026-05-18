@@ -14,6 +14,8 @@ from .memory_store import Base, MemoryValidationError, contains_secret_like_mate
 
 INTAKE_STATUSES = {
     "collecting",
+    "collecting_slots",
+    "awaiting_source_selection",
     "awaiting_confirmation",
     "confirmed",
     "forwarded_to_yggdrasil",
@@ -175,7 +177,8 @@ def get_intake(*, intake_id: str, user_id: str) -> dict[str, Any]:
 
 def list_intakes(*, user_id: str, include_inactive: bool = False, limit: int = 20) -> list[dict[str, Any]]:
     clean_user_id = safe_identifier(user_id, field_name="user_id")
-    statuses = list(INTAKE_STATUSES) if include_inactive else ["collecting", "awaiting_confirmation"]
+    active_statuses = ["collecting", "collecting_slots", "awaiting_source_selection", "awaiting_confirmation"]
+    statuses = list(INTAKE_STATUSES) if include_inactive else active_statuses
     with session_scope() as session:
         records = (
             session.query(BragiIntakeRecord)
@@ -188,7 +191,7 @@ def list_intakes(*, user_id: str, include_inactive: bool = False, limit: int = 2
         for record in records:
             maybe_expire_record(session, record)
         session.commit()
-        return [record_to_dict(record) for record in records if include_inactive or record.status in {"collecting", "awaiting_confirmation"}]
+        return [record_to_dict(record) for record in records if include_inactive or record.status in set(active_statuses)]
 
 
 def cancel_intake(*, intake_id: str, user_id: str) -> dict[str, Any]:
@@ -211,6 +214,50 @@ def mark_intake_forwarded(*, intake_id: str, user_id: str, detail: dict[str, Any
 
 def mark_intake_failed(*, intake_id: str, user_id: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
     return update_intake_status(intake_id=intake_id, user_id=user_id, status="failed", action="intake.fail", detail=detail)
+
+
+def update_intake(
+    *,
+    intake_id: str,
+    user_id: str,
+    status: str | None = None,
+    intent: dict[str, Any] | None = None,
+    summary: dict[str, Any] | None = None,
+    action: str = "intake.update",
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    clean_user_id = safe_identifier(user_id, field_name="user_id")
+    clean_intake_id = safe_intake_id(intake_id)
+    clean_status = str(status).strip().lower() if status is not None else None
+    if clean_status is not None and clean_status not in INTAKE_STATUSES:
+        raise MemoryValidationError("intake status is not allowed")
+    with session_scope() as session:
+        record = session.get(BragiIntakeRecord, clean_intake_id)
+        if not record or record.user_id != clean_user_id:
+            raise MemoryValidationError("intake not found")
+        maybe_expire_record(session, record)
+        if record.status in {"expired", "cancelled"}:
+            raise MemoryValidationError(f"intake is {record.status}")
+        next_intent = intent if intent is not None else record.intent_json
+        next_summary = summary if summary is not None else record.summary_json
+        validate_intake_payload(
+            user_id=clean_user_id,
+            channel=record.channel,
+            status=clean_status or record.status,
+            intent=next_intent,
+            summary=next_summary,
+        )
+        if clean_status is not None:
+            record.status = clean_status
+        if intent is not None:
+            record.intent_json = json.loads(json.dumps(intent, default=str))
+            record.capability_id = str(intent.get("capability_id"))
+        if summary is not None:
+            record.summary_json = json.loads(json.dumps(summary, default=str))
+        record.updated_at = utcnow()
+        event(session, intake_id=record.id, user_id=clean_user_id, action=action, detail=detail)
+        session.commit()
+        return record_to_dict(record)
 
 
 def update_intake_status(
@@ -240,7 +287,8 @@ def update_intake_status(
 
 
 def maybe_expire_record(session: Session, record: BragiIntakeRecord) -> None:
-    if record.status in {"collecting", "awaiting_confirmation"} and as_aware(record.expires_at) <= utcnow():
+    expirable = {"collecting", "collecting_slots", "awaiting_source_selection", "awaiting_confirmation"}
+    if record.status in expirable and as_aware(record.expires_at) <= utcnow():
         record.status = "expired"
         record.updated_at = utcnow()
         event(session, intake_id=record.id, user_id=record.user_id, action="intake.expire", detail={})

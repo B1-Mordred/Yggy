@@ -191,6 +191,8 @@ draft state:
 
 ```text
 collecting
+collecting_slots
+awaiting_source_selection
 awaiting_confirmation
 confirmed
 forwarded_to_yggdrasil
@@ -206,6 +208,9 @@ show pending intakes
 show intake bragi_intake_...
 confirm intake bragi_intake_...
 cancel intake bragi_intake_...
+confirm sources for intake bragi_intake_...
+use sources 1 and 3 for intake bragi_intake_...
+use docker_blog and send it to briefings for intake bragi_intake_...
 ```
 
 For brief-change requests that name sources naturally, such as:
@@ -215,13 +220,28 @@ add CISA and NVD to the security brief
 ```
 
 Bragi first searches `GET /sources` and shows matching approved source IDs,
-source type, AI-safe fit, and ingestion mode. The reply contains a pending
-source-selection object, not a canonical task-change intent. If the user replies
-`confirm sources`, Bragi then creates a `topic_digest.modify_subjects.v1`
-canonical intent and sends it through Heimdal validation. The usual canonical
-intent confirmation and Yggy approval path still apply after that. This keeps
-natural source matching out of Yggdrasil and prevents arbitrary URLs or
-unsupported sources from being smuggled into task YAML.
+source type, AI-safe fit, and ingestion mode. The reply creates an
+`awaiting_source_selection` intake, not a canonical task-change intent. If the
+user replies `confirm sources for intake <id>`, Bragi uses the default matches.
+If the user replies `use sources 1 and 3 for intake <id>`, Bragi uses those
+numbered approved source IDs. Bragi then creates a
+`topic_digest.modify_subjects.v1` canonical intent and sends it through Heimdal
+validation. The usual canonical intent confirmation and Yggy approval path still
+apply after that. This keeps natural source matching out of Yggdrasil and
+prevents arbitrary URLs or unsupported sources from being smuggled into task
+YAML.
+
+For incomplete canonical intents, Bragi stores a `collecting_slots` intake. The
+user can continue later by including the intake ID with the missing information,
+for example:
+
+```text
+use docker_blog and send it to briefings for intake bragi_intake_...
+```
+
+Bragi merges the details, revalidates through Heimdal, and only then shows the
+normal confirmation summary. This makes the natural intake flow independent of
+whether Open WebUI or Discord keeps the previous assistant message in context.
 
 See `docs/RESEARCH_GATEWAY.md`.
 

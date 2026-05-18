@@ -377,8 +377,38 @@ def test_catalog_source_names_are_resolved_before_canonical_intent(monkeypatch):
     assert "`cisa_news_events`" in answer
     assert "`nist_national_vulnerability_database`" in answer
     assert "mode `http_summary`" in answer
-    assert "Pending source selection" in answer
+    assert "Intake:" in answer
+    assert "awaiting_source_selection" in answer
     assert "Canonical intent" not in answer
+
+
+def test_source_selection_intake_can_be_updated_by_number(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "add CISA and NVD to the security brief"}])
+    intake_id = bragi.intake_id_from_text(answer)
+
+    assert intake_id is not None
+
+    updated = bragi.route_chat([{"role": "user", "content": f"use sources 2 and 3 for intake {intake_id}"}])
+
+    assert calls[-1][0:2] == ("POST", "/capabilities/validate-intent")
+    intent = calls[-1][2]
+    assert intent["capability_id"] == "topic_digest.modify_subjects.v1"
+    assert intent["slots"]["add_source_ids"] == [
+        "cisa_known_exploited_vulnerabilities_catalog",
+        "nist_national_vulnerability_database",
+    ]
+    assert "Canonical intent pending confirmation" in updated
+    assert f"confirm intake {intake_id}" in updated
+    stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
+    assert stored["status"] == "awaiting_confirmation"
 
 
 def test_confirmed_source_selection_generates_task_change_intent(monkeypatch):
@@ -663,7 +693,30 @@ def test_vague_topic_digest_asks_for_missing_sources(monkeypatch):
     assert calls[0][2]["capability_id"] == "topic_digest.v1"
     assert calls[0][2]["slots"]["source_ids"] == []
     assert "`source_ids`" in answer
+    assert "Intake:" in answer
     assert "Canonical intent awaiting details" in answer
+
+
+def test_missing_slot_followup_can_update_stored_intake(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "draft a weekday 08:00 topic digest about German politics"}])
+    intake_id = bragi.intake_id_from_text(answer)
+    followup = bragi.route_chat([{"role": "user", "content": f"use docker_blog and send it to briefings for intake {intake_id}"}])
+
+    assert intake_id is not None
+    assert calls[-1][0:2] == ("POST", "/capabilities/validate-intent")
+    assert calls[-1][2]["slots"]["source_ids"] == ["docker_blog"]
+    assert "Canonical intent pending confirmation" in followup
+    assert f"confirm intake {intake_id}" in followup
+    stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
+    assert stored["status"] == "awaiting_confirmation"
 
 
 def test_missing_slot_followup_merges_details(monkeypatch):
@@ -819,6 +872,23 @@ def test_route_diagnostic_for_draft_omits_raw_user_request():
     assert diagnostic["route"] == "heimdal_validate_intent"
     assert diagnostic["candidate_intent"]["capability_id"] == "topic_digest.v1"
     assert "user_request" not in diagnostic["candidate_intent"]
+
+
+def test_route_diagnostic_for_intake_detail_update_stays_intake_management():
+    intake = intake_store.create_intake(
+        user_id="local_user",
+        status="collecting_slots",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about German politics"),
+        summary={"task_id": "weekday_topic_digest", "missing_slots": ["source_ids"]},
+    )
+
+    diagnostic = bragi.diagnose_route(
+        [{"role": "user", "content": f"use docker_blog and send it to briefings for intake {intake['id']}"}]
+    )
+
+    assert diagnostic["mode"] == "intake_management"
+    assert diagnostic["route"] == "bragi_intake_management"
+    assert diagnostic["intake_id"] == intake["id"]
 
 
 def test_route_diagnostic_chat_command_formats_result():

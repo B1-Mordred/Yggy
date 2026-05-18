@@ -129,6 +129,9 @@ show pending intakes
 show intake bragi_intake_...
 confirm intake bragi_intake_...
 cancel intake bragi_intake_...
+confirm sources for intake bragi_intake_...
+use sources 1 and 3 for intake bragi_intake_...
+use docker_blog and send it to briefings for intake bragi_intake_...
 ```
 
 Intakes are pre-execution state. They contain only non-secret canonical draft
@@ -149,10 +152,24 @@ task-change proposal. Bragi does not approve, apply, enable, or run the change.
 
 When the user names sources naturally instead of giving exact source IDs, Bragi
 first reads `GET /sources`, shows the matching approved source IDs with their
-ingestion modes, and asks for `confirm sources`. Only after that source-selection
-confirmation does Bragi generate the canonical `topic_digest.modify_subjects.v1`
-intent for normal Heimdal validation and Yggy confirmation. This prevents
-unsupported or ambiguous source names from being forced into Yggdrasil.
+ingestion modes, and stores a source-selection intake. The user can then reply
+with `confirm sources for intake <id>` to use the default source matches, or
+`use sources 1 and 3 for intake <id>` to choose numbered options. Only after
+that source-selection step does Bragi generate the canonical
+`topic_digest.modify_subjects.v1` intent for normal Heimdal validation and Yggy
+confirmation. This prevents unsupported or ambiguous source names from being
+forced into Yggdrasil.
+
+When Heimdal says a canonical intent is missing details, Bragi also stores that
+state as an intake instead of relying on fragile chat transcript parsing. The
+user can provide the missing slots later by including the intake ID, for example:
+
+```text
+use docker_blog and send it to briefings for intake bragi_intake_...
+```
+
+Bragi revalidates the updated canonical intent through Heimdal before anything
+can reach Yggdrasil.
 
 Useful runtime settings:
 

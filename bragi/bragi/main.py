@@ -36,6 +36,7 @@ from .intake_store import (
     mark_intake_failed,
     mark_intake_forwarded,
     mark_intake_confirmed,
+    update_intake,
 )
 
 MODEL_ID = os.getenv("BRAGI_MODEL_ID", "bragi")
@@ -459,7 +460,7 @@ def channel_required_capability(diagnostic: dict[str, Any]) -> str:
     route = diagnostic.get("route")
     if route in {"bragi_memory_commit", "bragi_memory_propose", "bragi_memory_forget", "bragi_memory_query"}:
         return "memory"
-    if route == "bragi_intake_management":
+    if route in {"bragi_intake_management", "source_selection"}:
         return "draft_task"
     if route == "general_chat_with_context":
         return "context"
@@ -1221,12 +1222,12 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
         )
         return diagnostic
     explicit_intake_id = intake_id_from_text(user_text)
-    if explicit_intake_id and (is_intake_show_request(user_text) or is_intake_cancel_request(user_text)):
+    if explicit_intake_id and not is_intake_confirm_request(user_text):
         diagnostic.update(
             {
                 "mode": "intake_management",
                 "route": "bragi_intake_management",
-                "reason": "Request inspects or cancels Bragi pre-execution intake state.",
+                "reason": "Request inspects, updates, or cancels Bragi pre-execution intake state.",
                 "intake_id": explicit_intake_id,
             }
         )
@@ -1904,7 +1905,71 @@ def source_selection_intent(text: str) -> dict[str, Any] | None:
     }
 
 
-def format_source_selection(selection: dict[str, Any]) -> str:
+def source_selection_options(selection: dict[str, Any]) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for match in selection.get("matches", []):
+        if not isinstance(match, dict):
+            continue
+        sources: list[dict[str, Any]] = []
+        selected = match.get("selected")
+        if isinstance(selected, dict):
+            sources.append(selected)
+        alternatives = match.get("alternatives") if isinstance(match.get("alternatives"), list) else []
+        sources.extend(source for source in alternatives if isinstance(source, dict))
+        for source in sources:
+            source_id = str(source.get("id") or "")
+            if not source_id or source_id in seen:
+                continue
+            seen.add(source_id)
+            options.append(
+                {
+                    "number": len(options) + 1,
+                    "source_id": source_id,
+                    "name": source.get("name"),
+                    "type": source.get("type"),
+                    "ingestion_mode": source.get("ingestion_mode"),
+                    "ai_safe_fit": source.get("ai_safe_fit") or source.get("trust_level"),
+                    "term": match.get("term"),
+                    "selected_by_default": source_id in set(selection.get("selected_source_ids") or []),
+                }
+            )
+    return options
+
+
+def source_selection_summary(selection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "source_selection",
+        "task_id": selection.get("task_id") or "daily_local_ai_security_briefing",
+        "original_request": redact_diagnostic_text(str(selection.get("original_request") or ""))[:500],
+        "terms": selection.get("terms", []),
+        "include_terms": selection.get("include_terms", []),
+        "selected_source_ids": selection.get("selected_source_ids", []),
+        "options": source_selection_options(selection),
+    }
+
+
+def create_source_selection_intake(selection: dict[str, Any], *, user_id: str, channel: str = "chat") -> dict[str, Any] | None:
+    if selection.get("status") != "matched":
+        return None
+    try:
+        return create_intake(
+            user_id=user_id,
+            channel=channel,
+            status="awaiting_source_selection",
+            intent=source_selection_to_intent(selection),
+            summary=source_selection_summary(selection),
+            source="bragi_source_selection",
+            ttl_seconds=INTAKE_TTL_SECONDS,
+        )
+    except MemoryValidationError as exc:
+        print(f"bragi source-selection intake rejected: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"bragi source-selection intake failed: {exc.__class__.__name__}", file=sys.stderr)
+    return None
+
+
+def format_source_selection(selection: dict[str, Any], intake: dict[str, Any] | None = None) -> str:
     terms = selection.get("terms") if isinstance(selection.get("terms"), list) else []
     if selection.get("status") != "matched":
         return "\n".join(
@@ -1916,10 +1981,12 @@ def format_source_selection(selection: dict[str, Any]) -> str:
                 "Tell me the approved source IDs to use, or ask me to list matching sources first. I will not invent a source or send an arbitrary URL to Yggdrasil.",
             ]
         )
+    intake_id = str((intake or {}).get("id") or "")
     lines = [
         "I found approved sources that can be used for that brief change:",
         "",
     ]
+    options = source_selection_options(selection)
     for match in selection.get("matches", []):
         if not isinstance(match, dict):
             continue
@@ -1934,16 +2001,43 @@ def format_source_selection(selection: dict[str, Any]) -> str:
             rendered = "; ".join(source_descriptor(source) for source in alternatives[:3] if isinstance(source, dict))
             if rendered:
                 lines.append(f"  Other close match(es): {rendered}")
+    if options:
+        lines.extend(["", "Source options:"])
+        for option in options:
+            default = " default" if option.get("selected_by_default") else ""
+            lines.append(
+                f"{option['number']}. `{option['source_id']}`: {option.get('name')} "
+                f"(mode `{option.get('ingestion_mode') or 'unknown'}`, fit `{option.get('ai_safe_fit') or 'unknown'}`){default}"
+            )
+    if intake_id:
+        lines.extend(
+            [
+                "",
+                f"- Intake: `{intake_id}`",
+                f"- Intake status: `{intake.get('status')}`",
+                f"- Intake expires: `{intake.get('expires_at')}`",
+            ]
+        )
     lines.extend(
         [
             "",
-            "Reply `confirm sources` to generate the canonical Yggy task-change intent from these selected source IDs.",
+            (
+                f"Reply `confirm sources for intake {intake_id}` to use the default selected source IDs, "
+                f"or `use sources 1 and 3 for intake {intake_id}` to choose by number."
+                if intake_id
+                else "Reply `confirm sources` to generate the canonical Yggy task-change intent from these selected source IDs."
+            ),
             "This confirms source selection only. Yggy confirmation and approval still control whether anything changes.",
-            "",
-            "Pending source selection:",
-            f"```json\n{json.dumps(source_selection_pending_payload(selection), indent=2, sort_keys=True)}\n```",
         ]
     )
+    if not intake_id:
+        lines.extend(
+            [
+                "",
+                "Pending source selection:",
+                f"```json\n{json.dumps(source_selection_pending_payload(selection), indent=2, sort_keys=True)}\n```",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -2451,11 +2545,23 @@ def format_gateway_result(
             "I can probably map that to a known Yggy capability, but I need a few details first:",
             *(f"- `{slot}`: {slot_hint(slot)}" for slot in missing),
         ]
+        intake_id = str((intake or {}).get("id") or "")
+        if intake_id:
+            lines.extend(
+                [
+                    "",
+                    f"- Intake: `{intake_id}`",
+                    f"- Intake status: `{intake.get('status')}`",
+                    f"- Intake expires: `{intake.get('expires_at')}`",
+                    "",
+                    f"Reply with the missing details and include `for intake {intake_id}`. For example: `use docker_blog for intake {intake_id}`.",
+                ]
+            )
         if intent:
             lines.extend(
                 [
                     "",
-                    "Reply with the missing details. I will re-check the canonical intent before anything reaches Yggdrasil.",
+                    "I will re-check the canonical intent before anything reaches Yggdrasil.",
                     "",
                     "Canonical intent awaiting details:",
                     f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```",
@@ -2506,30 +2612,53 @@ def validate_intent_for_reply(
     user_id: str,
     channel: str = "chat",
     source: str = "bragi_route",
+    existing_intake_id: str | None = None,
 ) -> str:
     result = api_request("POST", "/capabilities/validate-intent", intent)
-    intake = maybe_create_intake_for_result(result, intent, user_id=user_id, channel=channel, source=source)
+    intake = maybe_store_intake_for_result(
+        result,
+        intent,
+        user_id=user_id,
+        channel=channel,
+        source=source,
+        existing_intake_id=existing_intake_id,
+    )
     return format_gateway_result(result, intent, intake=intake)
 
 
-def maybe_create_intake_for_result(
+def maybe_store_intake_for_result(
     result: dict[str, Any],
     intent: dict[str, Any],
     *,
     user_id: str,
     channel: str,
     source: str,
+    existing_intake_id: str | None = None,
 ) -> dict[str, Any] | None:
     missing = result.get("missing_slots") or []
-    if result.get("outcome") != "ASK_CLARIFICATION" or missing != ["user_confirmation"]:
+    if result.get("outcome") != "ASK_CLARIFICATION":
         return None
+    status = "awaiting_confirmation" if missing == ["user_confirmation"] else "collecting_slots"
+    summary = result.get("confirmation_summary") if isinstance(result.get("confirmation_summary"), dict) else {}
+    if missing:
+        summary = {**summary, "missing_slots": missing}
     try:
+        if existing_intake_id:
+            return update_intake(
+                intake_id=existing_intake_id,
+                user_id=user_id,
+                status=status,
+                intent=intent,
+                summary=summary,
+                action="intake.validate",
+                detail={"missing_slots": missing, "source": source},
+            )
         return create_intake(
             user_id=user_id,
             channel=channel,
-            status="awaiting_confirmation",
+            status=status,
             intent=intent,
-            summary=result.get("confirmation_summary") if isinstance(result.get("confirmation_summary"), dict) else {},
+            summary=summary,
             source=source,
             ttl_seconds=INTAKE_TTL_SECONDS,
         )
@@ -2567,6 +2696,15 @@ def is_intake_list_request(text: str) -> bool:
 def is_intake_show_request(text: str) -> bool:
     lowered = text.lower()
     return bool(re.search(r"\b(show|inspect|view|get)\b.*\bintake\b", lowered) and intake_id_from_text(lowered))
+
+
+def is_source_selection_update_request(text: str) -> bool:
+    lowered = text.lower()
+    return bool(
+        re.search(r"\b(confirm|use|choose|select)\s+sources?\b", lowered)
+        or re.search(r"\bsource\s+\d+\b", lowered)
+        or re.search(r"\bsources?\s+(?:\d+\s*(?:,|and)?\s*)+\b", lowered)
+    )
 
 
 def confirm_intake_response(intake_id: str, *, user_id: str) -> str:
@@ -2627,6 +2765,18 @@ def format_intake_summary(intake: dict[str, Any], *, include_intent: bool = Fals
     checks = slots.get("check_ids") or summary.get("checks")
     if isinstance(checks, list) and checks:
         lines.append(f"  Checks: {', '.join(f'`{item}`' for item in checks[:8])}")
+    missing = summary.get("missing_slots")
+    if isinstance(missing, list) and missing:
+        lines.append(f"  Missing: {', '.join(f'`{item}`' for item in missing)}")
+    options = summary.get("options")
+    if isinstance(options, list) and options:
+        lines.append("  Source options:")
+        for option in options[:10]:
+            if isinstance(option, dict):
+                lines.append(
+                    f"    {option.get('number')}. `{option.get('source_id')}`"
+                    f"{' default' if option.get('selected_by_default') else ''}"
+                )
     if include_intent:
         lines.extend(["", "Canonical intent:", f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```"])
     return "\n".join(lines)
@@ -2654,7 +2804,109 @@ def show_intake_response(intake_id: str, *, user_id: str) -> str:
     lines = ["Bragi intake:", "", format_intake_summary(intake, include_intent=True)]
     if intake.get("status") == "awaiting_confirmation":
         lines.append(f"\nReply `confirm intake {intake.get('id')}` to continue, or `cancel intake {intake.get('id')}` to discard it.")
+    elif intake.get("status") == "awaiting_source_selection":
+        lines.append(f"\nReply `confirm sources for intake {intake.get('id')}` to use the defaults, or `use sources 1 and 3 for intake {intake.get('id')}`.")
+    elif intake.get("status") in {"collecting", "collecting_slots"}:
+        lines.append(f"\nReply with the missing details and include `for intake {intake.get('id')}`.")
     return "\n".join(lines)
+
+
+def source_option_ids_from_intake(intake: dict[str, Any]) -> list[str]:
+    summary = intake.get("summary") if isinstance(intake.get("summary"), dict) else {}
+    options = summary.get("options") if isinstance(summary.get("options"), list) else []
+    ids: list[str] = []
+    for option in options:
+        if isinstance(option, dict) and option.get("source_id"):
+            ids.append(str(option["source_id"]))
+    return ids
+
+
+def explicit_source_ids_from_text(text: str) -> list[str]:
+    ids: list[str] = []
+    for token in re.findall(r"\b[a-z][a-z0-9_]{2,127}\b", text.lower()):
+        if "_" in token and token not in ids and not token.startswith("bragi_intake_"):
+            ids.append(token)
+    return ids[:20]
+
+
+def source_selection_ids_from_user_text(text: str, intake: dict[str, Any]) -> list[str]:
+    lowered = text.lower()
+    options = source_option_ids_from_intake(intake)
+    selected: list[str] = []
+    if options and re.search(r"\b(use|choose|select|source|sources)\b", lowered):
+        for number in re.findall(r"\b(\d{1,2})\b", lowered):
+            index = int(number) - 1
+            if 0 <= index < len(options) and options[index] not in selected:
+                selected.append(options[index])
+    for source_id in explicit_source_ids_from_text(text):
+        if not options or source_id in options:
+            if source_id not in selected:
+                selected.append(source_id)
+    return selected
+
+
+def source_selection_intake_response(intake_id: str, user_text: str, *, user_id: str) -> str:
+    try:
+        intake = get_intake(intake_id=intake_id, user_id=user_id)
+    except MemoryValidationError as exc:
+        return f"I cannot update that source selection: {exc}."
+    if intake.get("status") != "awaiting_source_selection":
+        return f"I cannot update source selection for intake `{intake_id}` because it is `{intake.get('status')}`."
+    intent = json.loads(json.dumps(intake.get("intent") or {}))
+    slots = intent.setdefault("slots", {})
+    selected = source_selection_ids_from_user_text(user_text, intake)
+    if selected:
+        slots["add_source_ids"] = selected
+    if not slots.get("add_source_ids"):
+        return f"I need source choices for intake `{intake_id}`. Use numbers from `show intake {intake_id}` or approved source IDs."
+    return validate_intent_for_reply(
+        intent,
+        user_id=user_id,
+        source="bragi_source_selection",
+        existing_intake_id=intake_id,
+    )
+
+
+def update_collecting_intake_response(intake_id: str, user_text: str, *, user_id: str) -> str:
+    try:
+        intake = get_intake(intake_id=intake_id, user_id=user_id)
+    except MemoryValidationError as exc:
+        return f"I cannot update that intake: {exc}."
+    if intake.get("status") not in {"collecting", "collecting_slots"}:
+        return f"I cannot collect more details for intake `{intake_id}` because it is `{intake.get('status')}`."
+    intent = merge_intent_slots(json.loads(json.dumps(intake.get("intent") or {})), user_text)
+    slots = intent.setdefault("slots", {})
+    if intent.get("capability_id") == "topic_digest.v1" and not slots.get("source_ids"):
+        source_ids = source_ids_from_text(user_text) + explicit_source_ids_from_text(user_text)
+        slots["source_ids"] = [source_id for index, source_id in enumerate(source_ids) if source_id not in source_ids[:index]]
+    if intent.get("capability_id") == "topic_digest.modify_subjects.v1":
+        source_ids = source_ids_from_text(user_text) + explicit_source_ids_from_text(user_text)
+        source_ids = [source_id for index, source_id in enumerate(source_ids) if source_id not in source_ids[:index]]
+        remove = bool(re.search(r"\b(remove|drop|exclude)\b|\bstop\s+covering\b", user_text, re.IGNORECASE))
+        if remove and source_ids and not slots.get("remove_source_ids"):
+            slots["remove_source_ids"] = source_ids
+        if not remove and source_ids and not slots.get("add_source_ids"):
+            slots["add_source_ids"] = source_ids
+    intent = enrich_topic_digest_intent_with_research(intent, user_text)
+    return validate_intent_for_reply(
+        intent,
+        user_id=user_id,
+        source="bragi_slot_fill",
+        existing_intake_id=intake_id,
+    )
+
+
+def intake_detail_update_response(intake_id: str, user_text: str, *, user_id: str) -> str | None:
+    try:
+        intake = get_intake(intake_id=intake_id, user_id=user_id)
+    except MemoryValidationError as exc:
+        return f"I cannot update that intake: {exc}."
+    status = str(intake.get("status") or "")
+    if status == "awaiting_source_selection":
+        return source_selection_intake_response(intake_id, user_text, user_id=user_id)
+    if status in {"collecting", "collecting_slots"}:
+        return update_collecting_intake_response(intake_id, user_text, user_id=user_id)
+    return None
 
 
 def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:
@@ -2689,15 +2941,23 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
         return show_intake_response(explicit_intake_id, user_id=user_id)
     if explicit_intake_id and is_intake_cancel_request(user_text):
         return cancel_intake_response(explicit_intake_id, user_id=user_id)
+    if explicit_intake_id and is_source_selection_update_request(user_text):
+        return source_selection_intake_response(explicit_intake_id, user_text, user_id=user_id)
     if is_intake_list_request(user_text):
         return list_intakes_response(user_id=user_id)
     if is_intake_confirm_request(user_text):
         intake_id = explicit_intake_id or pending_intake_id_from_prior(prior)
         if intake_id:
             return confirm_intake_response(intake_id, user_id=user_id)
+    if explicit_intake_id:
+        detail_update = intake_detail_update_response(explicit_intake_id, user_text, user_id=user_id)
+        if detail_update is not None:
+            return detail_update
 
     if is_confirmation(user_text):
         prior_intake_id = pending_intake_id_from_prior(prior)
+        if prior_intake_id and is_source_selection_update_request(user_text):
+            return source_selection_intake_response(prior_intake_id, user_text, user_id=user_id)
         if prior_intake_id and not pending_source_selection_from_prior(prior):
             return confirm_intake_response(prior_intake_id, user_id=user_id)
         source_selection = pending_source_selection_from_prior(prior)
@@ -2743,7 +3003,8 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
 
     source_selection = source_selection_intent(user_text)
     if source_selection is not None:
-        return format_source_selection(source_selection)
+        intake = create_source_selection_intake(source_selection, user_id=user_id)
+        return format_source_selection(source_selection, intake=intake)
 
     intent = build_candidate_intent(user_text)
     if intent is None:
