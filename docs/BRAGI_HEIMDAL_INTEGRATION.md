@@ -182,6 +182,21 @@ Heimdal validation, and stores the normal confirmation intake. It must not
 continue with a general-chat promise such as "I'll pass this to Yggdrasil" or
 "you can expect this tomorrow."
 
+Bragi can also answer natural source-catalog questions without creating an
+automation draft:
+
+```text
+show sources for cybersecurity
+what sources do you have for German business news?
+find approved sources for vulnerability records
+```
+
+Those questions call only the read-only approved source registry. Bragi shows
+source IDs, type, ingestion mode, AI-safe fit, region/language metadata when
+available, and a metadata/link-only note for sources that must not be treated as
+full-text fetch targets. This route is context only. It does not forward
+anything to Yggdrasil and does not add arbitrary URLs to task YAML.
+
 Confirmation phrases that close this conversational intake do not authorize
 execution. They only trigger the first canonical intent display and an intake ID.
 The normal `confirm intake <id>` response, or `confirm` while that intake remains

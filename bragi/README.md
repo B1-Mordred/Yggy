@@ -55,9 +55,18 @@ Examples:
 what can you automate right now?
 what is pending?
 what sources can I use for a brief?
+show sources for cybersecurity
+find approved sources for German business news
 what health checks do you know?
 show recent run history
 ```
+
+Natural source-search questions are answered from `GET /sources` only. Bragi
+filters the approved registry, shows source IDs, ingestion mode, AI-safe fit,
+region/language metadata when present, and flags metadata/link-only sources. It
+does not fetch arbitrary URLs or forward source-search questions to Yggdrasil.
+To change a digest, the user must still name approved source IDs or complete an
+`awaiting_source_selection` intake, then confirm the resulting canonical intent.
 
 Bragi also has controlled, user-scoped memory. Persistent memory is explicit,
 non-secret, inspectable, and forgettable. Bragi does not silently store chat

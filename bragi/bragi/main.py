@@ -470,7 +470,7 @@ def channel_required_capability(diagnostic: dict[str, Any]) -> str:
         return "memory"
     if route in {"bragi_intake_management", "source_selection"}:
         return "draft_task"
-    if route == "general_chat_with_context":
+    if route in {"general_chat_with_context", "bragi_source_catalog_search"}:
         return "context"
     if route in {"heimdal_validate_intent", "heimdal_prepare_yggdrasil_request"}:
         return "draft_task"
@@ -893,11 +893,7 @@ def format_context_answer(context: dict[str, Any]) -> str:
     if isinstance(sources, list):
         lines.extend(["", "Approved sources:"])
         for source in sources[:10]:
-            categories = ", ".join(source.get("categories") or [])
-            lines.append(
-                f"- `{source.get('id')}`: {source.get('name')} "
-                f"({source.get('type')}, {source.get('trust_level')}, mode `{source.get('ingestion_mode')}`, {categories})"
-            )
+            lines.append(source_catalog_entry_line(source))
     research = data.get("research")
     if isinstance(research, dict):
         lines.extend(["", "Approved-source research:"])
@@ -1263,6 +1259,21 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
             }
         )
         return diagnostic
+    prior_intake_id = pending_intake_id_from_prior(prior)
+    if (
+        prior_intake_id
+        and is_source_selection_update_request(user_text)
+        and intake_status_for_user(prior_intake_id, user_id=user_id) == "awaiting_source_selection"
+    ):
+        diagnostic.update(
+            {
+                "mode": "intake_management",
+                "route": "bragi_intake_management",
+                "reason": "Request updates the source selection intake visible in the current conversation.",
+                "intake_id": prior_intake_id,
+            }
+        )
+        return diagnostic
     if is_intake_list_request(user_text):
         diagnostic.update(
             {
@@ -1371,6 +1382,16 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
 
     mode = classify_request(user_text)
     diagnostic["mode"] = mode
+    if source_catalog_search_requested(user_text):
+        diagnostic.update(
+            {
+                "mode": "context",
+                "route": "bragi_source_catalog_search",
+                "reason": "Question asks for approved source registry search; Bragi can answer read-only without forwarding to Yggdrasil.",
+                "context_categories": ["sources"],
+            }
+        )
+        return diagnostic
     context_categories = context_categories_for_text(user_text)
     if context_categories:
         diagnostic.update(
@@ -1792,8 +1813,191 @@ def approved_sources_from_api() -> list[dict[str, Any]]:
     return [source for source in sources if isinstance(source, dict) and source.get("enabled", True)]
 
 
+def source_fit_value(source: dict[str, Any]) -> str:
+    return str(source.get("ai_safe_fit") or source.get("trust_level") or "unknown")
+
+
+def source_is_metadata_only(source: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        str(source.get(key) or "")
+        for key in ("ingestion_mode", "ai_safe_fit", "trust_level", "ingestion_notes", "source_type_label")
+    ).lower()
+    return "metadata_only" in haystack or "metadata-only" in haystack or "licensed/metadata" in haystack
+
+
+def source_is_official(source: dict[str, Any]) -> bool:
+    haystack = source_haystack(source)
+    return bool(
+        re.search(
+            r"\b(official|government|federal|ministry|agency|public|vendor|project|release|cisa|nist|nvd|nasa|eu|un|who|bsi|ubuntu|canonical)\b",
+            haystack,
+        )
+    )
+
+
 def normalize_match_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+SOURCE_CATALOG_STOPWORDS = {
+    "approved",
+    "available",
+    "catalog",
+    "can",
+    "could",
+    "do",
+    "feed",
+    "feeds",
+    "for",
+    "from",
+    "have",
+    "list",
+    "me",
+    "my",
+    "news",
+    "preapproved",
+    "registered",
+    "rss",
+    "search",
+    "show",
+    "source",
+    "sources",
+    "the",
+    "there",
+    "use",
+    "what",
+    "which",
+    "with",
+    "you",
+}
+
+
+def source_catalog_search_requested(text: str) -> bool:
+    lowered = text.lower()
+    if re.match(
+        r"^\s*(?:please\s+)?(?:draft|create|set up|setup|schedule|add|include|remove|exclude|stop|run|send|pause|disable|approve|reject|use|choose|select)\b",
+        lowered,
+    ):
+        return False
+    if not re.search(r"\b(source|sources|feed|feeds|rss|catalog)\b", lowered):
+        return False
+    return bool(
+        re.search(r"\b(show|list|find|search|what|which|available|approved|preapproved|catalog|do you have|can i use)\b", lowered)
+    )
+
+
+def source_catalog_terms_from_text(text: str) -> list[str]:
+    normalized = normalize_match_text(text.replace("_", " "))
+    words = [
+        word
+        for word in normalized.split()
+        if len(word) >= 3 and word not in SOURCE_CATALOG_STOPWORDS
+    ]
+    terms: list[str] = []
+    if words:
+        phrase = " ".join(words[:8])
+        if phrase not in terms:
+            terms.append(phrase)
+    for word in words:
+        if word not in terms:
+            terms.append(word)
+    return terms[:10]
+
+
+def source_catalog_matches(text: str, sources: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+    terms = source_catalog_terms_from_text(text)
+    lowered = text.lower()
+    scored: list[dict[str, Any]] = []
+    for source in sources:
+        score = 0
+        rich_haystack = normalize_match_text(
+            " ".join(
+                str(source.get(key) or "")
+                for key in ("id", "name", "description", "source_type_label", "trust_level", "ai_safe_fit", "ingestion_notes")
+            ).replace("_", " ")
+        )
+        category_haystack = normalize_match_text(
+            " ".join(str(item) for item in source.get("categories", []) if str(item).strip())
+            if isinstance(source.get("categories"), list)
+            else ""
+        )
+        for term in terms:
+            score += score_source_match(term, source)
+            normalized_term = normalize_match_text(term)
+            term_words = [word for word in normalized_term.split() if len(word) >= 2]
+            if normalized_term and normalized_term in rich_haystack:
+                score += 180
+            elif term_words and all(word in rich_haystack for word in term_words):
+                score += 120
+            if normalized_term and normalized_term in category_haystack:
+                score += 40
+        if "official" in lowered and source_is_official(source):
+            score += 120
+        if re.search(r"\b(metadata|licensed|snippet|link)\b", lowered) and source_is_metadata_only(source):
+            score += 120
+        if re.search(r"\b(open|high[- ]fit|public[- ]domain)\b", lowered) and source_fit_value(source).lower().startswith("a"):
+            score += 120
+        if terms and score < 80:
+            continue
+        scored.append({"score": score, "source": source})
+    if not terms:
+        scored = [{"score": 0, "source": source} for source in sources]
+    scored.sort(key=lambda item: (item["score"], str(item["source"].get("id") or "")), reverse=True)
+    return [item["source"] for item in scored[: max(1, min(limit, 25))]]
+
+
+def source_region_language_label(source: dict[str, Any]) -> str:
+    pieces: list[str] = []
+    if source.get("region"):
+        pieces.append(f"region `{source.get('region')}`")
+    languages = source.get("languages")
+    if isinstance(languages, list) and languages:
+        pieces.append("languages " + ", ".join(f"`{item}`" for item in languages[:4]))
+    return ", ".join(pieces)
+
+
+def source_catalog_entry_line(source: dict[str, Any], number: int | None = None) -> str:
+    prefix = f"{number}. " if number is not None else "- "
+    categories = ", ".join(str(item) for item in source.get("categories", [])[:4]) if isinstance(source.get("categories"), list) else ""
+    mode = str(source.get("ingestion_mode") or "unknown")
+    fit = source_fit_value(source)
+    labels = [f"type `{source.get('type') or 'unknown'}`", f"mode `{mode}`", f"fit `{fit}`"]
+    region_language = source_region_language_label(source)
+    if region_language:
+        labels.append(region_language)
+    if categories:
+        labels.append(f"categories `{categories}`")
+    note = " Metadata/link-only source; no full-text fetch is implied." if source_is_metadata_only(source) else ""
+    return f"{prefix}`{source.get('id')}`: {source.get('name')} ({'; '.join(labels)}).{note}"
+
+
+def format_source_catalog_search(text: str, *, limit: int = 10) -> str:
+    sources = approved_sources_from_api()
+    matches = source_catalog_matches(text, sources, limit=limit)
+    terms = source_catalog_terms_from_text(text)
+    if not matches:
+        return "\n".join(
+            [
+                "I did not find matching approved sources in the Yggy registry.",
+                "",
+                f"- Search terms: {', '.join(f'`{term}`' for term in terms) if terms else '`none`'}",
+                "",
+                "I will not invent a source or use an arbitrary URL. Ask to propose a new approved source if this should become available.",
+            ]
+        )
+    lines = [
+        "Approved source matches from the Yggy registry:",
+        "",
+    ]
+    for index, source in enumerate(matches, start=1):
+        lines.append(source_catalog_entry_line(source, index))
+    lines.extend(
+        [
+            "",
+            "This is read-only registry context. To change a digest, name approved source IDs or ask for a supported brief change; arbitrary URLs stay outside Yggdrasil unless added to the approved registry first.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def source_search_terms_from_text(text: str) -> list[str]:
@@ -1912,10 +2116,11 @@ def match_sources_for_terms(terms: list[str], sources: list[dict[str, Any]]) -> 
 
 
 def source_descriptor(source: dict[str, Any]) -> str:
+    note = ", metadata/link-only" if source_is_metadata_only(source) else ""
     return (
         f"`{source.get('id')}`: {source.get('name')} "
         f"({source.get('type')}, mode `{source.get('ingestion_mode') or 'unknown'}`, "
-        f"fit `{source.get('ai_safe_fit') or source.get('trust_level') or 'unknown'}`)"
+        f"fit `{source_fit_value(source)}`{note})"
     )
 
 
@@ -1971,7 +2176,9 @@ def source_selection_options(selection: dict[str, Any]) -> list[dict[str, Any]]:
                     "name": source.get("name"),
                     "type": source.get("type"),
                     "ingestion_mode": source.get("ingestion_mode"),
-                    "ai_safe_fit": source.get("ai_safe_fit") or source.get("trust_level"),
+                    "ai_safe_fit": source_fit_value(source),
+                    "metadata_only": source_is_metadata_only(source),
+                    "official": source_is_official(source),
                     "term": match.get("term"),
                     "selected_by_default": source_id in set(selection.get("selected_source_ids") or []),
                 }
@@ -2056,9 +2263,10 @@ def format_source_selection(selection: dict[str, Any], intake: dict[str, Any] | 
         lines.extend(["", "Source options:"])
         for option in options:
             default = " default" if option.get("selected_by_default") else ""
+            note = "; metadata/link-only" if option.get("metadata_only") else ""
             lines.append(
                 f"{option['number']}. `{option['source_id']}`: {option.get('name')} "
-                f"(mode `{option.get('ingestion_mode') or 'unknown'}`, fit `{option.get('ai_safe_fit') or 'unknown'}`){default}"
+                f"(mode `{option.get('ingestion_mode') or 'unknown'}`, fit `{option.get('ai_safe_fit') or 'unknown'}`{note}){default}"
             )
     if intake_id:
         lines.extend(
@@ -2892,6 +3100,13 @@ def format_intake_followup_message(intake: dict[str, Any]) -> str:
                 f"- Delete it: `delete intake {intake_id}`",
             ]
         )
+        if "source_ids" in {str(slot) for slot in missing}:
+            lines.extend(
+                [
+                    f"- Search approved sources: `show sources for <topic>`.",
+                    f"- Complete with approved source IDs: `use docker_blog for intake {intake_id}`.",
+                ]
+            )
     elif status == "awaiting_confirmation":
         lines.extend(
             [
@@ -3037,6 +3252,8 @@ def is_source_selection_update_request(text: str) -> bool:
     lowered = text.lower()
     return bool(
         re.search(r"\b(confirm|use|choose|select)\s+sources?\b", lowered)
+        or re.search(r"\b(use|choose|select)\b.*\b(official|default|defaults|all|everything|each|metadata|metadata-only)\b", lowered)
+        or re.search(r"\b(use|choose|select)\b.*\b[a-z][a-z0-9_]{2,127}\b", lowered)
         or re.search(r"\bsource\s+\d+\b", lowered)
         or re.search(r"\bsources?\s+(?:\d+\s*(?:,|and)?\s*)+\b", lowered)
     )
@@ -3101,6 +3318,17 @@ def incomplete_intake_options(intake: dict[str, Any]) -> str:
     ]
     if missing:
         lines.append(f"Missing: {', '.join(f'`{slot}`' for slot in missing)}.")
+    if "source_ids" in {str(slot) for slot in missing}:
+        lines.extend(
+            [
+                "",
+                "Source help:",
+                "- Search approved sources: `show sources for cybersecurity` or `find approved sources for German politics`.",
+                f"- Complete with approved IDs: `use docker_blog and send it to briefings for intake {intake_id}`.",
+                f"- If source options were already shown: `use sources 1 and 3 for intake {intake_id}`.",
+                "- Arbitrary URLs are not accepted here; propose them as new approved sources first.",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -3143,9 +3371,10 @@ def format_intake_summary(intake: dict[str, Any], *, include_intent: bool = Fals
         lines.append("  Source options:")
         for option in options[:10]:
             if isinstance(option, dict):
+                note = " metadata/link-only" if option.get("metadata_only") else ""
                 lines.append(
                     f"    {option.get('number')}. `{option.get('source_id')}`"
-                    f"{' default' if option.get('selected_by_default') else ''}"
+                    f"{' default' if option.get('selected_by_default') else ''}{note}"
                 )
     if include_intent:
         lines.extend(["", "Canonical intent:", f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```"])
@@ -3252,12 +3481,17 @@ def continue_pending_intake_response(*, user_id: str, channel: str, user_text: s
     return "\n".join(lines)
 
 
-def source_option_ids_from_intake(intake: dict[str, Any]) -> list[str]:
+def source_options_from_intake(intake: dict[str, Any]) -> list[dict[str, Any]]:
     summary = intake.get("summary") if isinstance(intake.get("summary"), dict) else {}
     options = summary.get("options") if isinstance(summary.get("options"), list) else []
+    return [option for option in options if isinstance(option, dict)]
+
+
+def source_option_ids_from_intake(intake: dict[str, Any]) -> list[str]:
+    options = source_options_from_intake(intake)
     ids: list[str] = []
     for option in options:
-        if isinstance(option, dict) and option.get("source_id"):
+        if option.get("source_id"):
             ids.append(str(option["source_id"]))
     return ids
 
@@ -3270,19 +3504,65 @@ def explicit_source_ids_from_text(text: str) -> list[str]:
     return ids[:20]
 
 
+def source_selection_numbers_from_text(text: str) -> list[int]:
+    lowered = text.lower()
+    segments: list[str] = []
+    for pattern in (
+        r"\b(?:use|choose|select)\s+sources?\s+(.+?)(?:\s+for\s+intake\b|$)",
+        r"\bsources?\s+(.+?)(?:\s+for\s+intake\b|$)",
+        r"\bsource\s+(\d{1,2})\b",
+    ):
+        for match in re.finditer(pattern, lowered):
+            segments.append(match.group(1))
+    numbers: list[int] = []
+    for segment in segments:
+        for raw in re.findall(r"\b(\d{1,2})\b", segment):
+            number = int(raw)
+            if number not in numbers:
+                numbers.append(number)
+    return numbers
+
+
+def source_selection_contains_arbitrary_url(text: str) -> bool:
+    return bool(re.search(r"https?://|www\.", text, re.IGNORECASE))
+
+
+def invalid_source_selection_numbers(text: str, intake: dict[str, Any]) -> list[int]:
+    option_count = len(source_option_ids_from_intake(intake))
+    if option_count <= 0:
+        return []
+    return [number for number in source_selection_numbers_from_text(text) if number < 1 or number > option_count]
+
+
+def source_selection_filter_metadata(text: str) -> bool:
+    return bool(re.search(r"\b(no|not|without|exclude|skip)\s+(?:the\s+)?(?:metadata|metadata-only|licensed)\b", text, re.IGNORECASE))
+
+
 def source_selection_ids_from_user_text(text: str, intake: dict[str, Any]) -> list[str]:
     lowered = text.lower()
-    options = source_option_ids_from_intake(intake)
+    option_rows = source_options_from_intake(intake)
+    options = [str(option.get("source_id")) for option in option_rows if option.get("source_id")]
+    by_id = {str(option.get("source_id")): option for option in option_rows if option.get("source_id")}
     selected: list[str] = []
     if options and re.search(r"\b(use|choose|select|source|sources)\b", lowered):
-        for number in re.findall(r"\b(\d{1,2})\b", lowered):
-            index = int(number) - 1
+        for number in source_selection_numbers_from_text(text):
+            index = number - 1
             if 0 <= index < len(options) and options[index] not in selected:
                 selected.append(options[index])
+        if not selected and re.search(r"\b(all|everything|each)\b", lowered):
+            selected.extend(source_id for source_id in options if source_id not in selected)
+        if not selected and re.search(r"\bofficial\b", lowered):
+            selected.extend(
+                source_id
+                for source_id in options
+                if by_id.get(source_id, {}).get("official") and source_id not in selected
+            )
     for source_id in explicit_source_ids_from_text(text):
         if not options or source_id in options:
             if source_id not in selected:
                 selected.append(source_id)
+    if source_selection_filter_metadata(text):
+        selected = [source_id for source_id in selected if not by_id.get(source_id, {}).get("metadata_only")]
     return selected
 
 
@@ -3293,6 +3573,19 @@ def source_selection_intake_response(intake_id: str, user_text: str, *, user_id:
         return f"I cannot update that source selection: {exc}."
     if intake.get("status") != "awaiting_source_selection":
         return f"I cannot update source selection for intake `{intake_id}` because it is `{intake.get('status')}`."
+    if source_selection_contains_arbitrary_url(user_text):
+        return (
+            f"I will not add arbitrary URLs to intake `{intake_id}`. "
+            "Use approved source IDs from the registry, choose numbered options from `show intake`, or propose the URL as a new approved source first."
+        )
+    invalid_numbers = invalid_source_selection_numbers(user_text, intake)
+    if invalid_numbers:
+        option_count = len(source_option_ids_from_intake(intake))
+        rendered = ", ".join(str(number) for number in invalid_numbers)
+        return (
+            f"I cannot use source option `{rendered}` for intake `{intake_id}` because it is not a valid source option. "
+            f"Choose a number from 1 to {option_count}, use approved source IDs, or delete the intake."
+        )
     intent = json.loads(json.dumps(intake.get("intent") or {}))
     slots = intent.setdefault("slots", {})
     selected = source_selection_ids_from_user_text(user_text, intake)
@@ -3309,6 +3602,14 @@ def source_selection_intake_response(intake_id: str, user_text: str, *, user_id:
         source="bragi_source_selection",
         existing_intake_id=intake_id,
     )
+
+
+def intake_status_for_user(intake_id: str, *, user_id: str) -> str:
+    try:
+        intake = get_intake(intake_id=intake_id, user_id=user_id)
+    except Exception:
+        return ""
+    return str(intake.get("status") or "")
 
 
 def update_collecting_intake_response(intake_id: str, user_text: str, *, user_id: str) -> str:
@@ -3393,8 +3694,19 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
         if intake_id:
             return continue_intake_response(intake_id, user_id=user_id)
         return continue_pending_intake_response(user_id=user_id, channel=channel, user_text=user_text)
-    if explicit_intake_id and is_source_selection_update_request(user_text):
+    if (
+        explicit_intake_id
+        and is_source_selection_update_request(user_text)
+        and intake_status_for_user(explicit_intake_id, user_id=user_id) == "awaiting_source_selection"
+    ):
         return source_selection_intake_response(explicit_intake_id, user_text, user_id=user_id)
+    prior_intake_id = pending_intake_id_from_prior(prior)
+    if (
+        prior_intake_id
+        and is_source_selection_update_request(user_text)
+        and intake_status_for_user(prior_intake_id, user_id=user_id) == "awaiting_source_selection"
+    ):
+        return source_selection_intake_response(prior_intake_id, user_text, user_id=user_id)
     if is_intake_list_request(user_text):
         return list_intakes_response(user_id=user_id, channel=channel, user_text=user_text)
     if is_intake_confirm_request(user_text):
@@ -3407,7 +3719,6 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
             return detail_update
 
     if is_confirmation(user_text):
-        prior_intake_id = pending_intake_id_from_prior(prior)
         if prior_intake_id and is_source_selection_update_request(user_text):
             return source_selection_intake_response(prior_intake_id, user_text, user_id=user_id)
         if prior_intake_id and not pending_source_selection_from_prior(prior):
@@ -3447,6 +3758,9 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     conversational_intent = conversational_topic_digest_intent(messages)
     if conversational_intent is not None:
         return validate_intent_for_reply(conversational_intent, user_id=user_id, channel=channel, source="bragi_conversational_intake")
+
+    if source_catalog_search_requested(user_text):
+        return format_source_catalog_search(user_text)
 
     context_categories = context_categories_for_text(user_text)
     if context_categories:

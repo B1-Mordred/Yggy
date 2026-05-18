@@ -313,6 +313,20 @@ def source_catalog_fixture(method, path, payload=None):
                     "description": "Canonical/Ubuntu security notices and CVE package status.",
                 },
                 {
+                    "id": "handelsblatt",
+                    "name": "Handelsblatt",
+                    "type": "http",
+                    "enabled": True,
+                    "categories": ["preapproved", "germany_business_news", "language_de", "region_germany"],
+                    "trust_level": "ai_safe_c_metadata_only",
+                    "ai_safe_fit": "C - licensed/metadata-only",
+                    "ingestion_mode": "metadata_only",
+                    "description": "German business and financial newspaper with markets, economy and corporate news.",
+                    "region": "Germany",
+                    "languages": ["de"],
+                    "source_type_label": "News site",
+                },
+                {
                     "id": "ollama_releases",
                     "name": "Ollama releases",
                     "type": "rss",
@@ -359,6 +373,43 @@ def source_catalog_fixture(method, path, payload=None):
             ]
         }
     return gateway_response_for(payload)
+
+
+def test_natural_source_catalog_search_filters_approved_sources(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))
+
+    answer = bragi.route_chat([{"role": "user", "content": "what sources do you have for cybersecurity?"}])
+
+    assert calls == [("GET", "/sources", None)]
+    assert "Approved source matches from the Yggy registry" in answer
+    assert "`cisa_news_events`" in answer
+    assert "`nist_national_vulnerability_database`" in answer
+    assert "mode `http_summary`" in answer
+    assert "arbitrary URLs" in answer
+
+
+def test_source_catalog_search_marks_metadata_only_sources(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "show German business news sources"}])
+
+    assert calls == [("GET", "/sources", None)]
+    assert "`handelsblatt`" in answer
+    assert "mode `metadata_only`" in answer
+    assert "Metadata/link-only source" in answer
 
 
 def test_catalog_source_names_are_resolved_before_canonical_intent(monkeypatch):
@@ -409,6 +460,97 @@ def test_source_selection_intake_can_be_updated_by_number(monkeypatch):
     assert f"confirm intake {intake_id}" in updated
     stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
     assert stored["status"] == "awaiting_confirmation"
+
+
+def test_source_selection_rejects_out_of_range_numbers(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "add CISA and NVD to the security brief"}])
+    intake_id = bragi.intake_id_from_text(answer)
+
+    updated = bragi.route_chat([{"role": "user", "content": f"use sources 99 for intake {intake_id}"}])
+
+    assert "not a valid source option" in updated
+    assert [call[0:2] for call in calls] == [("GET", "/sources")]
+    stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
+    assert stored["status"] == "awaiting_source_selection"
+
+
+def test_source_selection_rejects_arbitrary_urls(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "add CISA and NVD to the security brief"}])
+    intake_id = bragi.intake_id_from_text(answer)
+
+    updated = bragi.route_chat([{"role": "user", "content": f"use https://example.com/feed.xml for intake {intake_id}"}])
+
+    assert "arbitrary URLs" in updated
+    assert [call[0:2] for call in calls] == [("GET", "/sources")]
+    stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
+    assert stored["status"] == "awaiting_source_selection"
+
+
+def test_source_selection_can_choose_official_options(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "add CISA and NVD to the security brief"}])
+    intake_id = bragi.intake_id_from_text(answer)
+
+    updated = bragi.route_chat([{"role": "user", "content": f"use the official ones for intake {intake_id}"}])
+
+    assert calls[-1][0:2] == ("POST", "/capabilities/validate-intent")
+    intent = calls[-1][2]
+    assert intent["slots"]["add_source_ids"] == [
+        "cisa_news_events",
+        "cisa_known_exploited_vulnerabilities_catalog",
+        "nist_national_vulnerability_database",
+    ]
+    assert "Canonical intent pending confirmation" in updated
+
+
+def test_source_selection_can_continue_visible_intake_without_repeating_id(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "add CISA and NVD to the security brief"}])
+
+    updated = bragi.route_chat(
+        [
+            {"role": "assistant", "content": answer},
+            {"role": "user", "content": "use the official ones"},
+        ]
+    )
+
+    assert calls[-1][0:2] == ("POST", "/capabilities/validate-intent")
+    assert calls[-1][2]["slots"]["add_source_ids"] == [
+        "cisa_news_events",
+        "cisa_known_exploited_vulnerabilities_catalog",
+        "nist_national_vulnerability_database",
+    ]
+    assert "Canonical intent pending confirmation" in updated
 
 
 def test_confirmed_source_selection_generates_task_change_intent(monkeypatch):
@@ -1186,6 +1328,15 @@ def test_route_diagnostic_for_conversational_source_details_uses_source_selectio
 
     assert diagnostic["mode"] == "source_selection"
     assert diagnostic["route"] == "source_selection"
+    assert diagnostic["calls_external_services"] is False
+
+
+def test_route_diagnostic_for_source_catalog_search_is_read_only():
+    diagnostic = bragi.diagnose_route([{"role": "user", "content": "show sources for cybersecurity"}])
+
+    assert diagnostic["mode"] == "context"
+    assert diagnostic["route"] == "bragi_source_catalog_search"
+    assert diagnostic["context_categories"] == ["sources"]
     assert diagnostic["calls_external_services"] is False
 
 
