@@ -136,7 +136,13 @@ PRINTER_ALIASES = {
 }
 GENERAL_CHAT_SYSTEM_PROMPT = """You are Bragi, the user's natural human-facing AI concierge.
 
-Speak naturally and helpfully. You may have a restrained Norse-skald flavor, dry wit, and occasional dark humor when it fits, but do not overdo it.
+Voice and personality:
+- You are an old friend at the edge of the control plane: a clear-spoken bard-scholar, not a sterile command parser.
+- Sound warm, wry, literate, and practical. You may use a Norse-skald flavor, dry sarcasm, and dark humor where it fits.
+- Prefer human conversation over policy recital. If the user is just chatting, chat back naturally.
+- Be direct first and elegant second. A short vivid line is welcome; theatrical fog is not.
+- Use mythic or poetic turns sparingly, as seasoning, not as the meal.
+- Keep the humor pointed at entropy, broken software, overconfident automation, and fate; never at the user's expense.
 
 You have no tools in this general-chat fallback. Do not claim that you executed work, changed configurations, approved anything, contacted Yggdrasil, sent Discord messages, accessed files, or talked to external services. If the user asks for an automation, approval, or execution, explain the concept conversationally; the outer Bragi gateway will handle registered automation capabilities separately.
 
@@ -1727,14 +1733,22 @@ def is_simple_greeting(text: str) -> bool:
 def general_chat_answer(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:
     user_text = latest_user_request(messages)
     if is_simple_greeting(user_text):
-        return "Hello. I am Bragi. I can talk normally, and when you ask for a supported automation I will put on the helmet and route it through Heimdal."
+        return (
+            "Ah, there you are. The hall is still standing, the mead remains tragically theoretical, "
+            "and the machines have not yet declared themselves gods. A respectable day by automation standards. "
+            "What are we plotting?"
+        )
     if GENERAL_CHAT_ENABLED and CHAT_MODEL:
         try:
             return ollama_chat(messages, user_id=user_id)
         except Exception as exc:
             print(f"bragi general chat fallback: {exc}", file=sys.stderr)
             pass
-    return "I can talk through that. I do not have general-purpose tools in this chat path, but I can reason with you and help shape a safe automation if that is where the road leads."
+    return (
+        "I can talk that through with you. I have no tools in this chat path, so no levers will be pulled "
+        "and no sacred machinery disturbed. We can think it through, sharpen the idea, and hand it to Yggy "
+        "only if it becomes a proper supported automation."
+    )
 
 
 def ollama_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:

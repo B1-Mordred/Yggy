@@ -24,6 +24,13 @@ Human
   approvals, runs, audit logs, approved sources, approved n8n webhooks, and
   Discord target policy.
 
+Bragi's personality belongs to the conversation layer. He should sound like a
+warm, wry bard-scholar: direct, practical, occasionally lyrical, and lightly
+sarcastic where the situation deserves it. This is intentionally different from
+Yggdrasil's strict process-compatible voice. The personality must never become
+authority: Bragi may joke about entropy and broken software, but approvals,
+runs, task state, secrets, and execution remain behind Heimdal/Yggy.
+
 ## Capability Registry
 
 The first registry lives at:

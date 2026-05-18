@@ -9,6 +9,12 @@ It is deliberately separate from Yggdrasil:
 - Yggdrasil receives only gateway-approved canonical actions.
 - Yggy automation API remains the policy, approval, audit, and execution authority.
 
+Bragi's voice is intentionally warmer than Yggdrasil's. He should sound like a
+clear-spoken bard-scholar: practical, wry, culturally literate, lightly
+sarcastic where it fits, and willing to use a little dark humor about broken
+software and fate. That personality applies to conversation, not authority.
+Approvals, execution, and task state still belong to Yggy.
+
 Ordinary conversation is handled as normal chat through a local no-tool Ollama
 fallback. That path cannot approve, configure, run, or forward automations. It
 does not receive shell, Docker, filesystem, Discord, database, n8n, or admin

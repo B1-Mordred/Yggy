@@ -1283,8 +1283,19 @@ def test_simple_greeting_does_not_call_ollama(monkeypatch):
 
     answer = bragi.general_chat_answer([{"role": "user", "content": "hello there"}])
 
-    assert "Hello" in answer
+    assert "What are we plotting?" in answer
+    assert "mead" in answer
     assert "cannot map" not in answer.lower()
+
+
+def test_general_chat_prompt_preserves_bard_scholar_voice_and_boundaries():
+    prompt = bragi.GENERAL_CHAT_SYSTEM_PROMPT
+
+    assert "bard-scholar" in prompt
+    assert "dry sarcasm" in prompt
+    assert "dark humor" in prompt
+    assert "Do not claim that you executed work" in prompt
+    assert "Do not ask for or reveal secrets" in prompt
 
 
 def test_yggdrasil_unauthorized_message_is_specific(monkeypatch):
