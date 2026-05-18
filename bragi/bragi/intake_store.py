@@ -24,6 +24,10 @@ INTAKE_STATUSES = {
     "failed",
 }
 
+FOLLOWUP_ACTIVE_STATUSES = {"collecting", "collecting_slots", "awaiting_source_selection", "awaiting_confirmation"}
+DEFAULT_FOLLOWUP_DELAYS_SECONDS = [7200, 86400, 259200]
+DEFAULT_MAX_FOLLOWUPS = 3
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -106,6 +110,80 @@ def validate_intake_payload(*, user_id: str, channel: str, status: str, intent: 
     return clean_user_id, clean_channel, clean_status
 
 
+def json_clone(value: Any) -> Any:
+    return json.loads(json.dumps(value, default=str))
+
+
+def parse_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return as_aware(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return as_aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def iso_time(value: datetime) -> str:
+    return as_aware(value).isoformat()
+
+
+def normalize_followup_summary(
+    summary: dict[str, Any] | None,
+    *,
+    status: str,
+    channel: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    clean_summary = json_clone(summary or {})
+    if not isinstance(clean_summary, dict):
+        clean_summary = {}
+    now = now or utcnow()
+    existing = clean_summary.get("followup") if isinstance(clean_summary.get("followup"), dict) else {}
+    if status not in FOLLOWUP_ACTIVE_STATUSES:
+        if existing:
+            clean_summary["followup"] = {**existing, "enabled": False}
+        return clean_summary
+
+    reminder_count = safe_int(existing.get("reminder_count"), 0)
+    max_reminders = max(0, min(safe_int(existing.get("max_reminders"), DEFAULT_MAX_FOLLOWUPS), 10))
+    next_reminder_at = existing.get("next_reminder_at") or iso_time(now + timedelta(seconds=DEFAULT_FOLLOWUP_DELAYS_SECONDS[0]))
+    clean_summary["followup"] = {
+        **existing,
+        "enabled": bool(existing.get("enabled", True)),
+        "channel": str(existing.get("channel") or channel or "chat"),
+        "reminder_count": reminder_count,
+        "max_reminders": max_reminders,
+        "next_reminder_at": next_reminder_at,
+    }
+    if existing.get("last_reminded_at"):
+        clean_summary["followup"]["last_reminded_at"] = existing["last_reminded_at"]
+    return clean_summary
+
+
+def safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def followup_due(record: BragiIntakeRecord, *, now: datetime, channel: str | None = None) -> bool:
+    if record.status not in FOLLOWUP_ACTIVE_STATUSES:
+        return False
+    summary = record.summary_json if isinstance(record.summary_json, dict) else {}
+    followup = summary.get("followup") if isinstance(summary.get("followup"), dict) else {}
+    if not followup.get("enabled", True):
+        return False
+    if channel and str(followup.get("channel") or record.channel) != channel:
+        return False
+    if safe_int(followup.get("reminder_count"), 0) >= safe_int(followup.get("max_reminders"), DEFAULT_MAX_FOLLOWUPS):
+        return False
+    next_reminder_at = parse_time(followup.get("next_reminder_at"))
+    return bool(next_reminder_at and next_reminder_at <= now)
+
+
 def event(session: Session, *, intake_id: str | None, user_id: str, action: str, detail: dict[str, Any] | None = None) -> None:
     session.add(
         BragiIntakeEvent(
@@ -137,6 +215,7 @@ def create_intake(
     clean_source = safe_identifier(source, field_name="source")
     now = utcnow()
     expires_at = now + timedelta(seconds=max(60, min(int(ttl_seconds), 604800)))
+    normalized_summary = normalize_followup_summary(summary, status=clean_status, channel=clean_channel, now=now)
     with session_scope() as session:
         record = BragiIntakeRecord(
             id=make_intake_id(now),
@@ -145,7 +224,7 @@ def create_intake(
             status=clean_status,
             capability_id=str(intent.get("capability_id")),
             intent_json=json.loads(json.dumps(intent, default=str)),
-            summary_json=json.loads(json.dumps(summary or {}, default=str)),
+            summary_json=json_clone(normalized_summary),
             source=clean_source,
             created_at=now,
             updated_at=now,
@@ -194,6 +273,73 @@ def list_intakes(*, user_id: str, include_inactive: bool = False, limit: int = 2
         return [record_to_dict(record) for record in records if include_inactive or record.status in set(active_statuses)]
 
 
+def list_due_followups(
+    *,
+    user_id: str | None = None,
+    channel: str | None = None,
+    limit: int = 20,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    clean_user_id = safe_identifier(user_id, field_name="user_id") if user_id else None
+    clean_channel = safe_identifier(channel, field_name="channel") if channel else None
+    now = now or utcnow()
+    with session_scope() as session:
+        query = (
+            session.query(BragiIntakeRecord)
+            .filter(BragiIntakeRecord.status.in_(list(FOLLOWUP_ACTIVE_STATUSES)))
+            .order_by(BragiIntakeRecord.updated_at.asc(), BragiIntakeRecord.id.asc())
+        )
+        if clean_user_id:
+            query = query.filter(BragiIntakeRecord.user_id == clean_user_id)
+        records = query.limit(max(1, min(int(limit) * 10, 500))).all()
+        due: list[BragiIntakeRecord] = []
+        for record in records:
+            maybe_expire_record(session, record)
+            if followup_due(record, now=now, channel=clean_channel):
+                due.append(record)
+            if len(due) >= max(1, min(int(limit), 50)):
+                break
+        session.commit()
+        return [record_to_dict(record) for record in due]
+
+
+def mark_followup_sent(*, intake_id: str, user_id: str, now: datetime | None = None) -> dict[str, Any]:
+    clean_user_id = safe_identifier(user_id, field_name="user_id")
+    clean_intake_id = safe_intake_id(intake_id)
+    now = now or utcnow()
+    with session_scope() as session:
+        record = session.get(BragiIntakeRecord, clean_intake_id)
+        if not record or record.user_id != clean_user_id:
+            raise MemoryValidationError("intake not found")
+        maybe_expire_record(session, record)
+        if record.status not in FOLLOWUP_ACTIVE_STATUSES:
+            raise MemoryValidationError(f"intake is {record.status}")
+        summary = normalize_followup_summary(record.summary_json, status=record.status, channel=record.channel, now=now)
+        followup = summary.get("followup") if isinstance(summary.get("followup"), dict) else {}
+        count = safe_int(followup.get("reminder_count"), 0) + 1
+        max_reminders = safe_int(followup.get("max_reminders"), DEFAULT_MAX_FOLLOWUPS)
+        followup["reminder_count"] = count
+        followup["last_reminded_at"] = iso_time(now)
+        if count >= max_reminders:
+            followup["enabled"] = False
+            followup.pop("next_reminder_at", None)
+        else:
+            delay = DEFAULT_FOLLOWUP_DELAYS_SECONDS[min(count, len(DEFAULT_FOLLOWUP_DELAYS_SECONDS) - 1)]
+            followup["next_reminder_at"] = iso_time(now + timedelta(seconds=delay))
+        summary["followup"] = followup
+        record.summary_json = json_clone(summary)
+        record.updated_at = now
+        event(
+            session,
+            intake_id=record.id,
+            user_id=clean_user_id,
+            action="intake.followup_sent",
+            detail={"reminder_count": count, "enabled": followup.get("enabled", True)},
+        )
+        session.commit()
+        return record_to_dict(record)
+
+
 def cancel_intake(*, intake_id: str, user_id: str) -> dict[str, Any]:
     return update_intake_status(intake_id=intake_id, user_id=user_id, status="cancelled", action="intake.cancel")
 
@@ -240,6 +386,12 @@ def update_intake(
             raise MemoryValidationError(f"intake is {record.status}")
         next_intent = intent if intent is not None else record.intent_json
         next_summary = summary if summary is not None else record.summary_json
+        next_summary = normalize_followup_summary(
+            next_summary,
+            status=clean_status or record.status,
+            channel=record.channel,
+            now=utcnow(),
+        )
         validate_intake_payload(
             user_id=clean_user_id,
             channel=record.channel,
@@ -252,8 +404,8 @@ def update_intake(
         if intent is not None:
             record.intent_json = json.loads(json.dumps(intent, default=str))
             record.capability_id = str(intent.get("capability_id"))
-        if summary is not None:
-            record.summary_json = json.loads(json.dumps(summary, default=str))
+        if summary is not None or clean_status is not None:
+            record.summary_json = json_clone(next_summary)
         record.updated_at = utcnow()
         event(session, intake_id=record.id, user_id=clean_user_id, action=action, detail=detail)
         session.commit()
@@ -280,6 +432,7 @@ def update_intake_status(
         if record.status in {"expired", "cancelled"} and status not in {"expired"}:
             raise MemoryValidationError(f"intake is {record.status}")
         record.status = status
+        record.summary_json = json_clone(normalize_followup_summary(record.summary_json, status=status, channel=record.channel, now=utcnow()))
         record.updated_at = utcnow()
         event(session, intake_id=record.id, user_id=clean_user_id, action=action, detail=detail)
         session.commit()
@@ -287,9 +440,9 @@ def update_intake_status(
 
 
 def maybe_expire_record(session: Session, record: BragiIntakeRecord) -> None:
-    expirable = {"collecting", "collecting_slots", "awaiting_source_selection", "awaiting_confirmation"}
-    if record.status in expirable and as_aware(record.expires_at) <= utcnow():
+    if record.status in FOLLOWUP_ACTIVE_STATUSES and as_aware(record.expires_at) <= utcnow():
         record.status = "expired"
+        record.summary_json = json_clone(normalize_followup_summary(record.summary_json, status="expired", channel=record.channel, now=utcnow()))
         record.updated_at = utcnow()
         event(session, intake_id=record.id, user_id=record.user_id, action="intake.expire", detail={})
 

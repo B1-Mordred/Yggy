@@ -637,6 +637,55 @@ def test_intake_endpoints_require_key_and_redact(monkeypatch):
     assert detail.json()["record"]["id"] == intake["id"]
 
 
+def test_intake_followup_endpoint_returns_due_reminder_and_marks_sent(monkeypatch):
+    monkeypatch.setattr(bragi, "API_KEY", "test-bragi-key")
+    client = TestClient(bragi.app)
+    intake = intake_store.create_intake(
+        user_id="local_user",
+        channel="discord",
+        status="collecting_slots",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about German politics"),
+        summary={
+            "task_id": "german_politics",
+            "missing_slots": ["source_ids"],
+            "followup": {
+                "enabled": True,
+                "channel": "discord",
+                "reminder_count": 0,
+                "max_reminders": 2,
+                "next_reminder_at": "2000-01-01T00:00:00+00:00",
+            },
+        },
+    )
+
+    unauthorized = client.get("/intakes/pending-followups")
+    due = client.get(
+        "/intakes/pending-followups",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        params={"user_id": "local_user", "channel": "discord"},
+    )
+    sent = client.post(
+        "/intakes/followups/mark-sent",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"user_id": "local_user", "intake_id": intake["id"]},
+    )
+    no_longer_due = client.get(
+        "/intakes/pending-followups",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        params={"user_id": "local_user", "channel": "discord"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert due.status_code == 200
+    assert due.json()["followups"][0]["intake_id"] == intake["id"]
+    assert "Missing: `source_ids`" in due.json()["followups"][0]["message"]
+    assert "delete intake" in due.json()["followups"][0]["message"]
+    assert sent.status_code == 200
+    followup = sent.json()["record"]["summary"]["followup"]
+    assert followup["reminder_count"] == 1
+    assert no_longer_due.json()["followups"] == []
+
+
 def test_freeform_yggdrasil_message_is_refused_without_forwarding(monkeypatch):
     calls = []
 

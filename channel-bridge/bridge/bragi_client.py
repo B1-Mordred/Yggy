@@ -40,6 +40,41 @@ class BragiClient:
             raise BragiClientError("Bragi returned a non-object response")
         return data
 
+    async def pending_followups(self, *, user_id: str, channel: str = "discord", limit: int = 10) -> list[dict[str, Any]]:
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+            response = await client.get(
+                f"{self.base_url}/intakes/pending-followups",
+                headers=headers,
+                params={"user_id": user_id, "channel": channel, "limit": limit},
+            )
+        if response.status_code >= 400:
+            raise BragiClientError(f"Bragi returned HTTP {response.status_code}")
+        data = response.json() if response.content else {}
+        followups = data.get("followups") if isinstance(data, dict) else None
+        if not isinstance(followups, list):
+            raise BragiClientError("Bragi returned invalid followup data")
+        return [item for item in followups if isinstance(item, dict)]
+
+    async def mark_followup_sent(self, *, user_id: str, intake_id: str) -> dict[str, Any]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+            response = await client.post(
+                f"{self.base_url}/intakes/followups/mark-sent",
+                headers=headers,
+                json={"user_id": user_id, "intake_id": intake_id},
+            )
+        if response.status_code >= 400:
+            raise BragiClientError(f"Bragi returned HTTP {response.status_code}")
+        data = response.json() if response.content else {}
+        if not isinstance(data, dict):
+            raise BragiClientError("Bragi returned a non-object response")
+        return data
+
 
 def build_discord_payload(
     *,

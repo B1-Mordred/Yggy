@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 import yaml
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -33,6 +33,8 @@ from .intake_store import (
     get_intake,
     intake_store_status,
     list_intakes,
+    list_due_followups,
+    mark_followup_sent,
     mark_intake_failed,
     mark_intake_forwarded,
     mark_intake_confirmed,
@@ -193,6 +195,11 @@ class IntakeQueryRequest(BaseModel):
 
 
 class IntakeDetailRequest(BaseModel):
+    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
+    intake_id: str = Field(min_length=1, max_length=96)
+
+
+class IntakeFollowupSentRequest(BaseModel):
     user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
     intake_id: str = Field(min_length=1, max_length=96)
 
@@ -2833,6 +2840,83 @@ def maybe_store_intake_for_result(
     return None
 
 
+def format_intake_followup_message(intake: dict[str, Any]) -> str:
+    summary = intake.get("summary") if isinstance(intake.get("summary"), dict) else {}
+    intent = intake.get("intent") if isinstance(intake.get("intent"), dict) else {}
+    slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
+    intake_id = str(intake.get("id") or "")
+    status = str(intake.get("status") or "")
+    task_id = slots.get("task_id") or summary.get("task_id") or "unknown"
+    lines = [
+        "Bragi follow-up: pending automation intake",
+        "",
+        f"- Intake: `{intake_id}`",
+        f"- Status: `{status}`",
+        f"- Capability: `{intake.get('capability_id')}`",
+        f"- Task: `{task_id}`",
+    ]
+    missing = summary.get("missing_slots") if isinstance(summary.get("missing_slots"), list) else []
+    if missing:
+        lines.append(f"- Missing: {', '.join(f'`{slot}`' for slot in missing)}")
+    if status == "awaiting_source_selection":
+        lines.extend(
+            [
+                "",
+                "Options:",
+                f"- Use default sources: `confirm sources for intake {intake_id}`",
+                f"- Choose sources: `use sources 1 and 3 for intake {intake_id}`",
+                f"- Delete it: `delete intake {intake_id}`",
+            ]
+        )
+    elif status in {"collecting", "collecting_slots"}:
+        lines.extend(
+            [
+                "",
+                "Options:",
+                f"- Complete it: reply with the missing details and include `for intake {intake_id}`.",
+                f"- Delete it: `delete intake {intake_id}`",
+            ]
+        )
+    elif status == "awaiting_confirmation":
+        lines.extend(
+            [
+                "",
+                "Options:",
+                f"- Confirm it: `confirm intake {intake_id}`",
+                f"- Delete it: `delete intake {intake_id}`",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "No action has been sent to Yggdrasil from this reminder. Delightfully boring, as safety usually is.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def followup_payload(intake: dict[str, Any]) -> dict[str, Any]:
+    summary = intake.get("summary") if isinstance(intake.get("summary"), dict) else {}
+    followup = summary.get("followup") if isinstance(summary.get("followup"), dict) else {}
+    return {
+        "intake_id": intake.get("id"),
+        "user_id": intake.get("user_id"),
+        "channel": intake.get("channel"),
+        "followup_channel": followup.get("channel") or intake.get("channel"),
+        "status": intake.get("status"),
+        "capability_id": intake.get("capability_id"),
+        "reminder_count": followup.get("reminder_count", 0),
+        "max_reminders": followup.get("max_reminders", 3),
+        "next_reminder_at": followup.get("next_reminder_at"),
+        "message": format_intake_followup_message(intake),
+        "actions": {
+            "complete": f"reply with details for intake {intake.get('id')}",
+            "confirm": f"confirm intake {intake.get('id')}",
+            "delete": f"delete intake {intake.get('id')}",
+        },
+    }
+
+
 def intake_id_from_text(text: str) -> str | None:
     match = re.search(r"\b(bragi_intake_[a-z0-9_]{8,64})\b", text.lower())
     return match.group(1) if match else None
@@ -3116,7 +3200,7 @@ def intake_detail_update_response(intake_id: str, user_text: str, *, user_id: st
     return None
 
 
-def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:
+def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID, channel: str = "chat") -> str:
     user_text = latest_user_request(messages)
     if not user_text:
         return "I need a request before I can do anything useful."
@@ -3177,7 +3261,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
         if not pending:
             conversational_intent = conversational_topic_digest_intent(messages)
             if conversational_intent is not None:
-                return validate_intent_for_reply(conversational_intent, user_id=user_id, source="bragi_conversational_intake")
+                return validate_intent_for_reply(conversational_intent, user_id=user_id, channel=channel, source="bragi_conversational_intake")
             return "I do not have a pending canonical intent to confirm."
         pending["user_confirmation_obtained"] = True
         result = api_request("POST", "/capabilities/prepare-yggdrasil-request", pending)
@@ -3190,7 +3274,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     if pending and result_needs_details(prior):
         intent = merge_intent_slots(pending, user_text)
         intent = enrich_topic_digest_intent_with_research(intent, user_text)
-        return validate_intent_for_reply(intent, user_id=user_id, source="bragi_slot_fill")
+        return validate_intent_for_reply(intent, user_id=user_id, channel=channel, source="bragi_slot_fill")
 
     freeform_yggdrasil = yggdrasil_freeform_message_response(user_text)
     if freeform_yggdrasil is not None:
@@ -3198,12 +3282,12 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
 
     conversational_source_selection = conversational_source_selection_intent(messages)
     if conversational_source_selection is not None:
-        intake = create_source_selection_intake(conversational_source_selection, user_id=user_id)
+        intake = create_source_selection_intake(conversational_source_selection, user_id=user_id, channel=channel)
         return format_source_selection(conversational_source_selection, intake=intake)
 
     conversational_intent = conversational_topic_digest_intent(messages)
     if conversational_intent is not None:
-        return validate_intent_for_reply(conversational_intent, user_id=user_id, source="bragi_conversational_intake")
+        return validate_intent_for_reply(conversational_intent, user_id=user_id, channel=channel, source="bragi_conversational_intake")
 
     context_categories = context_categories_for_text(user_text)
     if context_categories:
@@ -3217,14 +3301,14 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
 
     source_selection = source_selection_intent(user_text)
     if source_selection is not None:
-        intake = create_source_selection_intake(source_selection, user_id=user_id)
+        intake = create_source_selection_intake(source_selection, user_id=user_id, channel=channel)
         return format_source_selection(source_selection, intake=intake)
 
     intent = build_candidate_intent(user_text)
     if intent is None:
         return general_chat_answer(messages, user_id=user_id)
     intent = enrich_topic_digest_intent_with_research(intent, user_text)
-    return validate_intent_for_reply(intent, user_id=user_id, source="bragi_direct_intent")
+    return validate_intent_for_reply(intent, user_id=user_id, channel=channel, source="bragi_direct_intent")
 
 
 def result_needs_details(prior: str) -> bool:
@@ -3329,7 +3413,7 @@ def discord_channel_message(payload: DiscordMessageRequest, authorization: str |
             "requires_followup": False,
         }
 
-    reply = route_chat(messages, user_id=user_id)
+    reply = route_chat(messages, user_id=user_id, channel="discord")
     forwarded_to_yggdrasil = diagnostic.get("route") == "yggdrasil_canonical_action" or (
         diagnostic.get("route") == "heimdal_prepare_yggdrasil_request"
         and diagnostic.get("mode") in {"confirmation", "intake_confirmation"}
@@ -3412,6 +3496,44 @@ def intake_get(payload: IntakeDetailRequest, authorization: str | None = Header(
         "service": "bragi",
         "read_only": True,
         "user_id": payload.user_id,
+        "record": context_redact(record),
+        "redaction": {"secrets": "redacted", "approval_nonces": "omitted"},
+    }
+
+
+@app.get("/intakes/pending-followups")
+def intakes_pending_followups(
+    authorization: str | None = Header(default=None),
+    user_id: str | None = Query(default=None, min_length=1, max_length=128),
+    channel: str | None = Query(default=None, min_length=1, max_length=64),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        records = list_due_followups(user_id=user_id, channel=channel, limit=limit)
+    except MemoryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    followups = [followup_payload(record) for record in records]
+    return {
+        "service": "bragi",
+        "read_only": True,
+        "followups": context_redact(followups),
+        "redaction": {"secrets": "redacted", "approval_nonces": "omitted"},
+    }
+
+
+@app.post("/intakes/followups/mark-sent")
+def intake_followup_mark_sent(payload: IntakeFollowupSentRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    if not authorized(authorization):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        record = mark_followup_sent(user_id=payload.user_id, intake_id=payload.intake_id)
+    except MemoryValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "service": "bragi",
+        "status": "marked_sent",
         "record": context_redact(record),
         "redaction": {"secrets": "redacted", "approval_nonces": "omitted"},
     }

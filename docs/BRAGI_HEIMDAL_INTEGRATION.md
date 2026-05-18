@@ -259,6 +259,29 @@ If the incomplete request is still present in the current conversation, Bragi
 may also accept `delete it` as a shortcut. Deleting an intake only cancels the
 pre-execution draft state; nothing has been sent to Yggdrasil.
 
+Bragi stores bounded follow-up metadata for active intake states:
+
+```text
+followup.enabled
+followup.channel
+followup.last_reminded_at
+followup.reminder_count
+followup.max_reminders
+followup.next_reminder_at
+```
+
+The runtime representation lives inside the intake summary JSON as non-secret
+metadata. Bragi exposes:
+
+```text
+GET /intakes/pending-followups
+POST /intakes/followups/mark-sent
+```
+
+The channel bridge may poll the first endpoint and call the second endpoint
+after it posts a reminder. These endpoints do not confirm, approve, run, or
+forward anything to Yggdrasil.
+
 See `docs/RESEARCH_GATEWAY.md`.
 
 ## Route Diagnostics

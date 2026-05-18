@@ -25,6 +25,9 @@ CHANNEL_BRIDGE_BRAGI_API_KEY
 CHANNEL_BRIDGE_AUTOMATION_API_BASE_URL
 CHANNEL_BRIDGE_AUTOMATION_API_KEY
 CHANNEL_BRIDGE_CONFIG_ROOT
+CHANNEL_BRIDGE_FOLLOWUPS_ENABLED
+CHANNEL_BRIDGE_FOLLOWUP_POLL_SECONDS
+CHANNEL_BRIDGE_FOLLOWUP_LIMIT
 ```
 
 Rules:
@@ -33,6 +36,7 @@ Rules:
 - only process configured Discord channels or their threads
 - optionally enforce `DISCORD_ALLOWED_USER_IDS`
 - pass bounded recent channel history to Bragi for confirmations
+- poll Bragi for due intake follow-ups and post bounded reminders to the configured channel
 - do not approve tasks from Discord
 - do not expose admin keys, approval nonces, webhook URLs, or database secrets
 - post Bragi replies with Discord mentions disabled
@@ -58,3 +62,21 @@ Channel audit events store:
 
 They must not store raw Discord archives, bot tokens, webhook URLs, approval
 nonces, API keys, passwords, or attachment contents.
+
+## Intake Follow-Ups
+
+When enabled, the bridge polls:
+
+```text
+GET /intakes/pending-followups?channel=discord
+```
+
+for configured audiences and posts Bragi's reminder text to the matching
+Discord channel. After a successful post it calls:
+
+```text
+POST /intakes/followups/mark-sent
+```
+
+This only advances reminder metadata. It does not confirm, approve, run, or
+forward anything to Yggdrasil.

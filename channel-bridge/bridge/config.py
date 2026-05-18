@@ -65,6 +65,9 @@ class BridgeSettings:
     discord_history_limit: int = 8
     discord_reply_limit: int = 1900
     discord_nickname: str = "Bragi"
+    followups_enabled: bool = True
+    followup_poll_seconds: int = 300
+    followup_limit: int = 5
     http_timeout_seconds: float = 30.0
 
     @classmethod
@@ -81,6 +84,9 @@ class BridgeSettings:
             discord_history_limit=clamp_int(resolver("CHANNEL_BRIDGE_DISCORD_HISTORY_LIMIT"), default=8, minimum=0, maximum=20),
             discord_reply_limit=clamp_int(resolver("CHANNEL_BRIDGE_DISCORD_REPLY_LIMIT"), default=1900, minimum=200, maximum=2000),
             discord_nickname=resolver("CHANNEL_BRIDGE_DISCORD_NICKNAME") or "Bragi",
+            followups_enabled=env_bool(resolver("CHANNEL_BRIDGE_FOLLOWUPS_ENABLED"), True),
+            followup_poll_seconds=clamp_int(resolver("CHANNEL_BRIDGE_FOLLOWUP_POLL_SECONDS"), default=300, minimum=30, maximum=86400),
+            followup_limit=clamp_int(resolver("CHANNEL_BRIDGE_FOLLOWUP_LIMIT"), default=5, minimum=1, maximum=20),
             http_timeout_seconds=float(resolver("CHANNEL_BRIDGE_HTTP_TIMEOUT") or "30"),
         )
 

@@ -24,6 +24,8 @@ POST /memory/query
 POST /memory/propose
 POST /memory/commit
 POST /memory/forget
+GET  /intakes/pending-followups
+POST /intakes/followups/mark-sent
 POST /channels/discord/message
 GET  /v1/models
 POST /v1/chat/completions
@@ -138,6 +140,10 @@ use docker_blog and send it to briefings for intake bragi_intake_...
 
 Intakes are pre-execution state. They contain only non-secret canonical draft
 intent material and expire by default after `BRAGI_INTAKE_TTL_SECONDS`.
+Active intakes carry bounded follow-up metadata in their summary JSON. The
+channel bridge may poll due follow-ups and mark a reminder as sent, but that
+only updates reminder counters. It never confirms, approves, runs, or forwards
+the intake.
 
 For existing briefs, Bragi can propose bounded subject/source changes:
 

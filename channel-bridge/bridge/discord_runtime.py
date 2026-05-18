@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
 from typing import Any
 
 import discord
 
 from .audit_client import ChannelAuditClient, build_channel_event
 from .bragi_client import BragiClient, BragiClientError, build_discord_payload
-from .config import BridgeSettings, ChannelConfig, resolve_discord_channel, split_discord_reply
+from .config import BridgeSettings, ChannelConfig, env_ref_value, is_placeholder_value, resolve_discord_channel, split_discord_reply
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,18 @@ class BragiDiscordClient(discord.Client):
         self.channels = channels
         self.bragi = bragi
         self.audit = audit
+        self._followup_task: asyncio.Task[None] | None = None
+
+    async def setup_hook(self) -> None:
+        if self.settings.followups_enabled:
+            self._followup_task = asyncio.create_task(self._followup_loop())
+
+    async def close(self) -> None:
+        if self._followup_task:
+            self._followup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._followup_task
+        await super().close()
 
     async def on_ready(self) -> None:
         logger.info("discord bridge connected as %s", self.user)
@@ -202,6 +216,74 @@ class BragiDiscordClient(discord.Client):
             await self.audit.record_event(payload)
         except Exception as exc:  # pragma: no cover - audit must not block replies.
             logger.warning("could not record channel audit event: %s", exc.__class__.__name__)
+
+    async def _followup_loop(self) -> None:
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                await self._send_due_followups()
+            except asyncio.CancelledError:  # pragma: no cover - shutdown path.
+                raise
+            except Exception as exc:  # pragma: no cover - background guard.
+                logger.warning("could not process Bragi followups: %s", exc.__class__.__name__)
+            await asyncio.sleep(self.settings.followup_poll_seconds)
+
+    async def _send_due_followups(self) -> None:
+        audiences = sorted({channel.audience for channel in self.channels if channel.enabled and channel.type == "discord"})
+        for audience in audiences:
+            followups = await self.bragi.pending_followups(user_id=audience, channel="discord", limit=self.settings.followup_limit)
+            for followup in followups:
+                channel_config, discord_channel_id = self._followup_channel_for_user(str(followup.get("user_id") or audience))
+                if not channel_config or not discord_channel_id:
+                    continue
+                target = await self._discord_channel(discord_channel_id)
+                if not target:
+                    continue
+                message = str(followup.get("message") or "").strip()
+                if not message:
+                    continue
+                for chunk in split_discord_reply(message, limit=self.settings.discord_reply_limit):
+                    await target.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+                intake_id = str(followup.get("intake_id") or "")
+                user_id = str(followup.get("user_id") or audience)
+                if intake_id:
+                    await self.bragi.mark_followup_sent(user_id=user_id, intake_id=intake_id)
+                await self._record_channel_event(
+                    build_channel_event(
+                        channel_type="discord",
+                        channel_config_id=channel_config.id,
+                        channel_id=discord_channel_id,
+                        route="bragi_intake_followup",
+                        required_capability="draft_task",
+                        forwarded_to_yggdrasil=False,
+                        status="replied",
+                        reply_preview=message,
+                        metadata={"intake_id": intake_id, "followup": True},
+                    )
+                )
+
+    def _followup_channel_for_user(self, user_id: str) -> tuple[ChannelConfig | None, str]:
+        for channel in self.channels:
+            if not channel.enabled or channel.type != "discord" or channel.audience != user_id:
+                continue
+            channel_id = env_ref_value(channel.channel_id_ref)
+            if not is_placeholder_value(channel_id):
+                return channel, channel_id
+        return None, ""
+
+    async def _discord_channel(self, channel_id: str) -> Any | None:
+        try:
+            numeric_id = int(channel_id)
+        except ValueError:
+            return None
+        channel = self.get_channel(numeric_id)
+        if channel is not None:
+            return channel
+        try:
+            return await self.fetch_channel(numeric_id)
+        except Exception as exc:  # pragma: no cover - Discord permissions/network vary.
+            logger.warning("could not fetch Discord followup channel: %s", exc.__class__.__name__)
+            return None
 
 
 def discord_registry_channel_id(message: discord.Message) -> str:

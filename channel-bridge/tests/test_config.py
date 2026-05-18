@@ -102,6 +102,8 @@ def test_bridge_settings_from_env_clamps_values():
                 "DISCORD_BOT_TOKEN": "bot-token",
                 "CHANNEL_BRIDGE_DISCORD_HISTORY_LIMIT": "999",
                 "CHANNEL_BRIDGE_DISCORD_REPLY_LIMIT": "99999",
+                "CHANNEL_BRIDGE_FOLLOWUP_POLL_SECONDS": "1",
+                "CHANNEL_BRIDGE_FOLLOWUP_LIMIT": "999",
             }
         )
     )
@@ -112,6 +114,9 @@ def test_bridge_settings_from_env_clamps_values():
     assert settings.automation_api_key == "audit-key"
     assert settings.discord_history_limit == 20
     assert settings.discord_reply_limit == 2000
+    assert settings.followups_enabled is True
+    assert settings.followup_poll_seconds == 30
+    assert settings.followup_limit == 20
 
 
 def test_split_discord_reply_respects_limit():
