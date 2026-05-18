@@ -110,13 +110,14 @@ Bragi can also collect details across a natural multi-turn conversation for a
 new topic digest. For example, if the user gradually describes a daily morning
 security briefing, then later provides sources such as Ubuntu security notices,
 Ollama release notes, vulnerability announcements, patch notes, and NVD records,
-Bragi should stop conversationally once enough slots are present and store a
-short-lived intake session. The reply shows a canonical `topic_digest.v1` intent
-and an intake ID such as `bragi_intake_20260518_001122_abcd1234`. Even phrases
-like `so be it` only close the intake enough to display that canonical intent;
-they do not forward anything to Yggdrasil until the user replies
-`confirm intake <id>` or `confirm` while the intake is still visible in the
-conversation.
+Bragi first resolves those source-like descriptions against the approved source
+registry and stores an `awaiting_source_selection` intake. The user can confirm
+the default matches or choose numbered source options. Only after that does
+Bragi show the canonical `topic_digest.v1` intent and an intake ID such as
+`bragi_intake_20260518_001122_abcd1234`. Even phrases like `so be it` only close
+the intake enough to display that canonical intent; they do not forward anything
+to Yggdrasil until the user replies `confirm intake <id>` or `confirm` while the
+intake is still visible in the conversation.
 
 Bragi must not claim that it has contacted Yggdrasil, scheduled a briefing, or
 that the user can expect future delivery unless a canonical Yggdrasil action

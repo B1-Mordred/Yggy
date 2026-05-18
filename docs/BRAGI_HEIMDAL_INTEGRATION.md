@@ -174,10 +174,13 @@ conversation. This is intentionally limited to slot collection. The active
 conversation must contain automation/briefing context and security or component
 context, and the latest user message must advance the setup with details such as
 daily/morning schedule, approved-source hints, vulnerability/patch/NVD scope, or
-an explicit confirmation phrase like `so be it`. Once enough information exists,
-Bragi must generate a canonical intent, call Heimdal validation, and store a
-short-lived Bragi intake record. It must not continue with a general-chat
-promise such as "I'll pass this to Yggdrasil" or "you can expect this tomorrow."
+an explicit confirmation phrase like `so be it`. If the latest user message
+describes desired sources in prose, Bragi must first search the approved source
+registry and create an `awaiting_source_selection` intake. Once the user confirms
+or narrows that source selection, Bragi generates a canonical intent, calls
+Heimdal validation, and stores the normal confirmation intake. It must not
+continue with a general-chat promise such as "I'll pass this to Yggdrasil" or
+"you can expect this tomorrow."
 
 Confirmation phrases that close this conversational intake do not authorize
 execution. They only trigger the first canonical intent display and an intake ID.

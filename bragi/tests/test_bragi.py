@@ -446,7 +446,7 @@ def test_confirmed_source_selection_generates_task_change_intent(monkeypatch):
     assert "Reply `confirm`" in answer
 
 
-def test_conversational_security_briefing_intake_becomes_canonical_intent(monkeypatch):
+def test_conversational_source_details_create_source_selection_intake(monkeypatch):
     calls = []
 
     def fake_api_request(method, path, payload=None):
@@ -469,9 +469,44 @@ def test_conversational_security_briefing_intake_becomes_canonical_intent(monkey
 
     answer = bragi.route_chat(messages)
 
-    assert calls[0][0:2] == ("GET", "/sources")
-    assert calls[1][0:2] == ("POST", "/capabilities/validate-intent")
-    intent = calls[1][2]
+    assert calls == [("GET", "/sources", None)]
+    assert "I found approved sources" in answer
+    assert "awaiting_source_selection" in answer
+    assert "Intake:" in answer
+    assert "`ubuntu_security_notices`" in answer
+    assert "`ollama_releases`" in answer
+    assert "`nist_national_vulnerability_database`" in answer
+    assert "Canonical intent pending confirmation" not in answer
+
+
+def test_conversational_source_selection_confirm_builds_canonical_draft(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    messages = [
+        {"role": "user", "content": "daring to dream of automating something"},
+        {"role": "assistant", "content": "What is the dream automation?"},
+        {"role": "user", "content": "a morning briefing about relevant threats could teach me about what to expect"},
+        {"role": "assistant", "content": "What sources should Yggy use?"},
+        {"role": "user", "content": "need it security related information about ubuntu 26, hermes, ollama"},
+        {
+            "role": "user",
+            "content": "official blog posts, vulnerability announcements, patch notes, nvd records, no gossip, update me for breakfast on a daily basis",
+        },
+    ]
+
+    answer = bragi.route_chat(messages)
+    intake_id = bragi.intake_id_from_text(answer)
+    updated = bragi.route_chat([{"role": "user", "content": f"confirm sources for intake {intake_id}"}])
+
+    assert intake_id is not None
+    assert calls[-1][0:2] == ("POST", "/capabilities/validate-intent")
+    intent = calls[-1][2]
     assert intent["intent"] == "draft_task"
     assert intent["capability_id"] == "topic_digest.v1"
     assert intent["slots"]["task_id"] == "daily_security_threat_briefing"
@@ -482,8 +517,10 @@ def test_conversational_security_briefing_intake_becomes_canonical_intent(monkey
     assert "cisa_news_events" in intent["slots"]["source_ids"]
     assert "gossip" in intent["slots"]["exclude"]
     assert "Hermes" in intent["slots"]["include"]
-    assert "Canonical intent pending confirmation" in answer
-    assert "Reply `confirm`" in answer
+    assert "Canonical intent pending confirmation" in updated
+    assert f"confirm intake {intake_id}" in updated
+    stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
+    assert stored["status"] == "awaiting_confirmation"
 
 
 def test_conversational_confirmation_without_pending_intent_shows_intent_first(monkeypatch):
@@ -524,18 +561,20 @@ def test_intake_id_confirmation_reloads_stored_intent(monkeypatch):
     monkeypatch.setattr(bragi, "api_request", fake_api_request)
     monkeypatch.setattr(bragi, "yggdrasil_canonical_request", fake_yggdrasil)
 
-    answer = bragi.route_chat(
+    source_answer = bragi.route_chat(
         [
             {"role": "user", "content": "I want a daily morning briefing about Ubuntu 26, Hermes, Ollama security threats"},
             {"role": "assistant", "content": "Should I use official sources?"},
             {"role": "user", "content": "official blog posts, vulnerability announcements, patch notes, nvd records, no gossip"},
         ]
     )
-    intake_id = bragi.intake_id_from_text(answer)
+    intake_id = bragi.intake_id_from_text(source_answer)
 
     assert intake_id is not None
-    assert f"confirm intake {intake_id}" in answer
+    assert "awaiting_source_selection" in source_answer
 
+    answer = bragi.route_chat([{"role": "user", "content": f"confirm sources for intake {intake_id}"}])
+    assert f"confirm intake {intake_id}" in answer
     confirm_answer = bragi.route_chat([{"role": "user", "content": f"confirm intake {intake_id}"}])
 
     assert calls[-2][0:2] == ("POST", "/capabilities/prepare-yggdrasil-request")
@@ -872,6 +911,20 @@ def test_route_diagnostic_for_draft_omits_raw_user_request():
     assert diagnostic["route"] == "heimdal_validate_intent"
     assert diagnostic["candidate_intent"]["capability_id"] == "topic_digest.v1"
     assert "user_request" not in diagnostic["candidate_intent"]
+
+
+def test_route_diagnostic_for_conversational_source_details_uses_source_selection():
+    diagnostic = bragi.diagnose_route(
+        [
+            {"role": "user", "content": "I want a morning briefing about server security threats"},
+            {"role": "assistant", "content": "What sources should Yggy use?"},
+            {"role": "user", "content": "official blog posts, vulnerability announcements, patch notes, and NVD records"},
+        ]
+    )
+
+    assert diagnostic["mode"] == "source_selection"
+    assert diagnostic["route"] == "source_selection"
+    assert diagnostic["calls_external_services"] is False
 
 
 def test_route_diagnostic_for_intake_detail_update_stays_intake_management():

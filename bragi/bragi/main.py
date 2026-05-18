@@ -1315,6 +1315,16 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
         )
         return diagnostic
 
+    if conversational_source_selection_requested(messages):
+        diagnostic.update(
+            {
+                "mode": "source_selection",
+                "route": "source_selection",
+                "reason": "Active topic-digest conversation includes source-like details; Bragi should resolve approved sources before building the canonical draft.",
+            }
+        )
+        return diagnostic
+
     conversational_intent = conversational_topic_digest_intent(messages, resolve_sources=False)
     if conversational_intent is not None:
         diagnostic.update(
@@ -1938,8 +1948,9 @@ def source_selection_options(selection: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def source_selection_summary(selection: dict[str, Any]) -> dict[str, Any]:
-    return {
+    summary = {
         "kind": "source_selection",
+        "intent_kind": selection.get("intent_kind") or "topic_digest_subject_change",
         "task_id": selection.get("task_id") or "daily_local_ai_security_briefing",
         "original_request": redact_diagnostic_text(str(selection.get("original_request") or ""))[:500],
         "terms": selection.get("terms", []),
@@ -1947,6 +1958,9 @@ def source_selection_summary(selection: dict[str, Any]) -> dict[str, Any]:
         "selected_source_ids": selection.get("selected_source_ids", []),
         "options": source_selection_options(selection),
     }
+    if isinstance(selection.get("base_slots"), dict):
+        summary["base_slots"] = selection["base_slots"]
+    return summary
 
 
 def create_source_selection_intake(selection: dict[str, Any], *, user_id: str, channel: str = "chat") -> dict[str, Any] | None:
@@ -1982,8 +1996,13 @@ def format_source_selection(selection: dict[str, Any], intake: dict[str, Any] | 
             ]
         )
     intake_id = str((intake or {}).get("id") or "")
+    intent_kind = selection.get("intent_kind") or "topic_digest_subject_change"
     lines = [
-        "I found approved sources that can be used for that brief change:",
+        (
+            "I found approved sources that can support that briefing:"
+            if intent_kind == "draft_topic_digest"
+            else "I found approved sources that can be used for that brief change:"
+        ),
         "",
     ]
     options = source_selection_options(selection)
@@ -2055,6 +2074,28 @@ def source_selection_pending_payload(selection: dict[str, Any]) -> dict[str, Any
 def source_selection_to_intent(selection: dict[str, Any]) -> dict[str, Any]:
     source_ids = [str(item) for item in selection.get("selected_source_ids", []) if str(item).strip()]
     include_terms = [str(item) for item in selection.get("include_terms", []) if str(item).strip()]
+    if selection.get("intent_kind") == "draft_topic_digest":
+        base_slots = selection.get("base_slots") if isinstance(selection.get("base_slots"), dict) else {}
+        slots = {
+            "task_id": str(base_slots.get("task_id") or "daily_security_threat_briefing"),
+            "name": str(base_slots.get("name") or "Daily Security Threat Briefing"),
+            "cron": str(base_slots.get("cron") or "0 8 * * *"),
+            "timezone": str(base_slots.get("timezone") or "Europe/Berlin"),
+            "source_ids": source_ids,
+            "include": base_slots.get("include") if isinstance(base_slots.get("include"), list) else include_terms,
+            "exclude": base_slots.get("exclude") if isinstance(base_slots.get("exclude"), list) else ["sponsored", "rumor"],
+            "output_target": str(base_slots.get("output_target") or "briefings"),
+            "max_items": int(base_slots.get("max_items") or 10),
+        }
+        return {
+            "intent": "draft_task",
+            "capability_id": "topic_digest.v1",
+            "confidence": 0.84 if source_ids else 0.70,
+            "requires_user_confirmation": True,
+            "user_confirmation_obtained": False,
+            "user_request": str(selection.get("original_request") or "approved source selection"),
+            "slots": slots,
+        }
     return {
         "intent": "propose_task_change",
         "capability_id": "topic_digest.modify_subjects.v1",
@@ -2095,6 +2136,18 @@ def latest_advances_topic_digest_intake(text: str) -> bool:
     )
 
 
+def latest_describes_topic_digest_sources(text: str) -> bool:
+    compact = re.sub(r"\s+", " ", text.strip().lower())
+    if not compact:
+        return False
+    return bool(
+        re.search(
+            r"\b(sources?|reputable origins?|approved sources?|official blogs?|official blog posts?|patch notes?|release notes?|vulnerab\w* announcements?|security advisories?|nvd records?|nvd|cisa|kev|mitre|cve)\b",
+            compact,
+        )
+    )
+
+
 def conversational_topic_digest_active(messages: list[dict[str, Any]]) -> bool:
     if sum(1 for message in messages if message.get("role") == "user") < 2:
         return False
@@ -2112,6 +2165,105 @@ def conversational_topic_digest_active(messages: list[dict[str, Any]]) -> bool:
         )
     )
     return has_automation_context and has_security_context
+
+
+def add_unique_text(items: list[str], value: str) -> None:
+    cleaned = re.sub(r"\s+", " ", value).strip(" .,-")
+    if len(cleaned) >= 2 and cleaned.lower() not in {item.lower() for item in items}:
+        items.append(cleaned[:80])
+
+
+def conversational_source_terms(messages: list[dict[str, Any]]) -> list[str]:
+    latest = latest_user_request(messages)
+    user_text = joined_message_text(messages, roles={"user"}).lower()
+    combined = user_text
+    terms: list[str] = []
+
+    lowered_latest = latest.lower()
+    if re.search(r"\bnvd\b|\bnvd records?\b|\bnational vulnerability database\b", combined):
+        add_unique_text(terms, "NVD")
+    if re.search(r"\bcisa\b|\bsecurity advisories?\b", combined):
+        add_unique_text(terms, "CISA")
+    if re.search(r"\bkev\b|\bknown exploited vulnerabilit", combined):
+        add_unique_text(terms, "Known Exploited Vulnerabilities")
+    if re.search(r"\bmitre\b|\bcve\b", combined):
+        add_unique_text(terms, "MITRE CVE")
+    if re.search(r"\bubuntu\b", combined):
+        add_unique_text(terms, "Ubuntu security")
+    if re.search(r"\bollama\b", combined):
+        add_unique_text(terms, "Ollama")
+    if re.search(r"\bopen webui\b|\bopen-webui\b", combined):
+        add_unique_text(terms, "Open WebUI")
+    if re.search(r"\bn8n\b", combined):
+        add_unique_text(terms, "n8n")
+    if re.search(r"\bdocker\b", combined):
+        add_unique_text(terms, "Docker")
+    if re.search(
+        r"\b(vulnerab\w* announcements?|vulnerab\w*|security advisories?|threats?|security|recent findings?)\b",
+        lowered_latest,
+    ) and latest_describes_topic_digest_sources(latest):
+        add_unique_text(terms, "NVD")
+        add_unique_text(terms, "CISA")
+        add_unique_text(terms, "Known Exploited Vulnerabilities")
+    if re.search(r"\b(patch notes?|release notes?|official blogs?|official blog posts?)\b", lowered_latest):
+        if "ubuntu" in combined:
+            add_unique_text(terms, "Ubuntu security")
+        if "ollama" in combined:
+            add_unique_text(terms, "Ollama")
+        if "open webui" in combined or "open-webui" in combined:
+            add_unique_text(terms, "Open WebUI")
+        if "n8n" in combined:
+            add_unique_text(terms, "n8n")
+        if "docker" in combined:
+            add_unique_text(terms, "Docker")
+    return terms[:10]
+
+
+def conversational_source_selection_requested(messages: list[dict[str, Any]]) -> bool:
+    return conversational_topic_digest_active(messages) and latest_describes_topic_digest_sources(latest_user_request(messages))
+
+
+def conversational_source_selection_intent(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not conversational_source_selection_requested(messages):
+        return None
+    terms = conversational_source_terms(messages)
+    if not terms:
+        return None
+    sources = approved_sources_from_api()
+    matches = match_sources_for_terms(terms, sources)
+    selected = [match["selected"] for match in matches if isinstance(match.get("selected"), dict)]
+    selected_ids = [str(source.get("id")) for source in selected if source.get("id")]
+    if not selected_ids:
+        return {
+            "status": "no_match",
+            "intent_kind": "draft_topic_digest",
+            "terms": terms,
+            "matches": matches,
+            "task_id": "daily_security_threat_briefing",
+            "original_request": latest_user_request(messages),
+        }
+    base_intent = conversational_topic_digest_intent(messages, resolve_sources=False) or {}
+    base_slots = base_intent.get("slots") if isinstance(base_intent.get("slots"), dict) else {}
+    return {
+        "status": "matched",
+        "intent_kind": "draft_topic_digest",
+        "terms": terms,
+        "matches": matches,
+        "selected_source_ids": selected_ids,
+        "include_terms": conversational_topic_digest_include_terms(messages),
+        "task_id": base_slots.get("task_id") or "daily_security_threat_briefing",
+        "base_slots": {
+            "task_id": base_slots.get("task_id") or "daily_security_threat_briefing",
+            "name": base_slots.get("name") or "Daily Security Threat Briefing",
+            "cron": base_slots.get("cron") or conversational_topic_digest_cron(messages),
+            "timezone": base_slots.get("timezone") or "Europe/Berlin",
+            "include": base_slots.get("include") or conversational_topic_digest_include_terms(messages),
+            "exclude": base_slots.get("exclude") or conversational_topic_digest_exclude_terms(messages),
+            "output_target": base_slots.get("output_target") or "briefings",
+            "max_items": base_slots.get("max_items") or 10,
+        },
+        "original_request": latest_user_request(messages),
+    }
 
 
 def extract_approved_source_ids_from_text(text: str, approved_source_ids: set[str]) -> list[str]:
@@ -2855,9 +3007,12 @@ def source_selection_intake_response(intake_id: str, user_text: str, *, user_id:
     intent = json.loads(json.dumps(intake.get("intent") or {}))
     slots = intent.setdefault("slots", {})
     selected = source_selection_ids_from_user_text(user_text, intake)
-    if selected:
+    if selected and intent.get("capability_id") == "topic_digest.modify_subjects.v1":
         slots["add_source_ids"] = selected
-    if not slots.get("add_source_ids"):
+    elif selected and intent.get("capability_id") == "topic_digest.v1":
+        slots["source_ids"] = selected
+    required_source_ids = slots.get("add_source_ids") if intent.get("capability_id") == "topic_digest.modify_subjects.v1" else slots.get("source_ids")
+    if not required_source_ids:
         return f"I need source choices for intake `{intake_id}`. Use numbers from `show intake {intake_id}` or approved source IDs."
     return validate_intent_for_reply(
         intent,
@@ -2986,6 +3141,11 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     freeform_yggdrasil = yggdrasil_freeform_message_response(user_text)
     if freeform_yggdrasil is not None:
         return freeform_yggdrasil
+
+    conversational_source_selection = conversational_source_selection_intent(messages)
+    if conversational_source_selection is not None:
+        intake = create_source_selection_intake(conversational_source_selection, user_id=user_id)
+        return format_source_selection(conversational_source_selection, intake=intake)
 
     conversational_intent = conversational_topic_digest_intent(messages)
     if conversational_intent is not None:
