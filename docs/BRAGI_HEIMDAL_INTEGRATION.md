@@ -209,8 +209,13 @@ Supported intake commands:
 ```text
 show pending intakes
 show my pending requests
+show all my pending requests
+show pending Discord requests
+show pending requests in this channel
 show intake bragi_intake_...
 continue request
+continue Discord request
+continue current request
 continue intake bragi_intake_...
 confirm intake bragi_intake_...
 delete intake bragi_intake_...
@@ -274,6 +279,28 @@ If exactly one active intake exists, Bragi shows that intake's next safe action.
 If more than one active intake exists, Bragi lists them and asks the user to pick
 one by ID. This is a read/management path only; it must not confirm, approve,
 run, or forward anything to Yggdrasil.
+
+Intake visibility is scoped to the logical user/audience, not to raw Discord or
+Open WebUI identifiers. Channel adapters map humans to an audience through
+`configs/channels.yaml`, for example `local_user`. Bragi may resume same-user
+intakes across configured channels, so an intake created from Discord can be
+continued from Open WebUI if both channels map to the same audience. Bragi must
+not show, continue, confirm, or delete another audience's intake; the response
+should be equivalent to `intake not found`.
+
+Pending intake listings may be filtered by channel wording:
+
+```text
+show pending Discord requests
+show pending Open WebUI requests
+show pending requests in this channel
+show all my pending requests
+continue Discord request
+continue current request
+```
+
+Listings show the origin channel, created/updated time, status, and next needed
+human action. These fields are context only and do not grant approval authority.
 
 Bragi stores bounded follow-up metadata for active intake states:
 

@@ -254,19 +254,21 @@ def get_intake(*, intake_id: str, user_id: str) -> dict[str, Any]:
         return record_to_dict(record)
 
 
-def list_intakes(*, user_id: str, include_inactive: bool = False, limit: int = 20) -> list[dict[str, Any]]:
+def list_intakes(*, user_id: str, include_inactive: bool = False, limit: int = 20, channel: str | None = None) -> list[dict[str, Any]]:
     clean_user_id = safe_identifier(user_id, field_name="user_id")
+    clean_channel = safe_identifier(channel, field_name="channel") if channel else None
     active_statuses = ["collecting", "collecting_slots", "awaiting_source_selection", "awaiting_confirmation"]
     statuses = list(INTAKE_STATUSES) if include_inactive else active_statuses
     with session_scope() as session:
-        records = (
+        query = (
             session.query(BragiIntakeRecord)
             .filter(BragiIntakeRecord.user_id == clean_user_id)
             .filter(BragiIntakeRecord.status.in_(statuses))
             .order_by(BragiIntakeRecord.updated_at.desc(), BragiIntakeRecord.id.asc())
-            .limit(max(1, min(int(limit), 50)))
-            .all()
         )
+        if clean_channel:
+            query = query.filter(BragiIntakeRecord.channel == clean_channel)
+        records = query.limit(max(1, min(int(limit), 50))).all()
         for record in records:
             maybe_expire_record(session, record)
         session.commit()

@@ -130,8 +130,13 @@ Intake commands:
 ```text
 show pending intakes
 show my pending requests
+show all my pending requests
+show pending Discord requests
+show pending requests in this channel
 show intake bragi_intake_...
 continue request
+continue Discord request
+continue current request
 continue intake bragi_intake_...
 confirm intake bragi_intake_...
 delete intake bragi_intake_...
@@ -152,6 +157,13 @@ Users can resume the same state manually before a timed reminder fires. If there
 is one active intake, `continue request` shows the next safe action. If multiple
 active intakes exist, Bragi asks the user to pick one by ID. This path is intake
 management only; it does not contact Yggdrasil.
+
+Intake visibility is user-scoped. Discord and Open WebUI both map through
+`configs/channels.yaml` to a logical audience such as `local_user`; Bragi lists
+or resumes only that user's intakes. Same-user intakes can be resumed across
+configured channels, while another audience's intake ID is treated as not found.
+Listings include the origin channel, created/updated timestamps, and the next
+safe action needed.
 
 For existing briefs, Bragi can propose bounded subject/source changes:
 

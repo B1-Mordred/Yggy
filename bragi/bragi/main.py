@@ -192,6 +192,7 @@ class IntakeQueryRequest(BaseModel):
     user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
     include_inactive: bool = False
     limit: int = Field(default=20, ge=1, le=50)
+    channel: str | None = Field(default=None, max_length=64)
 
 
 class IntakeDetailRequest(BaseModel):
@@ -1158,13 +1159,15 @@ def diagnostic_intent(intent: dict[str, Any] | None) -> dict[str, Any] | None:
     return cleaned
 
 
-def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> dict[str, Any]:
+def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID, channel: str = "openwebui") -> dict[str, Any]:
     user_text = latest_user_request(messages)
     preview = redact_diagnostic_text(user_text)[:240]
+    channel = canonical_intake_channel(channel)
     diagnostic: dict[str, Any] = {
         "service": "bragi",
         "diagnostic_version": 1,
         "user_id": user_id,
+        "channel": channel,
         "request_preview": preview,
         "request_length": len(user_text),
         "mode": "none",
@@ -1229,7 +1232,7 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
         )
         return diagnostic
     explicit_intake_id = intake_id_from_text(user_text)
-    if explicit_intake_id and not is_intake_confirm_request(user_text):
+    if explicit_intake_id and not is_intake_confirm_request(user_text) and not is_intake_continue_request(user_text):
         diagnostic.update(
             {
                 "mode": "intake_management",
@@ -1256,6 +1259,7 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
                 "route": "bragi_intake_management",
                 "reason": "Request resumes a stored Bragi pre-execution intake without forwarding anything to Yggdrasil.",
                 "intake_id": explicit_intake_id or pending_intake_id_from_prior(prior),
+                "intake_channel_scope": intake_channel_scope_from_text(user_text, current_channel=channel),
             }
         )
         return diagnostic
@@ -1266,6 +1270,7 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
                 "route": "bragi_intake_management",
                 "reason": "Request lists Bragi pre-execution intake state.",
                 "intake_id": None,
+                "intake_channel_scope": intake_channel_scope_from_text(user_text, current_channel=channel),
             }
         )
         return diagnostic
@@ -1990,13 +1995,13 @@ def source_selection_summary(selection: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def create_source_selection_intake(selection: dict[str, Any], *, user_id: str, channel: str = "chat") -> dict[str, Any] | None:
+def create_source_selection_intake(selection: dict[str, Any], *, user_id: str, channel: str = "openwebui") -> dict[str, Any] | None:
     if selection.get("status") != "matched":
         return None
     try:
         return create_intake(
             user_id=user_id,
-            channel=channel,
+            channel=canonical_intake_channel(channel),
             status="awaiting_source_selection",
             intent=source_selection_to_intent(selection),
             summary=source_selection_summary(selection),
@@ -2791,7 +2796,7 @@ def validate_intent_for_reply(
     intent: dict[str, Any],
     *,
     user_id: str,
-    channel: str = "chat",
+    channel: str = "openwebui",
     source: str = "bragi_route",
     existing_intake_id: str | None = None,
 ) -> str:
@@ -2800,7 +2805,7 @@ def validate_intent_for_reply(
         result,
         intent,
         user_id=user_id,
-        channel=channel,
+        channel=canonical_intake_channel(channel),
         source=source,
         existing_intake_id=existing_intake_id,
     )
@@ -2937,6 +2942,57 @@ def pending_intake_id_from_prior(text: str) -> str | None:
     return matches[-1] if matches else None
 
 
+def canonical_intake_channel(channel: str | None) -> str:
+    text = str(channel or "openwebui").strip().lower().replace("-", "_")
+    aliases = {
+        "chat": "openwebui",
+        "open_webui": "openwebui",
+        "openwebui_primary": "openwebui",
+        "webui": "openwebui",
+        "web": "openwebui",
+        "discord_home": "discord",
+    }
+    return aliases.get(text, text or "openwebui")
+
+
+def intake_channel_label(channel: str | None) -> str:
+    channel = canonical_intake_channel(channel)
+    labels = {
+        "openwebui": "Open WebUI",
+        "discord": "Discord",
+    }
+    return labels.get(channel, channel)
+
+
+def intake_channel_scope_from_text(text: str, *, current_channel: str) -> dict[str, str | None]:
+    lowered = text.lower()
+    current = canonical_intake_channel(current_channel)
+    if re.search(r"\b(here|this channel|current channel|current request|current intake)\b", lowered):
+        return {"channel": current, "label": f"current channel ({intake_channel_label(current)})"}
+    if re.search(r"\bdiscord\b", lowered):
+        return {"channel": "discord", "label": "Discord"}
+    if re.search(r"\b(open\s*webui|open-webui|webui)\b", lowered):
+        return {"channel": "openwebui", "label": "Open WebUI"}
+    if re.search(r"\ball\b.*\b(pending|open|active|incomplete)?\s*(requests?|intakes?)\b", lowered):
+        return {"channel": None, "label": "all channels for this user"}
+    return {"channel": None, "label": "all channels for this user"}
+
+
+def intake_next_action(intake: dict[str, Any]) -> str:
+    status = str(intake.get("status") or "")
+    if status in {"collecting", "collecting_slots"}:
+        return "needs missing details"
+    if status == "awaiting_source_selection":
+        return "needs source selection"
+    if status == "awaiting_confirmation":
+        return "ready for user confirmation"
+    if status in {"confirmed", "forwarded_to_yggdrasil"}:
+        return "already forwarded"
+    if status in {"cancelled", "expired", "failed"}:
+        return f"closed: {status}"
+    return status or "unknown"
+
+
 def is_intake_confirm_request(text: str) -> bool:
     lowered = text.lower()
     return bool(re.search(r"\bconfirm(?:\s+that|\s+the)?\s+intake\b", lowered) or re.search(r"\bconfirm\b", lowered) and intake_id_from_text(lowered))
@@ -2955,7 +3011,8 @@ def is_intake_cancel_request(text: str) -> bool:
 def is_intake_list_request(text: str) -> bool:
     lowered = text.lower()
     return bool(
-        re.search(r"\b(show|list|view|what(?:'s| is)?)\b.*\b(pending|open|active|incomplete)\b.*\b(intakes?|requests?)\b", lowered)
+        re.search(r"\b(show|list|view|what(?:'s| is| are)?)\b.*\b(pending|open|active|incomplete)\b.*\b(intakes?|requests?)\b", lowered)
+        or re.search(r"\b(pending|open|active|incomplete)\b.*\b(intakes?|requests?)\b", lowered)
         or re.search(r"\b(show|list|view)\b.*\bintakes?\b", lowered)
     )
 
@@ -2969,7 +3026,7 @@ def is_intake_continue_request(text: str) -> bool:
     lowered = text.lower()
     return bool(
         re.fullmatch(
-            r"\s*(please\s+)?(continue|resume|complete|finish)\s+(the\s+)?(intake|request)(?:\s+bragi_intake_[a-z0-9_]{8,64})?\s*[.!?]?\s*",
+            r"\s*(please\s+)?(continue|resume|complete|finish)\s+(the\s+)?(?:(discord|open\s*webui|open-webui|webui|current|this channel)\s+)?(intake|request)(?:\s+bragi_intake_[a-z0-9_]{8,64})?\s*[.!?]?\s*",
             lowered,
         )
         or re.fullmatch(r"\s*(continue|resume|complete|finish)\s+(it|this|that)\s*[.!?]?\s*", lowered)
@@ -3063,9 +3120,13 @@ def format_intake_summary(intake: dict[str, Any], *, include_intent: bool = Fals
     slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
     lines = [
         f"- Intake: `{intake.get('id')}`",
+        f"  Channel: `{intake_channel_label(str(intake.get('channel') or ''))}`",
         f"  Status: `{intake.get('status')}`",
+        f"  Needs: {intake_next_action(intake)}",
         f"  Capability: `{intake.get('capability_id')}`",
         f"  Task: `{slots.get('task_id') or summary.get('task_id')}`",
+        f"  Created: `{intake.get('created_at')}`",
+        f"  Updated: `{intake.get('updated_at')}`",
         f"  Expires: `{intake.get('expires_at')}`",
     ]
     sources = slots.get("source_ids") or summary.get("sources")
@@ -3091,17 +3152,25 @@ def format_intake_summary(intake: dict[str, Any], *, include_intent: bool = Fals
     return "\n".join(lines)
 
 
-def list_intakes_response(*, user_id: str) -> str:
+def list_intakes_response(*, user_id: str, channel: str, user_text: str) -> str:
+    scope = intake_channel_scope_from_text(user_text, current_channel=channel)
+    scope_channel = scope.get("channel")
     try:
-        intakes = list_intakes(user_id=user_id, include_inactive=False, limit=20)
+        intakes = list_intakes(user_id=user_id, include_inactive=False, limit=20, channel=str(scope_channel) if scope_channel else None)
     except MemoryValidationError as exc:
         return f"I cannot list intakes: {exc}."
     if not intakes:
-        return "There are no pending Bragi intakes."
-    lines = ["Pending Bragi intakes:", ""]
+        return f"There are no pending Bragi intakes for {scope.get('label')}."
+    lines = [f"Pending Bragi intakes for {scope.get('label')}:", ""]
     for intake in intakes:
         lines.append(format_intake_summary(intake))
-    lines.extend(["", "Use `continue intake <id>`, `show intake <id>`, `confirm intake <id>`, `delete intake <id>`, or `cancel intake <id>`."])
+    lines.extend(
+        [
+            "",
+            "Use `continue intake <id>`, `show intake <id>`, `confirm intake <id>`, `delete intake <id>`, or `cancel intake <id>`.",
+            "Same-user intakes may be resumed across configured channels; Bragi still never exposes another user's intakes.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -3162,17 +3231,19 @@ def continue_intake_response(intake_id: str, *, user_id: str) -> str:
     return "\n".join(lines)
 
 
-def continue_pending_intake_response(*, user_id: str) -> str:
+def continue_pending_intake_response(*, user_id: str, channel: str, user_text: str) -> str:
+    scope = intake_channel_scope_from_text(user_text, current_channel=channel)
+    scope_channel = scope.get("channel")
     try:
-        intakes = list_intakes(user_id=user_id, include_inactive=False, limit=20)
+        intakes = list_intakes(user_id=user_id, include_inactive=False, limit=20, channel=str(scope_channel) if scope_channel else None)
     except MemoryValidationError as exc:
         return f"I cannot list pending requests: {exc}."
     if not intakes:
-        return "There are no pending Bragi requests to continue."
+        return f"There are no pending Bragi requests to continue for {scope.get('label')}."
     if len(intakes) == 1:
         return continue_intake_response(str(intakes[0].get("id")), user_id=user_id)
     lines = [
-        "I found multiple pending Bragi requests. Pick one to continue:",
+        f"I found multiple pending Bragi requests for {scope.get('label')}. Pick one to continue:",
         "",
     ]
     for intake in intakes:
@@ -3282,8 +3353,9 @@ def intake_detail_update_response(intake_id: str, user_text: str, *, user_id: st
     return None
 
 
-def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID, channel: str = "chat") -> str:
+def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID, channel: str = "openwebui") -> str:
     user_text = latest_user_request(messages)
+    channel = canonical_intake_channel(channel)
     if not user_text:
         return "I need a request before I can do anything useful."
     auxiliary = openwebui_auxiliary_answer(user_text)
@@ -3292,7 +3364,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     diagnostic_probe = diagnostic_probe_from_text(user_text)
     if diagnostic_probe:
         diagnostic_messages = [*messages[:-1], {"role": "user", "content": diagnostic_probe}]
-        return format_route_diagnostic(diagnose_route(diagnostic_messages, user_id=user_id))
+        return format_route_diagnostic(diagnose_route(diagnostic_messages, user_id=user_id, channel=channel))
 
     prior = prior_text(messages)
     if is_memory_commit_confirmation(user_text):
@@ -3320,11 +3392,11 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
         intake_id = explicit_intake_id or pending_intake_id_from_prior(prior)
         if intake_id:
             return continue_intake_response(intake_id, user_id=user_id)
-        return continue_pending_intake_response(user_id=user_id)
+        return continue_pending_intake_response(user_id=user_id, channel=channel, user_text=user_text)
     if explicit_intake_id and is_source_selection_update_request(user_text):
         return source_selection_intake_response(explicit_intake_id, user_text, user_id=user_id)
     if is_intake_list_request(user_text):
-        return list_intakes_response(user_id=user_id)
+        return list_intakes_response(user_id=user_id, channel=channel, user_text=user_text)
     if is_intake_confirm_request(user_text):
         intake_id = explicit_intake_id or pending_intake_id_from_prior(prior)
         if intake_id:
@@ -3432,7 +3504,7 @@ def route_diagnostics(payload: RouteDiagnosticsRequest, authorization: str | Non
         messages = [{"role": "user", "content": payload.text}]
     else:
         raise HTTPException(status_code=422, detail="text or messages is required")
-    return diagnose_route(messages)
+    return diagnose_route(messages, channel="openwebui")
 
 
 @app.post("/channels/discord/message")
@@ -3478,7 +3550,7 @@ def discord_channel_message(payload: DiscordMessageRequest, authorization: str |
 
     messages = discord_history_messages(payload.history)
     messages.append({"role": "user", "content": content})
-    diagnostic = diagnose_route(messages, user_id=user_id)
+    diagnostic = diagnose_route(messages, user_id=user_id, channel="discord")
     required_capability = channel_required_capability(diagnostic)
     if not channel_allows(channel, required_capability):
         reply = (
@@ -3559,6 +3631,7 @@ def intakes_query(payload: IntakeQueryRequest, authorization: str | None = Heade
             user_id=payload.user_id,
             include_inactive=payload.include_inactive,
             limit=payload.limit,
+            channel=canonical_intake_channel(payload.channel) if payload.channel else None,
         )
     except MemoryValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3697,7 +3770,7 @@ async def chat_completions(request: Request, authorization: str | None = Header(
     messages = payload.get("messages") or []
     if not isinstance(messages, list):
         raise HTTPException(status_code=422, detail="messages must be a list")
-    answer = await run_in_threadpool(route_chat, messages)
+    answer = await run_in_threadpool(route_chat, messages, user_id=DEFAULT_USER_ID, channel="openwebui")
     model = str(payload.get("model") or MODEL_ID)
     created = int(time.time())
     if payload.get("stream"):

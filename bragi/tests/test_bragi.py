@@ -869,6 +869,116 @@ def test_continue_request_with_multiple_pending_intakes_asks_user_to_pick(monkey
     assert "continue intake <id>" in answer
 
 
+def test_pending_request_listing_can_filter_channels_and_hides_other_users():
+    openwebui_intake = intake_store.create_intake(
+        user_id="local_user",
+        channel="openwebui",
+        status="collecting_slots",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about Open WebUI"),
+        summary={"task_id": "openwebui_digest", "missing_slots": ["source_ids"]},
+    )
+    discord_intake = intake_store.create_intake(
+        user_id="local_user",
+        channel="discord",
+        status="awaiting_confirmation",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about Docker"),
+        summary={"task_id": "docker_digest"},
+    )
+    other_intake = intake_store.create_intake(
+        user_id="other_user",
+        channel="discord",
+        status="awaiting_confirmation",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about n8n"),
+        summary={"task_id": "other_digest"},
+    )
+
+    all_owned = bragi.route_chat([{"role": "user", "content": "show my pending requests"}], user_id="local_user", channel="openwebui")
+    discord_only = bragi.route_chat([{"role": "user", "content": "show pending Discord requests"}], user_id="local_user", channel="openwebui")
+    current_only = bragi.route_chat([{"role": "user", "content": "show pending requests in this channel"}], user_id="local_user", channel="openwebui")
+    blocked = bragi.route_chat([{"role": "user", "content": f"show request {other_intake['id']}"}], user_id="local_user", channel="openwebui")
+
+    assert openwebui_intake["id"] in all_owned
+    assert discord_intake["id"] in all_owned
+    assert other_intake["id"] not in all_owned
+    assert "Channel: `Open WebUI`" in all_owned
+    assert "Channel: `Discord`" in all_owned
+    assert "Needs: needs missing details" in all_owned
+    assert discord_intake["id"] in discord_only
+    assert openwebui_intake["id"] not in discord_only
+    assert openwebui_intake["id"] in current_only
+    assert discord_intake["id"] not in current_only
+    assert "intake not found" in blocked
+
+
+def test_openwebui_can_resume_same_audience_discord_intake():
+    intake = intake_store.create_intake(
+        user_id="local_user",
+        channel="discord",
+        status="collecting_slots",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about Docker"),
+        summary={"task_id": "docker_digest", "missing_slots": ["source_ids"]},
+    )
+
+    answer = bragi.route_chat([{"role": "user", "content": "continue request"}], user_id="local_user", channel="openwebui")
+
+    assert intake["id"] in answer
+    assert "Channel: `Discord`" in answer
+    assert "Missing: `source_ids`" in answer
+
+
+def test_continue_can_filter_to_current_or_discord_channel():
+    openwebui_intake = intake_store.create_intake(
+        user_id="local_user",
+        channel="openwebui",
+        status="collecting_slots",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about Open WebUI"),
+        summary={"task_id": "openwebui_digest", "missing_slots": ["source_ids"]},
+    )
+    discord_intake = intake_store.create_intake(
+        user_id="local_user",
+        channel="discord",
+        status="collecting_slots",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about Docker"),
+        summary={"task_id": "docker_digest", "missing_slots": ["source_ids"]},
+    )
+
+    current = bragi.route_chat([{"role": "user", "content": "continue current request"}], user_id="local_user", channel="openwebui")
+    discord = bragi.route_chat([{"role": "user", "content": "continue discord request"}], user_id="local_user", channel="openwebui")
+
+    assert openwebui_intake["id"] in current
+    assert discord_intake["id"] not in current
+    assert discord_intake["id"] in discord
+    assert openwebui_intake["id"] not in discord
+
+
+def test_intake_query_endpoint_can_filter_by_channel(monkeypatch):
+    monkeypatch.setattr(bragi, "API_KEY", "test-bragi-key")
+    client = TestClient(bragi.app)
+    openwebui_intake = intake_store.create_intake(
+        user_id="local_user",
+        channel="openwebui",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about Open WebUI"),
+        summary={"task_id": "openwebui_digest"},
+    )
+    discord_intake = intake_store.create_intake(
+        user_id="local_user",
+        channel="discord",
+        intent=bragi.topic_digest_intent("draft a weekday 08:00 topic digest about Docker"),
+        summary={"task_id": "docker_digest"},
+    )
+
+    response = client.post(
+        "/intakes/query",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={"user_id": "local_user", "channel": "discord"},
+    )
+
+    assert response.status_code == 200
+    ids = [record["id"] for record in response.json()["records"]]
+    assert discord_intake["id"] in ids
+    assert openwebui_intake["id"] not in ids
+
+
 def test_missing_slot_followup_can_update_stored_intake(monkeypatch):
     calls = []
 
