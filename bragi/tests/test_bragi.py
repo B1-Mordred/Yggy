@@ -1588,9 +1588,22 @@ def context_api_fixture(method, path, payload=None):
                     "created_at": "2026-05-17T08:00:00Z",
                     "completed_at": "2026-05-17T08:00:10Z",
                     "log": {
-                        "result_status": "ok",
+                        "result": {
+                            "status": "ready",
+                            "items": [{"title": "Brief item"}],
+                            "approved_source_count": 3,
+                            "errors": [],
+                        },
                         "secret": "must-not-leak",
-                        "notification": {"sent": True, "webhook_url": "must-not-leak"},
+                        "notification": {
+                            "sent": True,
+                            "target": "briefings",
+                            "transport": "bot",
+                            "status_code": 200,
+                            "dry_run": False,
+                            "webhook_url": "must-not-leak",
+                        },
+                        "notification_decision": {"send": True, "reason": "enabled"},
                     },
                 }
             ]
@@ -1652,10 +1665,28 @@ def test_context_query_recent_runs_omits_raw_logs_and_secrets(monkeypatch):
 
     assert context["categories"] == ["recent_runs"]
     assert context["data"]["recent_runs"][0]["id"] == "run-1"
+    assert context["data"]["recent_runs"][0]["result_status"] == "ready"
+    assert context["data"]["recent_runs"][0]["notification_sent"] is True
     serialized = json.dumps(context).lower()
     assert "must-not-leak" not in serialized
     assert "webhook_url" not in serialized
     assert "raw_logs" in serialized
+
+
+def test_brief_delivery_status_question_uses_read_only_context(monkeypatch):
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+
+    diagnostic = bragi.diagnose_route([{"role": "user", "content": "are briefs now actually being processed and sent?"}])
+    answer = bragi.route_chat([{"role": "user", "content": "are briefs now actually being processed and sent?"}])
+
+    assert diagnostic["route"] == "general_chat_with_context"
+    assert diagnostic["context_categories"] == ["tasks", "recent_runs", "service_status"]
+    assert "Brief delivery status:" in answer
+    assert "`daily_local_ai_security_briefing`" in answer
+    assert "enabled `true`" in answer
+    assert "dry-run `false`" in answer
+    assert "Discord sent `true`" in answer
+    assert "set up a new topic" not in answer.lower()
 
 
 def test_context_query_research_uses_approved_source_gateway(monkeypatch):

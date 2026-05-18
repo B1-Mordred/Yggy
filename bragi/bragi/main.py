@@ -588,8 +588,11 @@ def safe_task_summary(task: dict[str, Any]) -> dict[str, Any]:
 
 def safe_run_summary(run: dict[str, Any]) -> dict[str, Any]:
     log = run.get("log") if isinstance(run.get("log"), dict) else {}
-    result_status = log.get("result_status") or log.get("status")
+    result = log.get("result") if isinstance(log.get("result"), dict) else {}
+    result_status = result.get("status") or log.get("result_status") or log.get("status")
     notification = log.get("notification") if isinstance(log.get("notification"), dict) else {}
+    notification_decision = log.get("notification_decision") if isinstance(log.get("notification_decision"), dict) else {}
+    items = result.get("items") if isinstance(result.get("items"), list) else []
     return context_redact(
         {
             "id": run.get("id"),
@@ -598,7 +601,16 @@ def safe_run_summary(run: dict[str, Any]) -> dict[str, Any]:
             "created_at": run.get("created_at"),
             "completed_at": run.get("completed_at"),
             "result_status": result_status,
+            "item_count": len(items),
+            "approved_source_count": result.get("approved_source_count"),
+            "error_count": len(result.get("errors")) if isinstance(result.get("errors"), list) else None,
             "notification_sent": notification.get("sent") if notification else None,
+            "notification_target": notification.get("target") if notification else None,
+            "notification_transport": notification.get("transport") if notification else None,
+            "notification_status_code": notification.get("status_code") if notification else None,
+            "notification_dry_run": notification.get("dry_run") if notification else None,
+            "notification_decision_send": notification_decision.get("send") if notification_decision else None,
+            "notification_decision_reason": notification_decision.get("reason") if notification_decision else None,
         }
     )
 
@@ -673,6 +685,8 @@ def context_categories_for_text(text: str, requested_category: str | None = None
     )
     if "what can you automate" in lowered or "what can yggy automate" in lowered or "supported automation" in lowered:
         add("capabilities", "sources", "health_checks", "n8n_webhooks")
+    if brief_delivery_status_question(lowered):
+        add("tasks", "recent_runs", "service_status")
     if proposal_status_question:
         add("capability_proposals")
     elif "capabilit" in lowered:
@@ -713,6 +727,20 @@ def context_categories_for_text(text: str, requested_category: str | None = None
     if "memory" in lowered or "preferences" in lowered or "remember" in lowered:
         add("memory")
     return categories
+
+
+def brief_delivery_status_question(text: str) -> bool:
+    lowered = text.lower()
+    if not re.search(r"\b(brief|briefing|briefs|briefings|digest|digests)\b", lowered):
+        return False
+    if re.match(r"^\s*(draft|create|set up|setup|schedule|add|include|remove|exclude|stop|run|send|pause|disable|approve|reject)\b", lowered):
+        return False
+    return bool(
+        re.search(
+            r"\b(are|is|do|does|did|was|were|has|have|status|active|enabled|working|processed|processing|sent|send|delivered|delivery|receiv\w*)\b",
+            lowered,
+        )
+    )
 
 
 def build_context(query: str, *, user_id: str = DEFAULT_USER_ID, category: str | None = None, limit: int = 10) -> dict[str, Any]:
@@ -929,6 +957,9 @@ def enrich_topic_digest_intent_with_research(intent: dict[str, Any], user_text: 
 def format_context_answer(context: dict[str, Any]) -> str:
     data = context.get("data") if isinstance(context.get("data"), dict) else {}
     lines = ["Here is the read-only Yggy context I can see:"]
+    query_preview = str(context.get("query_preview") or "")
+    if brief_delivery_status_question(query_preview):
+        lines.extend(format_brief_delivery_status(data))
     tasks = data.get("tasks")
     if isinstance(tasks, list):
         enabled = [task for task in tasks if task.get("enabled")]
@@ -1034,6 +1065,58 @@ def format_context_answer(context: dict[str, Any]) -> str:
     lines.append("")
     lines.append("This is context only. Changes, runs, and approvals still go through Heimdal, Yggdrasil, and the Yggy approval path.")
     return "\n".join(lines)
+
+
+def format_brief_delivery_status(data: dict[str, Any]) -> list[str]:
+    tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+    runs = data.get("recent_runs") if isinstance(data.get("recent_runs"), list) else []
+    brief_tasks = [
+        task
+        for task in tasks
+        if task.get("type") == "topic_digest"
+        or "brief" in str(task.get("id") or "").lower()
+        or "brief" in str(task.get("name") or "").lower()
+        or (isinstance(task.get("output"), dict) and task["output"].get("target") == "briefings")
+    ]
+    lines = ["", "Brief delivery status:"]
+    if not brief_tasks:
+        lines.append("- I do not see an enabled brief/topic-digest task in the visible task list.")
+        return lines
+
+    latest_runs_by_task: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        task_id = str(run.get("task_id") or "")
+        if task_id and task_id not in latest_runs_by_task:
+            latest_runs_by_task[task_id] = run
+
+    for task in brief_tasks[:5]:
+        task_id = str(task.get("id") or "")
+        trigger = task.get("trigger") if isinstance(task.get("trigger"), dict) else {}
+        output = task.get("output") if isinstance(task.get("output"), dict) else {}
+        lines.append(
+            f"- `{task_id}`: status `{task.get('status')}`, enabled `{str(task.get('enabled')).lower()}`, "
+            f"dry-run `{str(task.get('dry_run')).lower()}`, schedule `{trigger.get('cron')}` `{trigger.get('timezone')}`, "
+            f"target `{output.get('target')}`."
+        )
+        run = latest_runs_by_task.get(task_id)
+        if not run:
+            lines.append("  Latest run: none visible in recent run history.")
+            continue
+        lines.append(
+            f"  Latest run `{run.get('id')}`: status `{run.get('status')}`, result `{run.get('result_status')}`, "
+            f"completed `{run.get('completed_at')}`, items `{run.get('item_count')}`."
+        )
+        if run.get("notification_sent") is True:
+            lines.append(
+                f"  Discord sent `true` to `{run.get('notification_target')}` via `{run.get('notification_transport')}` "
+                f"(status `{run.get('notification_status_code')}`, dry-run `{str(run.get('notification_dry_run')).lower()}`)."
+            )
+        elif run.get("notification_sent") is False or run.get("notification_decision_send") is False:
+            reason = run.get("notification_decision_reason") or "not sent"
+            lines.append(f"  Discord sent `false`; reason `{reason}`.")
+        else:
+            lines.append("  Discord delivery: not shown in this run summary.")
+    return lines
 
 
 def memory_proposal_text(text: str) -> str | None:
