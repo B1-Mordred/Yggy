@@ -423,6 +423,52 @@ class SourceProposalReject(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+class CapabilityProposalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=3, max_length=255)
+    requested_by: str = Field(default="bragi", min_length=1, max_length=128)
+    source_channel: str = Field(default="openwebui", min_length=1, max_length=64)
+    original_request_preview: str = Field(default="", max_length=1000)
+    purpose: str = Field(min_length=10, max_length=2000)
+    suggested_capability_id: str = Field(min_length=3, max_length=128)
+    suggested_task_type: str = Field(min_length=3, max_length=128)
+    likely_approval_level: ApprovalLevel = ApprovalLevel.L1_NOTIFY_ONLY
+    required_inputs: list[str] = Field(default_factory=list, max_length=20)
+    safety_rules: list[str] = Field(default_factory=list, max_length=30)
+    non_goals: list[str] = Field(default_factory=list, max_length=30)
+    review_notes: str = Field(default="", max_length=2000)
+
+    @field_validator("suggested_capability_id")
+    @classmethod
+    def capability_id_must_be_versioned(cls, value: str) -> str:
+        if not re.match(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\.v[0-9]+$", value):
+            raise ValueError("suggested_capability_id must look like name.v1")
+        return value
+
+    @field_validator("suggested_task_type")
+    @classmethod
+    def task_type_must_be_slug_like(cls, value: str) -> str:
+        if not SLUG_RE.match(value):
+            raise ValueError("suggested_task_type must be slug-like")
+        return value
+
+    @field_validator("required_inputs", "safety_rules", "non_goals")
+    @classmethod
+    def list_items_must_be_plain(cls, value: list[str]) -> list[str]:
+        cleaned = [str(item).strip()[:300] for item in value if str(item).strip()]
+        if len(cleaned) != len(value):
+            raise ValueError("proposal list entries may not be empty")
+        return cleaned
+
+
+class CapabilityProposalClose(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["accepted", "rejected", "closed"] = "closed"
+    reason: str = Field(default="", max_length=1000)
+
+
 class TopicConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

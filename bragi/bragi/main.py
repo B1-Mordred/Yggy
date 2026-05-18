@@ -1155,6 +1155,12 @@ def diagnostic_intent(intent: dict[str, Any] | None) -> dict[str, Any] | None:
     return cleaned
 
 
+def diagnostic_capability_proposal(text: str, *, user_id: str, channel: str) -> dict[str, Any]:
+    payload = capability_proposal_payload(text, user_id=user_id, channel=channel)
+    payload.pop("original_request_preview", None)
+    return payload
+
+
 def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID, channel: str = "openwebui") -> dict[str, Any]:
     user_text = latest_user_request(messages)
     preview = redact_diagnostic_text(user_text)[:240]
@@ -1422,6 +1428,17 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
         )
         return diagnostic
 
+    if capability_proposal_candidate(user_text):
+        diagnostic.update(
+            {
+                "mode": "capability_proposal",
+                "route": "bragi_capability_proposal",
+                "reason": "Request is useful but does not map to a registered executable Yggy capability; Bragi should create review backlog only.",
+                "capability_proposal": diagnostic_capability_proposal(user_text, user_id=user_id, channel=channel),
+            }
+        )
+        return diagnostic
+
     intent = build_candidate_intent(user_text)
     if intent is not None:
         diagnostic.update(
@@ -1467,6 +1484,9 @@ def format_route_diagnostic(diagnostic: dict[str, Any]) -> str:
     intent = diagnostic.get("candidate_intent")
     if isinstance(intent, dict):
         lines.extend(["", "Candidate canonical intent:", f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```"])
+    proposal = diagnostic.get("capability_proposal")
+    if isinstance(proposal, dict):
+        lines.extend(["", "Capability proposal candidate:", f"```json\n{json.dumps(proposal, indent=2, sort_keys=True)}\n```"])
     return "\n".join(lines)
 
 
@@ -2923,10 +2943,121 @@ def format_confirmation(summary: dict[str, Any], intent: dict[str, Any], intake:
     return "\n".join(lines)
 
 
+def capability_proposal_candidate(text: str) -> bool:
+    lowered = text.lower()
+    if any(term in lowered for term in ("restart docker", "docker socket", "reorganize all files", "delete files", "firewall", "purchase", "buy ")):
+        return False
+    return bool(any(term in lowered for term in ("printer", "toner", "cartridge", "ink level")))
+
+
+def capability_proposal_payload(
+    user_text: str,
+    result: dict[str, Any] | None = None,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    channel: str = "openwebui",
+) -> dict[str, Any]:
+    lowered = user_text.lower()
+    if any(term in lowered for term in ("printer", "toner", "cartridge", "ink level")):
+        return {
+            "title": "Printer Supply Monitoring",
+            "requested_by": user_id or "bragi",
+            "source_channel": canonical_intake_channel(channel),
+            "original_request_preview": redact_diagnostic_text(user_text)[:1000],
+            "purpose": "Monitor approved printer supply status and notify before toner, ink, or cartridge levels become low.",
+            "suggested_capability_id": "printer_supply_status.v1",
+            "suggested_task_type": "printer_supply_status",
+            "likely_approval_level": "L1_NOTIFY_ONLY",
+            "required_inputs": [
+                "approved printer ID or explicit printer endpoint",
+                "read-only status protocol or integration method",
+                "polling schedule",
+                "low-supply threshold",
+                "whitelisted notification target",
+            ],
+            "safety_rules": [
+                "must start disabled and dry-run",
+                "must use explicit approved printer identifiers",
+                "must not scan the LAN for printers",
+                "must not change printer configuration",
+                "must not store credentials in prompts, memory, task YAML, or logs",
+            ],
+            "non_goals": [
+                "no arbitrary shell execution",
+                "no Docker socket access",
+                "no broad filesystem access",
+                "no printer administration changes",
+            ],
+            "review_notes": str((result or {}).get("message") or "Bragi classified this as useful but unsupported."),
+        }
+    topic = slug(user_text[:60], "new_capability")
+    return {
+        "title": title_from_topic(topic),
+        "requested_by": user_id or "bragi",
+        "source_channel": canonical_intake_channel(channel),
+        "original_request_preview": redact_diagnostic_text(user_text)[:1000],
+        "purpose": "Review a user-requested automation idea that does not currently map to a registered Yggy capability.",
+        "suggested_capability_id": f"{topic}.v1",
+        "suggested_task_type": topic,
+        "likely_approval_level": "L1_NOTIFY_ONLY",
+        "required_inputs": ["clear task scope", "trigger or schedule", "approved data source", "whitelisted output target"],
+        "safety_rules": ["must be implemented as a bounded capability before use", "must not bypass Yggy approval"],
+        "non_goals": ["no arbitrary execution", "no secrets in model context", "no broad host administration"],
+        "review_notes": str((result or {}).get("message") or "Unsupported automation idea captured for review."),
+    }
+
+
+def draft_capability_proposal_response(
+    user_text: str,
+    result: dict[str, Any] | None = None,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    channel: str = "openwebui",
+) -> str:
+    payload = capability_proposal_payload(user_text, result, user_id=user_id, channel=channel)
+    try:
+        proposal = api_request("POST", "/capability-proposals/draft", payload)
+    except Exception as exc:
+        proposal = {"error": exc.__class__.__name__}
+    if isinstance(proposal, dict) and proposal.get("id"):
+        lines = [
+            str((result or {}).get("message") or "That is useful, but not a registered executable Yggy capability yet."),
+            "",
+            "Capability proposal drafted for operator review:",
+            "",
+            f"- Proposal: `{proposal.get('id')}`",
+            f"- Status: `{proposal.get('status')}`",
+            f"- Suggested capability: `{proposal.get('suggested_capability_id')}`",
+            f"- Suggested task type: `{proposal.get('suggested_task_type')}`",
+            f"- Likely approval level: `{proposal.get('likely_approval_level')}`",
+            f"- Purpose: {proposal.get('purpose')}",
+            "",
+            "This is backlog state only. It did not create a task, approval, run, or Yggdrasil request.",
+        ]
+        return "\n".join(lines)
+
+    lines = [
+        str((result or {}).get("message") or "That is useful, but not a registered executable Yggy capability yet."),
+        "",
+        "I could outline a capability proposal, but I could not store it in Yggy right now.",
+        "",
+        f"- Suggested capability: `{payload['suggested_capability_id']}`",
+        f"- Suggested task type: `{payload['suggested_task_type']}`",
+        f"- Likely approval level: `{payload['likely_approval_level']}`",
+        f"- Purpose: {payload['purpose']}",
+        "",
+        "Nothing was sent to Yggdrasil and nothing executable was created.",
+    ]
+    return "\n".join(lines)
+
+
 def format_gateway_result(
     result: dict[str, Any],
     intent: dict[str, Any] | None = None,
     intake: dict[str, Any] | None = None,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    channel: str = "openwebui",
 ) -> str:
     outcome = result.get("outcome")
     if outcome == "ASK_CLARIFICATION":
@@ -2976,10 +3107,8 @@ def format_gateway_result(
     if outcome == "REJECT_UNSUPPORTED":
         return "That is not a registered executable Yggy capability yet. I can discuss it or help outline a new capability proposal for review."
     if outcome == "PROPOSE_NEW_CAPABILITY":
-        return (
-            f"{result.get('message')}\n\n"
-            "I can help outline a new capability proposal for human review before it becomes executable automation."
-        )
+        user_text = str((intent or {}).get("user_request") or "")
+        return draft_capability_proposal_response(user_text, result, user_id=user_id, channel=channel)
     if outcome == "ACCEPT":
         return "The canonical intent is accepted."
     return result.get("message") or "I could not classify that request."
@@ -3017,7 +3146,7 @@ def validate_intent_for_reply(
         source=source,
         existing_intake_id=existing_intake_id,
     )
-    return format_gateway_result(result, intent, intake=intake)
+    return format_gateway_result(result, intent, intake=intake, user_id=user_id, channel=channel)
 
 
 def maybe_store_intake_for_result(
@@ -3284,7 +3413,7 @@ def confirm_intake_response(intake_id: str, *, user_id: str) -> str:
             mark_intake_failed(intake_id=intake_id, user_id=user_id, detail={"outcome": result.get("outcome")})
         except Exception:
             pass
-        return format_gateway_result(result, intent, intake=intake)
+        return format_gateway_result(result, intent, intake=intake, user_id=user_id)
     try:
         mark_intake_confirmed(intake_id=intake_id, user_id=user_id)
     except Exception:
@@ -3736,7 +3865,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
         pending["user_confirmation_obtained"] = True
         result = api_request("POST", "/capabilities/prepare-yggdrasil-request", pending)
         if result.get("outcome") != "ACCEPT":
-            return format_gateway_result(result, pending)
+            return format_gateway_result(result, pending, user_id=user_id, channel=channel)
         yggdrasil = yggdrasil_canonical_request(result["yggdrasil_request"])
         return yggdrasil.get("answer") or json.dumps(yggdrasil, indent=2)
 

@@ -8,6 +8,7 @@ from app.database import init_db
 from app.routers import (
     approvals,
     capabilities,
+    capability_proposals,
     channels,
     health,
     maintenance,
@@ -38,6 +39,7 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(capabilities.router)
+app.include_router(capability_proposals.router)
 app.include_router(channels.router)
 app.include_router(research.sources_router)
 app.include_router(research.research_router)

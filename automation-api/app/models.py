@@ -108,6 +108,27 @@ class SourceProposalModel(Base):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CapabilityProposalModel(Base):
+    __tablename__ = "capability_proposals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_channel: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown")
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_request_preview: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    purpose: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    suggested_capability_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    suggested_task_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    likely_approval_level: Mapped[str] = mapped_column(String(64), nullable=False)
+    required_inputs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    safety_rules: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    non_goals: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    review_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RunModel(Base):
     __tablename__ = "runs"
 

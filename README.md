@@ -153,6 +153,9 @@ For Discord notifications about pending approvals, see
 - Task-change proposals can be reviewed, approved, applied, or rejected only
   through local `/ops` or admin CLI paths; Open WebUI receives propose/list/show
   operations only.
+- Capability proposals capture useful but unsupported automation ideas as
+  review backlog only; they cannot create tasks, approvals, runs, or executable
+  Yggdrasil requests.
 - Topic digests must use approved `source_id` entries instead of broad generic `web_query` sources.
 - Task templates are convenience scaffolds only; they do not approve, enable, or bypass policy.
 - The worker re-validates approved sources at execution time and records source

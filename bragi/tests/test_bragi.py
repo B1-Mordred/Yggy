@@ -174,12 +174,49 @@ def test_unsafe_request_is_not_forwarded(monkeypatch):
 
 
 def test_printer_toner_becomes_new_capability_proposal(monkeypatch):
-    monkeypatch.setattr(bragi, "api_request", lambda method, path, payload=None: gateway_response_for(payload))
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        if path == "/capability-proposals/draft":
+            return {
+                "id": "cap-prop-1",
+                "status": "pending",
+                "suggested_capability_id": payload["suggested_capability_id"],
+                "suggested_task_type": payload["suggested_task_type"],
+                "likely_approval_level": payload["likely_approval_level"],
+                "purpose": payload["purpose"],
+                "execution": {"creates_task": False, "creates_approval": False, "can_be_applied": False},
+            }
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))
 
     answer = bragi.route_chat([{"role": "user", "content": "Check my printer toner and warn me before it runs out."}])
 
     assert "no printer or toner capability" in answer
-    assert "new capability proposal" in answer
+    assert "Capability proposal drafted" in answer
+    assert "`printer_supply_status.v1`" in answer
+    assert "did not create a task, approval, run, or Yggdrasil request" in answer
+    assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
+    assert calls[1][0:2] == ("POST", "/capability-proposals/draft")
+    assert calls[1][2]["required_inputs"]
+    assert calls[1][2]["safety_rules"]
+
+
+def test_printer_toner_proposal_falls_back_if_storage_fails(monkeypatch):
+    def fake_api_request(method, path, payload=None):
+        if path == "/capability-proposals/draft":
+            raise RuntimeError("down")
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "Check my printer toner and warn me before it runs out."}])
+
+    assert "could not store it in Yggy" in answer
+    assert "Nothing was sent to Yggdrasil" in answer
 
 
 def test_n8n_request_without_known_webhook_asks_clarification(monkeypatch):
@@ -1315,6 +1352,16 @@ def test_route_diagnostic_for_draft_omits_raw_user_request():
     assert diagnostic["route"] == "heimdal_validate_intent"
     assert diagnostic["candidate_intent"]["capability_id"] == "topic_digest.v1"
     assert "user_request" not in diagnostic["candidate_intent"]
+
+
+def test_route_diagnostic_for_capability_proposal_is_read_only():
+    diagnostic = bragi.diagnose_route([{"role": "user", "content": "Check my printer toner and warn me before it runs out."}])
+
+    assert diagnostic["mode"] == "capability_proposal"
+    assert diagnostic["route"] == "bragi_capability_proposal"
+    assert diagnostic["calls_external_services"] is False
+    assert diagnostic["capability_proposal"]["suggested_capability_id"] == "printer_supply_status.v1"
+    assert "original_request_preview" not in diagnostic["capability_proposal"]
 
 
 def test_route_diagnostic_for_conversational_source_details_uses_source_selection():

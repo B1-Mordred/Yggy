@@ -258,6 +258,39 @@ apply after that. This keeps natural source matching out of Yggdrasil and
 prevents arbitrary URLs or unsupported sources from being smuggled into task
 YAML.
 
+## Capability Proposals
+
+Unsupported but reasonable automation ideas should not be forced into an
+existing capability and should not disappear into ordinary chat. Bragi may draft
+a non-executable capability proposal through:
+
+```text
+POST /capability-proposals/draft
+GET /capability-proposals
+GET /capability-proposals/{id}
+POST /capability-proposals/{id}/close
+POST /capability-proposals/{id}/accept
+POST /capability-proposals/{id}/reject
+```
+
+Example:
+
+```text
+Check my printer toner and warn me before it runs out.
+```
+
+This becomes a review object such as `printer_supply_status.v1`, with purpose,
+required inputs, likely approval level, safety rules, and non-goals. It does not
+create a task, approval, run, task template, or Yggdrasil request. Tool role may
+draft and list proposals. Admin role may accept, reject, or close them. There is
+no `apply` endpoint; implementation still requires a human/Codex change to the
+capability registry, templates, worker handler, docs, and tests.
+
+Unsafe requests still stay rejected instead of becoming proposals. For example,
+requests to restart Docker, reorganize arbitrary server files, change firewall
+rules, rotate credentials, or execute shell commands must not be forwarded to
+Yggdrasil and must not become model-facing executable work.
+
 For incomplete canonical intents, Bragi stores a `collecting_slots` intake. The
 user can continue later by including the intake ID with the missing information,
 for example:
