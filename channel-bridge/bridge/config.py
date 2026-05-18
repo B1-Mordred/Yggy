@@ -140,18 +140,34 @@ def resolve_discord_channel(
     *,
     channel_id: str,
     author_id: str,
+    is_dm: bool = False,
     env: EnvResolver | None = None,
 ) -> ChannelConfig:
+    dm_channel_seen = False
     for channel in channels:
-        if not channel.enabled or channel.type != "discord":
+        if not channel.enabled:
             continue
+        if is_dm:
+            if channel.type != "discord_dm":
+                continue
+            dm_channel_seen = True
+        elif channel.type != "discord":
+            continue
+        allowed_user_ids = comma_env_values(channel.allowed_user_ids_ref, env)
+        if is_dm:
+            if not allowed_user_ids:
+                continue
+            if author_id not in allowed_user_ids:
+                continue
+            return channel
         configured_channel_id = env_ref_value(channel.channel_id_ref, env)
         if is_placeholder_value(configured_channel_id) or configured_channel_id != channel_id:
             continue
-        allowed_user_ids = comma_env_values(channel.allowed_user_ids_ref, env)
         if allowed_user_ids and author_id not in allowed_user_ids:
             raise PermissionError("discord author is not allowed for this channel")
         return channel
+    if is_dm and dm_channel_seen:
+        raise PermissionError("discord dm author is not allowed or no explicit dm user list is configured")
     raise LookupError("discord channel is not registered for Bragi")
 
 

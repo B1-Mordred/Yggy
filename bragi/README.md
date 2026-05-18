@@ -104,6 +104,10 @@ the configured environment references such as `DISCORD_HOME_CHANNEL` and
 `DISCORD_ALLOWED_USER_IDS`, strips bot mentions, rejects attachments by default,
 and returns a reply for the bridge to send.
 
+Direct messages use a separate `discord_dm` channel entry. They are accepted only
+when the bridge marks the payload as a DM and the author id appears in
+`DISCORD_ALLOWED_USER_IDS`; arbitrary Discord channels are still rejected.
+
 Discord is not an approval surface. Requests involving admin keys, tokens,
 approval nonces, or approval/rejection decisions are refused with instructions
 to use the local ops UI or admin CLI.

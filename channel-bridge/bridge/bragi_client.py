@@ -85,6 +85,7 @@ def build_discord_payload(
     message_id: str | None = None,
     timestamp: str | None = None,
     is_bot: bool = False,
+    is_dm: bool = False,
     attachments: list[dict[str, Any]] | None = None,
     history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -96,6 +97,7 @@ def build_discord_payload(
         "message_id": message_id,
         "timestamp": timestamp,
         "is_bot": is_bot,
+        "is_dm": is_dm,
         "attachments": attachments or [],
         "history": history or [],
     }

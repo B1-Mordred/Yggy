@@ -225,6 +225,7 @@ class DiscordMessageRequest(BaseModel):
     message_id: str | None = Field(default=None, max_length=128)
     timestamp: str | None = Field(default=None, max_length=128)
     is_bot: bool = False
+    is_dm: bool = False
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
     history: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
 
@@ -430,7 +431,20 @@ def comma_env_ref_values(ref: str | None) -> set[str]:
     return {item.strip() for item in raw.split(",") if item.strip()}
 
 
-def discord_channel_for_request(channel_id: str, author_id: str) -> dict[str, Any]:
+def discord_channel_for_request(channel_id: str, author_id: str, *, is_dm: bool = False) -> dict[str, Any]:
+    if is_dm:
+        dm_channel_seen = False
+        for channel in enabled_channels("discord_dm"):
+            dm_channel_seen = True
+            allowed_user_ids = comma_env_ref_values(channel.get("allowed_user_ids_ref"))
+            if not allowed_user_ids:
+                continue
+            if author_id not in allowed_user_ids:
+                continue
+            return channel
+        if dm_channel_seen:
+            raise HTTPException(status_code=403, detail="discord dm author is not allowed or no explicit dm user list is configured")
+        raise HTTPException(status_code=403, detail="discord dm author is not allowed for Bragi")
     for channel in enabled_channels("discord"):
         configured_channel_id = env_ref_value(channel.get("channel_id_ref"))
         if is_placeholder_value(configured_channel_id) or configured_channel_id != channel_id:
@@ -3532,6 +3546,7 @@ def canonical_intake_channel(channel: str | None) -> str:
         "webui": "openwebui",
         "web": "openwebui",
         "discord_home": "discord",
+        "discord_dm_primary": "discord_dm",
     }
     return aliases.get(text, text or "openwebui")
 
@@ -3541,6 +3556,7 @@ def intake_channel_label(channel: str | None) -> str:
     labels = {
         "openwebui": "Open WebUI",
         "discord": "Discord",
+        "discord_dm": "Discord DM",
     }
     return labels.get(channel, channel)
 
@@ -4201,7 +4217,8 @@ def route_diagnostics(payload: RouteDiagnosticsRequest, authorization: str | Non
 def discord_channel_message(payload: DiscordMessageRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     if not authorized(authorization):
         raise HTTPException(status_code=401, detail="unauthorized")
-    channel = discord_channel_for_request(payload.channel_id, payload.author_id)
+    channel = discord_channel_for_request(payload.channel_id, payload.author_id, is_dm=payload.is_dm)
+    channel_scope = "discord_dm" if payload.is_dm else "discord"
     if payload.is_bot:
         raise HTTPException(status_code=403, detail="discord bot messages are ignored")
     if payload.attachments and channel.get("reject_attachments", True):
@@ -4225,7 +4242,7 @@ def discord_channel_message(payload: DiscordMessageRequest, authorization: str |
         )
         return {
             "service": "bragi",
-            "channel": "discord",
+            "channel": channel_scope,
             "channel_config_id": channel.get("id"),
             "user_id": user_id,
             "reply": truncate_for_channel(reply, max_message_chars),
@@ -4240,7 +4257,7 @@ def discord_channel_message(payload: DiscordMessageRequest, authorization: str |
 
     messages = discord_history_messages(payload.history)
     messages.append({"role": "user", "content": content})
-    diagnostic = diagnose_route(messages, user_id=user_id, channel="discord")
+    diagnostic = diagnose_route(messages, user_id=user_id, channel=channel_scope)
     required_capability = channel_required_capability(diagnostic)
     if not channel_allows(channel, required_capability):
         reply = (
@@ -4249,7 +4266,7 @@ def discord_channel_message(payload: DiscordMessageRequest, authorization: str |
         )
         return {
             "service": "bragi",
-            "channel": "discord",
+            "channel": channel_scope,
             "channel_config_id": channel.get("id"),
             "user_id": user_id,
             "reply": truncate_for_channel(reply, max_message_chars),
@@ -4262,14 +4279,14 @@ def discord_channel_message(payload: DiscordMessageRequest, authorization: str |
             "requires_followup": False,
         }
 
-    reply = route_chat(messages, user_id=user_id, channel="discord")
+    reply = route_chat(messages, user_id=user_id, channel=channel_scope)
     forwarded_to_yggdrasil = diagnostic.get("route") == "yggdrasil_canonical_action" or (
         diagnostic.get("route") == "heimdal_prepare_yggdrasil_request"
         and diagnostic.get("mode") in {"confirmation", "intake_confirmation"}
     )
     return {
         "service": "bragi",
-        "channel": "discord",
+        "channel": channel_scope,
         "channel_config_id": channel.get("id"),
         "user_id": user_id,
         "reply": truncate_for_channel(reply, max_message_chars),

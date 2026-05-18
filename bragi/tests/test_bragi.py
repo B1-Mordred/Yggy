@@ -1971,6 +1971,23 @@ channels:
     max_message_chars: {max_chars}
     strip_mentions: true
     reject_attachments: true
+  - id: discord_dm_primary
+    type: discord_dm
+    enabled: true
+    audience: {audience}
+    allowed_user_ids_ref: DISCORD_ALLOWED_USER_IDS
+    allowed_capabilities:
+      - chat
+      - context
+      - memory
+      - draft_task
+      - task_read
+      - run_l1
+      - pause_l1
+    allow_approvals: false
+    max_message_chars: {max_chars}
+    strip_mentions: true
+    reject_attachments: true
 """.lstrip(),
         encoding="utf-8",
     )
@@ -2019,6 +2036,49 @@ def test_discord_message_endpoint_rejects_unknown_channel(tmp_path, monkeypatch)
         "/channels/discord/message",
         headers={"Authorization": "Bearer test-bragi-key"},
         json={"channel_id": "other-channel", "author_id": "user-1", "content": "hello"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_discord_message_endpoint_accepts_registered_dm_author(tmp_path, monkeypatch):
+    configure_discord_channel(tmp_path, monkeypatch, allowed_user_ids="user-1")
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+    client = discord_client(monkeypatch)
+
+    response = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={
+            "channel_id": "discord-generated-dm-channel",
+            "author_id": "user-1",
+            "is_dm": True,
+            "content": "what can you automate right now?",
+        },
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["channel"] == "discord_dm"
+    assert body["channel_config_id"] == "discord_dm_primary"
+    assert body["classification"]["route"] == "general_chat_with_context"
+    assert body["classification"]["required_capability"] == "context"
+    assert "Supported capabilities" in body["reply"]
+
+
+def test_discord_message_endpoint_rejects_unregistered_dm_author(tmp_path, monkeypatch):
+    configure_discord_channel(tmp_path, monkeypatch, allowed_user_ids="allowed-user")
+    client = discord_client(monkeypatch)
+
+    response = client.post(
+        "/channels/discord/message",
+        headers={"Authorization": "Bearer test-bragi-key"},
+        json={
+            "channel_id": "discord-generated-dm-channel",
+            "author_id": "other-user",
+            "is_dm": True,
+            "content": "hello",
+        },
     )
 
     assert response.status_code == 403

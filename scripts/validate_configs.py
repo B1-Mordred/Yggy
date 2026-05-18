@@ -223,8 +223,8 @@ def validate_channels() -> list[str]:
             errors.append(f"{prefix}.id duplicates {channel_id}")
         seen.add(channel_id)
         channel_type = channel.get("type")
-        if channel_type not in {"openwebui", "discord"}:
-            errors.append(f"{prefix}.type must be openwebui or discord")
+        if channel_type not in {"openwebui", "discord", "discord_dm"}:
+            errors.append(f"{prefix}.type must be openwebui, discord, or discord_dm")
         if not isinstance(channel.get("enabled"), bool):
             errors.append(f"{prefix}.enabled must be a boolean")
         if channel.get("allow_approvals") is not False:
@@ -242,6 +242,13 @@ def validate_channels() -> list[str]:
         if channel_type == "discord":
             if not channel.get("channel_id_ref"):
                 errors.append(f"{prefix}.channel_id_ref is required for Discord channels")
+            if "webhook" in yaml.safe_dump(channel, sort_keys=True).lower():
+                errors.append(f"{prefix} must not reference Discord webhook credentials")
+        if channel_type == "discord_dm":
+            if channel.get("channel_id_ref"):
+                errors.append(f"{prefix}.channel_id_ref must not be used for Discord DM channels")
+            if not channel.get("allowed_user_ids_ref"):
+                errors.append(f"{prefix}.allowed_user_ids_ref is required for Discord DM channels")
             if "webhook" in yaml.safe_dump(channel, sort_keys=True).lower():
                 errors.append(f"{prefix} must not reference Discord webhook credentials")
     return errors

@@ -34,6 +34,8 @@ Rules:
 
 - ignore bot messages
 - only process configured Discord channels or their threads
+- only process direct messages when an explicit `discord_dm` channel is enabled
+  and the author is listed in `DISCORD_ALLOWED_USER_IDS`
 - optionally enforce `DISCORD_ALLOWED_USER_IDS`
 - pass bounded recent channel history to Bragi for confirmations
 - poll Bragi for due intake follow-ups and post bounded reminders to the configured channel
@@ -80,3 +82,15 @@ POST /intakes/followups/mark-sent
 
 This only advances reminder metadata. It does not confirm, approve, run, or
 forward anything to Yggdrasil.
+
+## Direct Messages
+
+Discord DMs are not accepted through the normal channel allowlist because each
+DM has a Discord-generated channel id. To enable private messages, add a
+separate `discord_dm` entry in `configs/channels.yaml` and point
+`allowed_user_ids_ref` at `DISCORD_ALLOWED_USER_IDS`.
+
+DMs are still a model-facing channel. They may chat, read safe context, draft
+tasks, and run approved L0/L1 actions according to the configured capabilities.
+They cannot approve tasks, expose secrets, or bypass Bragi, Heimdal, Yggdrasil,
+or Yggy policy.

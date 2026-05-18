@@ -57,6 +57,7 @@ class BragiDiscordClient(discord.Client):
 
     async def on_message(self, message: discord.Message) -> None:
         registry_channel_id = discord_registry_channel_id(message)
+        is_dm = discord_message_is_dm(message)
         author_id = str(message.author.id)
         if message.author.bot:
             await self._record_channel_event(
@@ -77,6 +78,7 @@ class BragiDiscordClient(discord.Client):
                 self.channels,
                 channel_id=registry_channel_id,
                 author_id=author_id,
+                is_dm=is_dm,
             )
         except LookupError:
             await self._record_channel_event(
@@ -87,7 +89,7 @@ class BragiDiscordClient(discord.Client):
                     author_id=author_id,
                     message_id=message.id,
                     blocked_reason="unknown_channel",
-                    metadata={"reason": "discord channel is not registered or enabled"},
+                    metadata={"reason": "discord channel is not registered or enabled", "is_dm": is_dm},
                 )
             )
             return
@@ -100,7 +102,7 @@ class BragiDiscordClient(discord.Client):
                     author_id=author_id,
                     message_id=message.id,
                     blocked_reason="unauthorized_user",
-                    metadata={"reason": "discord author is not allowed for this channel"},
+                    metadata={"reason": "discord author is not allowed for this channel", "is_dm": is_dm},
                 )
             )
             return
@@ -114,6 +116,7 @@ class BragiDiscordClient(discord.Client):
             message_id=str(message.id),
             timestamp=message.created_at.isoformat() if message.created_at else None,
             is_bot=False,
+            is_dm=is_dm,
             attachments=attachment_metadata(message),
             history=history,
         )
@@ -132,6 +135,7 @@ class BragiDiscordClient(discord.Client):
                     status="rejected",
                     blocked_reason="bragi_rejected",
                     metadata={
+                        "is_dm": is_dm,
                         "attachment_count": len(message.attachments),
                         "history_count": len(history),
                     },
@@ -155,6 +159,7 @@ class BragiDiscordClient(discord.Client):
                     status="failed",
                     blocked_reason="bragi_unreachable",
                     metadata={
+                        "is_dm": is_dm,
                         "attachment_count": len(message.attachments),
                         "history_count": len(history),
                     },
@@ -183,6 +188,7 @@ class BragiDiscordClient(discord.Client):
                 status="forwarded" if forwarded_to_yggdrasil else "replied",
                 reply_preview=reply,
                 metadata={
+                    "is_dm": is_dm,
                     "attachment_count": len(message.attachments),
                     "history_count": len(history),
                     "requires_followup": bool(result.get("requires_followup")),
@@ -289,6 +295,10 @@ class BragiDiscordClient(discord.Client):
 def discord_registry_channel_id(message: discord.Message) -> str:
     parent_id = getattr(message.channel, "parent_id", None)
     return str(parent_id or message.channel.id)
+
+
+def discord_message_is_dm(message: discord.Message) -> bool:
+    return isinstance(message.channel, discord.DMChannel)
 
 
 def attachment_metadata(message: discord.Message) -> list[dict[str, Any]]:
