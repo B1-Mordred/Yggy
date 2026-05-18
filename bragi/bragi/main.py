@@ -1249,6 +1249,16 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
             }
         )
         return diagnostic
+    if is_intake_continue_request(user_text):
+        diagnostic.update(
+            {
+                "mode": "intake_management",
+                "route": "bragi_intake_management",
+                "reason": "Request resumes a stored Bragi pre-execution intake without forwarding anything to Yggdrasil.",
+                "intake_id": explicit_intake_id or pending_intake_id_from_prior(prior),
+            }
+        )
+        return diagnostic
     if is_intake_list_request(user_text):
         diagnostic.update(
             {
@@ -2943,12 +2953,27 @@ def is_intake_cancel_request(text: str) -> bool:
 
 
 def is_intake_list_request(text: str) -> bool:
-    return bool(re.search(r"\b(show|list|what)\b.*\b(pending\s+)?intakes?\b", text.lower()))
+    lowered = text.lower()
+    return bool(
+        re.search(r"\b(show|list|view|what(?:'s| is)?)\b.*\b(pending|open|active|incomplete)\b.*\b(intakes?|requests?)\b", lowered)
+        or re.search(r"\b(show|list|view)\b.*\bintakes?\b", lowered)
+    )
 
 
 def is_intake_show_request(text: str) -> bool:
     lowered = text.lower()
-    return bool(re.search(r"\b(show|inspect|view|get)\b.*\bintake\b", lowered) and intake_id_from_text(lowered))
+    return bool(re.search(r"\b(show|inspect|view|get)\b.*\b(intake|request)\b", lowered) and intake_id_from_text(lowered))
+
+
+def is_intake_continue_request(text: str) -> bool:
+    lowered = text.lower()
+    return bool(
+        re.fullmatch(
+            r"\s*(please\s+)?(continue|resume|complete|finish)\s+(the\s+)?(intake|request)(?:\s+bragi_intake_[a-z0-9_]{8,64})?\s*[.!?]?\s*",
+            lowered,
+        )
+        or re.fullmatch(r"\s*(continue|resume|complete|finish)\s+(it|this|that)\s*[.!?]?\s*", lowered)
+    )
 
 
 def is_source_selection_update_request(text: str) -> bool:
@@ -3076,7 +3101,7 @@ def list_intakes_response(*, user_id: str) -> str:
     lines = ["Pending Bragi intakes:", ""]
     for intake in intakes:
         lines.append(format_intake_summary(intake))
-    lines.extend(["", "Use `show intake <id>`, `confirm intake <id>`, `delete intake <id>`, or `cancel intake <id>`."])
+    lines.extend(["", "Use `continue intake <id>`, `show intake <id>`, `confirm intake <id>`, `delete intake <id>`, or `cancel intake <id>`."])
     return "\n".join(lines)
 
 
@@ -3096,6 +3121,63 @@ def show_intake_response(intake_id: str, *, user_id: str) -> str:
         )
     elif intake.get("status") in {"collecting", "collecting_slots"}:
         lines.extend(["", incomplete_intake_options(intake)])
+    return "\n".join(lines)
+
+
+def continue_intake_response(intake_id: str, *, user_id: str) -> str:
+    try:
+        intake = get_intake(intake_id=intake_id, user_id=user_id)
+    except MemoryValidationError as exc:
+        return f"I cannot continue that intake: {exc}."
+    status = str(intake.get("status") or "")
+    lines = ["Continuing Bragi intake:", "", format_intake_summary(intake)]
+    if status == "awaiting_confirmation":
+        lines.extend(
+            [
+                "",
+                "This request is ready for user confirmation. Confirmation only means Bragi understood you; Yggy approval still controls execution.",
+                f"- Continue: `confirm intake {intake_id}`",
+                f"- Delete it: `delete intake {intake_id}`",
+            ]
+        )
+    elif status == "awaiting_source_selection":
+        lines.extend(
+            [
+                "",
+                "This request is waiting for source choices.",
+                f"- Use default sources: `confirm sources for intake {intake_id}`",
+                f"- Choose sources: `use sources 1 and 3 for intake {intake_id}`",
+                f"- Delete it: `delete intake {intake_id}`",
+            ]
+        )
+    elif status in {"collecting", "collecting_slots"}:
+        lines.extend(["", incomplete_intake_options(intake)])
+    else:
+        lines.extend(
+            [
+                "",
+                f"This intake is `{status}`, so there is nothing active to continue.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def continue_pending_intake_response(*, user_id: str) -> str:
+    try:
+        intakes = list_intakes(user_id=user_id, include_inactive=False, limit=20)
+    except MemoryValidationError as exc:
+        return f"I cannot list pending requests: {exc}."
+    if not intakes:
+        return "There are no pending Bragi requests to continue."
+    if len(intakes) == 1:
+        return continue_intake_response(str(intakes[0].get("id")), user_id=user_id)
+    lines = [
+        "I found multiple pending Bragi requests. Pick one to continue:",
+        "",
+    ]
+    for intake in intakes:
+        lines.append(format_intake_summary(intake))
+    lines.extend(["", "Use `continue intake <id>` or `delete intake <id>`."])
     return "\n".join(lines)
 
 
@@ -3234,6 +3316,11 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
         intake_id = explicit_intake_id or pending_intake_id_from_prior(prior)
         if intake_id:
             return cancel_intake_response(intake_id, user_id=user_id)
+    if is_intake_continue_request(user_text):
+        intake_id = explicit_intake_id or pending_intake_id_from_prior(prior)
+        if intake_id:
+            return continue_intake_response(intake_id, user_id=user_id)
+        return continue_pending_intake_response(user_id=user_id)
     if explicit_intake_id and is_source_selection_update_request(user_text):
         return source_selection_intake_response(explicit_intake_id, user_text, user_id=user_id)
     if is_intake_list_request(user_text):

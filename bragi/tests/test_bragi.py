@@ -820,6 +820,55 @@ def test_incomplete_intake_can_be_shown_confirmed_or_deleted(monkeypatch):
     assert stored["status"] == "cancelled"
 
 
+def test_pending_requests_can_be_listed_and_continued_without_forwarding(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    def fake_yggdrasil(payload):
+        raise AssertionError("continuing an intake must not forward to Yggdrasil")
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", fake_yggdrasil)
+
+    answer = bragi.route_chat([{"role": "user", "content": "draft a weekday 08:00 topic digest about German politics"}])
+    intake_id = bragi.intake_id_from_text(answer)
+    calls.clear()
+
+    listing = bragi.route_chat([{"role": "user", "content": "show my pending requests"}])
+    continued = bragi.route_chat([{"role": "user", "content": "continue request"}])
+    resumed = bragi.route_chat([{"role": "user", "content": f"resume request {intake_id}"}])
+
+    assert intake_id is not None
+    assert intake_id in listing
+    assert "continue intake <id>" in listing
+    assert "Continuing Bragi intake" in continued
+    assert "Missing: `source_ids`" in continued
+    assert f"delete intake {intake_id}" in continued
+    assert "Continuing Bragi intake" in resumed
+    assert calls == []
+
+
+def test_continue_request_with_multiple_pending_intakes_asks_user_to_pick(monkeypatch):
+    monkeypatch.setattr(bragi, "api_request", lambda method, path, payload=None: gateway_response_for(payload))
+
+    first = bragi.route_chat([{"role": "user", "content": "draft a weekday 08:00 topic digest about German politics"}])
+    second = bragi.route_chat([{"role": "user", "content": "draft a weekday 08:00 topic digest about Docker"}])
+    first_id = bragi.intake_id_from_text(first)
+    second_id = bragi.intake_id_from_text(second)
+
+    answer = bragi.route_chat([{"role": "user", "content": "continue request"}])
+
+    assert first_id is not None
+    assert second_id is not None
+    assert "multiple pending Bragi requests" in answer
+    assert first_id in answer
+    assert second_id in answer
+    assert "continue intake <id>" in answer
+
+
 def test_missing_slot_followup_can_update_stored_intake(monkeypatch):
     calls = []
 
@@ -840,6 +889,25 @@ def test_missing_slot_followup_can_update_stored_intake(monkeypatch):
     assert f"confirm intake {intake_id}" in followup
     stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
     assert stored["status"] == "awaiting_confirmation"
+
+
+def test_complete_request_with_details_updates_incomplete_intake(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "draft a weekday 08:00 topic digest about German politics"}])
+    intake_id = bragi.intake_id_from_text(answer)
+    completed = bragi.route_chat([{"role": "user", "content": f"complete request with docker_blog for intake {intake_id}"}])
+
+    assert intake_id is not None
+    assert calls[-1][0:2] == ("POST", "/capabilities/validate-intent")
+    assert calls[-1][2]["slots"]["source_ids"] == ["docker_blog"]
+    assert "Canonical intent pending confirmation" in completed
 
 
 def test_missing_slot_followup_merges_details(monkeypatch):

@@ -208,7 +208,10 @@ Supported intake commands:
 
 ```text
 show pending intakes
+show my pending requests
 show intake bragi_intake_...
+continue request
+continue intake bragi_intake_...
 confirm intake bragi_intake_...
 delete intake bragi_intake_...
 cancel intake bragi_intake_...
@@ -258,6 +261,19 @@ Delete it: reply `delete intake <id>` or `cancel intake <id>`.
 If the incomplete request is still present in the current conversation, Bragi
 may also accept `delete it` as a shortcut. Deleting an intake only cancels the
 pre-execution draft state; nothing has been sent to Yggdrasil.
+
+The user may also resume intake handling without waiting for a timed reminder:
+
+```text
+continue request
+continue intake bragi_intake_...
+resume request bragi_intake_...
+```
+
+If exactly one active intake exists, Bragi shows that intake's next safe action.
+If more than one active intake exists, Bragi lists them and asks the user to pick
+one by ID. This is a read/management path only; it must not confirm, approve,
+run, or forward anything to Yggdrasil.
 
 Bragi stores bounded follow-up metadata for active intake states:
 

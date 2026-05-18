@@ -129,7 +129,10 @@ Intake commands:
 
 ```text
 show pending intakes
+show my pending requests
 show intake bragi_intake_...
+continue request
+continue intake bragi_intake_...
 confirm intake bragi_intake_...
 delete intake bragi_intake_...
 cancel intake bragi_intake_...
@@ -144,6 +147,11 @@ Active intakes carry bounded follow-up metadata in their summary JSON. The
 channel bridge may poll due follow-ups and mark a reminder as sent, but that
 only updates reminder counters. It never confirms, approves, runs, or forwards
 the intake.
+
+Users can resume the same state manually before a timed reminder fires. If there
+is one active intake, `continue request` shows the next safe action. If multiple
+active intakes exist, Bragi asks the user to pick one by ID. This path is intake
+management only; it does not contact Yggdrasil.
 
 For existing briefs, Bragi can propose bounded subject/source changes:
 
