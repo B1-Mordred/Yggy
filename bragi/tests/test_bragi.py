@@ -600,12 +600,12 @@ def test_intake_list_show_and_cancel(monkeypatch):
 
     listing = bragi.route_chat([{"role": "user", "content": "show pending intakes"}])
     detail = bragi.route_chat([{"role": "user", "content": f"show intake {intake_id}"}])
-    cancelled = bragi.route_chat([{"role": "user", "content": f"cancel intake {intake_id}"}])
+    cancelled = bragi.route_chat([{"role": "user", "content": f"delete intake {intake_id}"}])
     confirm_after_cancel = bragi.route_chat([{"role": "user", "content": f"confirm intake {intake_id}"}])
 
     assert intake_id in listing
     assert "Canonical intent" in detail
-    assert "Cancelled intake" in cancelled
+    assert "Deleted intake" in cancelled
     assert "because it is `cancelled`" in confirm_after_cancel
 
 
@@ -733,7 +733,42 @@ def test_vague_topic_digest_asks_for_missing_sources(monkeypatch):
     assert calls[0][2]["slots"]["source_ids"] == []
     assert "`source_ids`" in answer
     assert "Intake:" in answer
+    assert "Options:" in answer
+    assert "Complete it:" in answer
+    assert "Delete it:" in answer
+    assert "`delete intake" in answer
     assert "Canonical intent awaiting details" in answer
+
+
+def test_incomplete_intake_can_be_shown_confirmed_or_deleted(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "draft a weekday 08:00 topic digest about German politics"}])
+    intake_id = bragi.intake_id_from_text(answer)
+    detail = bragi.route_chat([{"role": "user", "content": f"show intake {intake_id}"}])
+    cannot_confirm = bragi.route_chat([{"role": "user", "content": f"confirm intake {intake_id}"}])
+    deleted = bragi.route_chat(
+        [
+            {"role": "assistant", "content": answer},
+            {"role": "user", "content": "delete it"},
+        ]
+    )
+
+    assert intake_id is not None
+    assert "This automation request is incomplete" in detail
+    assert "Missing: `source_ids`" in detail
+    assert f"delete intake {intake_id}" in detail
+    assert "incomplete" in cannot_confirm
+    assert "Complete it:" in cannot_confirm
+    assert "Deleted intake" in deleted
+    stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
+    assert stored["status"] == "cancelled"
 
 
 def test_missing_slot_followup_can_update_stored_intake(monkeypatch):

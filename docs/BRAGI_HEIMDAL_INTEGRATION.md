@@ -210,6 +210,7 @@ Supported intake commands:
 show pending intakes
 show intake bragi_intake_...
 confirm intake bragi_intake_...
+delete intake bragi_intake_...
 cancel intake bragi_intake_...
 confirm sources for intake bragi_intake_...
 use sources 1 and 3 for intake bragi_intake_...
@@ -245,6 +246,18 @@ use docker_blog and send it to briefings for intake bragi_intake_...
 Bragi merges the details, revalidates through Heimdal, and only then shows the
 normal confirmation summary. This makes the natural intake flow independent of
 whether Open WebUI or Discord keeps the previous assistant message in context.
+
+Every incomplete-intake reply must state the missing slots and show two explicit
+choices:
+
+```text
+Complete it: reply with the missing details and include `for intake <id>`.
+Delete it: reply `delete intake <id>` or `cancel intake <id>`.
+```
+
+If the incomplete request is still present in the current conversation, Bragi
+may also accept `delete it` as a shortcut. Deleting an intake only cancels the
+pre-execution draft state; nothing has been sent to Yggdrasil.
 
 See `docs/RESEARCH_GATEWAY.md`.
 

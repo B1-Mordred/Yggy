@@ -1232,6 +1232,16 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
             }
         )
         return diagnostic
+    if is_intake_cancel_request(user_text) and pending_intake_id_from_prior(prior):
+        diagnostic.update(
+            {
+                "mode": "intake_management",
+                "route": "bragi_intake_management",
+                "reason": "Request deletes the pending Bragi pre-execution intake from the current conversation.",
+                "intake_id": pending_intake_id_from_prior(prior),
+            }
+        )
+        return diagnostic
     if is_intake_list_request(user_text):
         diagnostic.update(
             {
@@ -2706,14 +2716,16 @@ def format_gateway_result(
                     f"- Intake status: `{intake.get('status')}`",
                     f"- Intake expires: `{intake.get('expires_at')}`",
                     "",
-                    f"Reply with the missing details and include `for intake {intake_id}`. For example: `use docker_blog for intake {intake_id}`.",
+                    "Options:",
+                    f"- Complete it: reply with the missing details and include `for intake {intake_id}`. Example: `use docker_blog for intake {intake_id}`.",
+                    f"- Delete it: reply `delete intake {intake_id}` or `cancel intake {intake_id}`.",
                 ]
             )
         if intent:
             lines.extend(
                 [
                     "",
-                    "I will re-check the canonical intent before anything reaches Yggdrasil.",
+                    "I will re-check the canonical intent before anything reaches Yggdrasil. Until then, nothing is sent or scheduled.",
                     "",
                     "Canonical intent awaiting details:",
                     f"```json\n{json.dumps(intent, indent=2, sort_keys=True)}\n```",
@@ -2838,7 +2850,12 @@ def is_intake_confirm_request(text: str) -> bool:
 
 def is_intake_cancel_request(text: str) -> bool:
     lowered = text.lower()
-    return bool(re.search(r"\b(cancel|discard|forget)\b.*\bintake\b", lowered) or re.search(r"\b(cancel|discard)\b", lowered) and intake_id_from_text(lowered))
+    return bool(
+        re.search(r"\b(cancel|discard|forget|delete|remove)\b.*\b(intake|incomplete request|request)\b", lowered)
+        or re.search(r"\b(cancel|discard|delete|remove)\b", lowered)
+        and intake_id_from_text(lowered)
+        or re.fullmatch(r"\s*(cancel|discard|delete|remove|forget)\s+(it|this|that)\s*[.!?]?\s*", lowered)
+    )
 
 
 def is_intake_list_request(text: str) -> bool:
@@ -2866,6 +2883,15 @@ def confirm_intake_response(intake_id: str, *, user_id: str) -> str:
         return f"I cannot confirm that intake: {exc}."
     status = intake.get("status")
     if status != "awaiting_confirmation":
+        if status in {"collecting", "collecting_slots"}:
+            return f"I cannot confirm intake `{intake_id}` yet because it is incomplete.\n\n{incomplete_intake_options(intake)}"
+        if status == "awaiting_source_selection":
+            return (
+                f"I cannot confirm intake `{intake_id}` yet because the source selection is still open.\n\n"
+                f"Reply `confirm sources for intake {intake_id}` to use the defaults, "
+                f"`use sources 1 and 3 for intake {intake_id}` to narrow it, "
+                f"or `delete intake {intake_id}` to discard it."
+            )
         return f"I cannot confirm intake `{intake_id}` because it is `{status}`."
     intent = json.loads(json.dumps(intake.get("intent") or {}))
     intent["user_confirmation_obtained"] = True
@@ -2897,7 +2923,29 @@ def cancel_intake_response(intake_id: str, *, user_id: str) -> str:
         intake = cancel_intake(intake_id=intake_id, user_id=user_id)
     except MemoryValidationError as exc:
         return f"I cannot cancel that intake: {exc}."
-    return f"Cancelled intake `{intake['id']}`. Nothing was sent to Yggdrasil."
+    return f"Deleted intake `{intake['id']}`. Nothing was sent to Yggdrasil."
+
+
+def incomplete_intake_options(intake: dict[str, Any]) -> str:
+    intake_id = str(intake.get("id") or "")
+    summary = intake.get("summary") if isinstance(intake.get("summary"), dict) else {}
+    missing = summary.get("missing_slots") if isinstance(summary.get("missing_slots"), list) else []
+    lines = [
+        "This automation request is incomplete.",
+    ]
+    if missing:
+        lines.append(f"Missing: {', '.join(f'`{slot}`' for slot in missing)}.")
+    lines.extend(
+        [
+            "",
+            "Options:",
+            f"- Complete it: reply with the missing details and include `for intake {intake_id}`.",
+            f"- Delete it: reply `delete intake {intake_id}` or `cancel intake {intake_id}`.",
+            "",
+            "Nothing will be sent to Yggdrasil unless this becomes a complete, confirmed canonical request.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def format_intake_summary(intake: dict[str, Any], *, include_intent: bool = False) -> str:
@@ -2944,7 +2992,7 @@ def list_intakes_response(*, user_id: str) -> str:
     lines = ["Pending Bragi intakes:", ""]
     for intake in intakes:
         lines.append(format_intake_summary(intake))
-    lines.extend(["", "Use `show intake <id>`, `confirm intake <id>`, or `cancel intake <id>`."])
+    lines.extend(["", "Use `show intake <id>`, `confirm intake <id>`, `delete intake <id>`, or `cancel intake <id>`."])
     return "\n".join(lines)
 
 
@@ -2955,11 +3003,15 @@ def show_intake_response(intake_id: str, *, user_id: str) -> str:
         return f"I cannot show that intake: {exc}."
     lines = ["Bragi intake:", "", format_intake_summary(intake, include_intent=True)]
     if intake.get("status") == "awaiting_confirmation":
-        lines.append(f"\nReply `confirm intake {intake.get('id')}` to continue, or `cancel intake {intake.get('id')}` to discard it.")
+        lines.append(f"\nReply `confirm intake {intake.get('id')}` to continue, or `delete intake {intake.get('id')}` to discard it.")
     elif intake.get("status") == "awaiting_source_selection":
-        lines.append(f"\nReply `confirm sources for intake {intake.get('id')}` to use the defaults, or `use sources 1 and 3 for intake {intake.get('id')}`.")
+        lines.append(
+            f"\nReply `confirm sources for intake {intake.get('id')}` to use the defaults, "
+            f"`use sources 1 and 3 for intake {intake.get('id')}` to narrow it, "
+            f"or `delete intake {intake.get('id')}` to discard it."
+        )
     elif intake.get("status") in {"collecting", "collecting_slots"}:
-        lines.append(f"\nReply with the missing details and include `for intake {intake.get('id')}`.")
+        lines.extend(["", incomplete_intake_options(intake)])
     return "\n".join(lines)
 
 
@@ -3094,8 +3146,10 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     explicit_intake_id = intake_id_from_text(user_text)
     if explicit_intake_id and is_intake_show_request(user_text):
         return show_intake_response(explicit_intake_id, user_id=user_id)
-    if explicit_intake_id and is_intake_cancel_request(user_text):
-        return cancel_intake_response(explicit_intake_id, user_id=user_id)
+    if is_intake_cancel_request(user_text):
+        intake_id = explicit_intake_id or pending_intake_id_from_prior(prior)
+        if intake_id:
+            return cancel_intake_response(intake_id, user_id=user_id)
     if explicit_intake_id and is_source_selection_update_request(user_text):
         return source_selection_intake_response(explicit_intake_id, user_text, user_id=user_id)
     if is_intake_list_request(user_text):
