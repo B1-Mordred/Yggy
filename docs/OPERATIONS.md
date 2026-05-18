@@ -162,6 +162,41 @@ Replace the example exporter source and printer registry entry with a real
 read-only endpoint before enabling a live task. Keep the registry URL pointed at
 the internal exporter endpoint, not at arbitrary chat-provided URLs.
 
+Recommended real-printer workflow:
+
+1. Add or replace a source in `configs/printer-status-exporter/printers.yaml`.
+   Use `type: http_json` only when you already have a read-only printer adapter
+   URL that returns supply levels.
+2. Add the matching approved printer in `configs/printers/printers.yaml`.
+   Point its URL at
+   `http://printer-status-exporter:8091/printers/<printer-id>/supplies`.
+3. Validate the registry mapping:
+
+```bash
+python scripts/validate_printer_status.py
+```
+
+4. If the exporter is running and you are inside a container/network that can
+   resolve `printer-status-exporter`, perform the bounded live check:
+
+```bash
+python scripts/validate_printer_status.py --live
+```
+
+From the host, use Docker Compose to query through the worker network rather
+than publishing the exporter port:
+
+```bash
+docker compose -f docker-compose.automation.yml exec -T automation-worker python - <<'PY'
+import json, urllib.request
+with urllib.request.urlopen("http://printer-status-exporter:8091/printers/<printer-id>/supplies", timeout=5) as r:
+    print(json.dumps(json.load(r), indent=2))
+PY
+```
+
+Do not use Bragi or Yggdrasil to discover printer IPs or guess printer admin
+URLs. Treat adding a printer source as an operator configuration task.
+
 ## Backup Verification
 
 Yggy includes a first-class `backup_verification` task type for read-only backup

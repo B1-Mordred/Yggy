@@ -164,7 +164,7 @@ printer_supplies:
   - printer_id: printer_status_exporter_example
     name: Printer Status Exporter Example
     type: http_json
-    url: http://printer-status-exporter:8091/printers/example/supplies
+    url: http://printer-status-exporter:8091/printers/printer_status_exporter_example/supplies
     low_threshold_percent: 20
     expected_status: 200
 output:
@@ -185,6 +185,12 @@ configs/printers/printers.yaml
 The task URL must match the approved registry URL for that printer ID. The task
 does not accept credentials in URLs, arbitrary printer endpoints, LAN discovery,
 printer administration, or print-job actions.
+
+Cross-check the internal exporter and approved printer registry with:
+
+```bash
+python scripts/validate_printer_status.py
+```
 
 ## Backup Verification Tasks
 

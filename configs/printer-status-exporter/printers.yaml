@@ -1,8 +1,8 @@
 version: 1
 
 printers:
-  - id: example
-    name: Example Printer Supply Adapter
+  - id: printer_status_exporter_example
+    name: Printer Status Exporter Example
     type: static_json
     enabled: true
     supplies:

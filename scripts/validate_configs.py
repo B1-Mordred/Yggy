@@ -23,6 +23,7 @@ from app.services.capability_gateway import CapabilityError, validate_capability
 from exporter.config import load_config as load_metrics_config  # noqa: E402
 from printer_exporter.config import load_config as load_printer_exporter_config  # noqa: E402
 from task_template_lib import load_templates, render_task_from_template  # noqa: E402
+from validate_printer_status import validate_printer_status_configs  # noqa: E402
 
 
 SAFE_CHANNEL_CAPABILITIES = {
@@ -104,15 +105,24 @@ def validate_metrics() -> list[str]:
 
 def validate_printers() -> list[str]:
     errors: list[str] = []
+    approved_registry = None
+    exporter_configs = []
     try:
-        load_printer_registry(load_policy(str(ROOT / "configs" / "policies.yaml")))
+        approved_registry = load_printer_registry(load_policy(str(ROOT / "configs" / "policies.yaml")))
     except Exception as exc:
         errors.append(f"{ROOT / 'configs' / 'printers' / 'printers.yaml'}: {exc}")
     for path in sorted((ROOT / "configs" / "printer-status-exporter").glob("*.yaml")):
         try:
-            load_printer_exporter_config(path)
+            exporter_configs.append((path, load_printer_exporter_config(path)))
         except Exception as exc:
             errors.append(f"{path}: {exc}")
+    if approved_registry is not None:
+        for path, exporter_config in exporter_configs:
+            findings, _checks = validate_printer_status_configs(
+                approved_registry=approved_registry,
+                exporter_config=exporter_config,
+            )
+            errors.extend(f"{path}: {finding.printer_id}: {finding.message}" for finding in findings if finding.severity == "error")
     return errors
 
 

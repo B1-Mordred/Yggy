@@ -20,7 +20,7 @@ def printer_task(**overrides):
                 "printer_id": "printer_status_exporter_example",
                 "name": "Printer Status Exporter Example",
                 "type": "http_json",
-                "url": "http://printer-status-exporter:8091/printers/example/supplies",
+                "url": "http://printer-status-exporter:8091/printers/printer_status_exporter_example/supplies",
                 "low_threshold_percent": 20,
                 "expected_status": 200,
             }

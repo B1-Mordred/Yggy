@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import export_live_configs  # noqa: E402
 import import_task_drafts  # noqa: E402
+import validate_printer_status  # noqa: E402
 from conftest import sample_task  # noqa: E402
 from registry_lib import diff_registry, format_difference_report, load_yaml_file  # noqa: E402
 
@@ -152,3 +153,69 @@ def test_import_request_approval_requires_print_nonces(tmp_path, monkeypatch):
         )
 
     assert "--print-nonces" in str(exc.value)
+
+
+def test_validate_printer_status_accepts_internal_exporter_mapping():
+    approved = validate_printer_status.PrinterRegistryConfig.model_validate(
+        {
+            "version": 1,
+            "printers": [
+                {
+                    "id": "office_laser",
+                    "name": "Office Laser",
+                    "type": "http_json",
+                    "url": "http://printer-status-exporter:8091/printers/office_laser/supplies",
+                    "enabled": True,
+                }
+            ],
+        }
+    )
+    exporter = validate_printer_status.PrinterExporterConfig.model_validate(
+        {
+            "version": 1,
+            "printers": [
+                {
+                    "id": "office_laser",
+                    "name": "Office Laser",
+                    "type": "static_json",
+                    "supplies": [{"name": "Black toner", "level_percent": 75}],
+                }
+            ],
+        }
+    )
+
+    findings, checks = validate_printer_status.validate_printer_status_configs(
+        approved_registry=approved,
+        exporter_config=exporter,
+    )
+
+    assert findings == []
+    assert checks[0].approved_printer_id == "office_laser"
+    assert checks[0].exporter_printer_id == "office_laser"
+
+
+def test_validate_printer_status_rejects_external_approved_url():
+    approved = validate_printer_status.PrinterRegistryConfig.model_validate(
+        {
+            "version": 1,
+            "printers": [
+                {
+                    "id": "office_laser",
+                    "name": "Office Laser",
+                    "type": "http_json",
+                    "url": "http://192.168.2.55/supplies",
+                    "enabled": True,
+                }
+            ],
+        }
+    )
+    exporter = validate_printer_status.PrinterExporterConfig.model_validate({"version": 1, "printers": []})
+
+    findings, checks = validate_printer_status.validate_printer_status_configs(
+        approved_registry=approved,
+        exporter_config=exporter,
+    )
+
+    assert checks == []
+    assert findings[0].severity == "error"
+    assert "internal host printer-status-exporter" in findings[0].message

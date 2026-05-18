@@ -22,3 +22,28 @@ The exporter does not scan the LAN, use SNMP, submit print jobs, administer
 printers, read host files, run shell commands, or store credentials. Upstream
 URLs must be configured by the operator in YAML and must not contain username or
 password material.
+
+Configuration lives in:
+
+```text
+configs/printer-status-exporter/printers.yaml
+```
+
+The automation control plane allowlist lives separately in:
+
+```text
+configs/printers/printers.yaml
+```
+
+Keep the control-plane URL pointed at this exporter, for example:
+
+```text
+http://printer-status-exporter:8091/printers/office_laser/supplies
+```
+
+Validate the mapping after edits:
+
+```bash
+python scripts/validate_printer_status.py
+python scripts/validate_configs.py
+```

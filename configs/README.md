@@ -72,6 +72,13 @@ perform a bounded HTTP GET against one operator-configured upstream URL per
 printer. Do not place credentials, raw webhook URLs, or printer admin endpoints
 in this file.
 
+After changing either printer file, run:
+
+```bash
+python scripts/validate_printer_status.py
+python scripts/validate_configs.py
+```
+
 Backup verification tasks use an explicit `backup:` block and may read only the
 worker's read-only `/app/backups` mount. They validate backup age, manifest
 flags, required files, MySQL dump headers, and bounded secret-scan markers, then
