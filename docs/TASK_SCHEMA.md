@@ -189,6 +189,10 @@ printer administration, or print-job actions.
 Cross-check the internal exporter and approved printer registry with:
 
 ```bash
+python scripts/configure_printer_status.py --dry-run \
+  --printer-id office_laser \
+  --name "Office Laser" \
+  --upstream-url http://printer-adapter.local/supplies
 python scripts/validate_printer_status.py
 ```
 

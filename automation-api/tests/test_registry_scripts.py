@@ -10,6 +10,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import configure_printer_status  # noqa: E402
 import export_live_configs  # noqa: E402
 import import_task_drafts  # noqa: E402
 import validate_printer_status  # noqa: E402
@@ -219,3 +220,101 @@ def test_validate_printer_status_rejects_external_approved_url():
     assert checks == []
     assert findings[0].severity == "error"
     assert "internal host printer-status-exporter" in findings[0].message
+
+
+def test_configure_printer_status_writes_exporter_and_approved_registry(tmp_path):
+    exporter_file = tmp_path / "configs" / "printer-status-exporter" / "printers.yaml"
+    approved_file = tmp_path / "configs" / "printers" / "printers.yaml"
+
+    result = configure_printer_status.configure_printer_status(
+        printer_id="office_laser",
+        name="Office Laser",
+        upstream_url="http://printer-adapter.local/supplies",
+        threshold=15,
+        exporter_file=exporter_file,
+        approved_file=approved_file,
+    )
+
+    exporter = yaml.safe_load(exporter_file.read_text(encoding="utf-8"))
+    approved = yaml.safe_load(approved_file.read_text(encoding="utf-8"))
+
+    assert result["exporter_action"] == "created"
+    assert result["approved_action"] == "created"
+    assert exporter["printers"][0]["id"] == "office_laser"
+    assert exporter["printers"][0]["type"] == "http_json"
+    assert exporter["printers"][0]["url"] == "http://printer-adapter.local/supplies"
+    assert approved["printers"][0]["url"] == "http://printer-status-exporter:8091/printers/office_laser/supplies"
+    assert approved["printers"][0]["default_low_threshold_percent"] == 15
+
+
+def test_configure_printer_status_dry_run_does_not_write(tmp_path):
+    exporter_file = tmp_path / "configs" / "printer-status-exporter" / "printers.yaml"
+    approved_file = tmp_path / "configs" / "printers" / "printers.yaml"
+
+    result = configure_printer_status.configure_printer_status(
+        printer_id="dry_run_printer",
+        name="Dry Run Printer",
+        static_supplies=["Black toner=70"],
+        exporter_file=exporter_file,
+        approved_file=approved_file,
+        dry_run=True,
+    )
+
+    assert result["dry_run"] is True
+    assert result["exporter_entry"]["type"] == "static_json"
+    assert not exporter_file.exists()
+    assert not approved_file.exists()
+
+
+def test_configure_printer_status_duplicate_requires_force(tmp_path):
+    exporter_file = tmp_path / "configs" / "printer-status-exporter" / "printers.yaml"
+    approved_file = tmp_path / "configs" / "printers" / "printers.yaml"
+
+    configure_printer_status.configure_printer_status(
+        printer_id="office_laser",
+        name="Office Laser",
+        static_supplies=["Black toner=80"],
+        exporter_file=exporter_file,
+        approved_file=approved_file,
+    )
+
+    with pytest.raises(ValueError, match="--force"):
+        configure_printer_status.configure_printer_status(
+            printer_id="office_laser",
+            name="Office Laser Updated",
+            static_supplies=["Black toner=70"],
+            exporter_file=exporter_file,
+            approved_file=approved_file,
+        )
+
+    result = configure_printer_status.configure_printer_status(
+        printer_id="office_laser",
+        name="Office Laser Updated",
+        static_supplies=["Black toner=70"],
+        exporter_file=exporter_file,
+        approved_file=approved_file,
+        force=True,
+    )
+
+    assert result["exporter_action"] == "updated"
+    assert result["approved_action"] == "updated"
+
+
+def test_configure_printer_status_rejects_credential_url(tmp_path):
+    with pytest.raises(ValueError, match="credentials|credential-like"):
+        configure_printer_status.configure_printer_status(
+            printer_id="office_laser",
+            name="Office Laser",
+            upstream_url="http://user:pass@printer-adapter.local/supplies",
+            exporter_file=tmp_path / "exporter.yaml",
+            approved_file=tmp_path / "approved.yaml",
+        )
+
+    with pytest.raises(ValueError, match="credential-like"):
+        configure_printer_status.configure_printer_status(
+            printer_id="office_laser",
+            name="Office Laser",
+            upstream_url="http://printer-adapter.local/supplies?api_token=abc",
+            exporter_file=tmp_path / "exporter.yaml",
+            approved_file=tmp_path / "approved.yaml",
+        )

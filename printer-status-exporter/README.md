@@ -35,6 +35,27 @@ The automation control plane allowlist lives separately in:
 configs/printers/printers.yaml
 ```
 
+Use the helper script from the repository root to update both registries
+together:
+
+```bash
+python scripts/configure_printer_status.py \
+  --printer-id office_laser \
+  --name "Office Laser" \
+  --upstream-url http://printer-adapter.local/supplies \
+  --threshold 20
+```
+
+For static dry-run data:
+
+```bash
+python scripts/configure_printer_status.py \
+  --printer-id office_laser_dry_run \
+  --name "Office Laser Dry Run" \
+  --static-supply "Black toner=75" \
+  --static-supply "Cyan toner=64"
+```
+
 Keep the control-plane URL pointed at this exporter, for example:
 
 ```text

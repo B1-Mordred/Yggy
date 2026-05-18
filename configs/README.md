@@ -75,9 +75,16 @@ in this file.
 After changing either printer file, run:
 
 ```bash
+python scripts/configure_printer_status.py --dry-run \
+  --printer-id office_laser \
+  --name "Office Laser" \
+  --upstream-url http://printer-adapter.local/supplies
 python scripts/validate_printer_status.py
 python scripts/validate_configs.py
 ```
+
+The helper updates both printer registries together. Use `--force` for an
+intentional update to an existing printer ID.
 
 Backup verification tasks use an explicit `backup:` block and may read only the
 worker's read-only `/app/backups` mount. They validate backup age, manifest

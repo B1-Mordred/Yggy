@@ -164,19 +164,49 @@ the internal exporter endpoint, not at arbitrary chat-provided URLs.
 
 Recommended real-printer workflow:
 
-1. Add or replace a source in `configs/printer-status-exporter/printers.yaml`.
-   Use `type: http_json` only when you already have a read-only printer adapter
-   URL that returns supply levels.
-2. Add the matching approved printer in `configs/printers/printers.yaml`.
-   Point its URL at
-   `http://printer-status-exporter:8091/printers/<printer-id>/supplies`.
-3. Validate the registry mapping:
+1. Configure both printer registries with the helper script.
+
+For a real read-only adapter:
+
+```bash
+python scripts/configure_printer_status.py \
+  --printer-id office_laser \
+  --name "Office Laser" \
+  --upstream-url http://printer-adapter.local/supplies \
+  --threshold 20
+```
+
+For a static dry-run entry:
+
+```bash
+python scripts/configure_printer_status.py \
+  --printer-id office_laser_dry_run \
+  --name "Office Laser Dry Run" \
+  --static-supply "Black toner=75" \
+  --static-supply "Cyan toner=64"
+```
+
+Use `--dry-run` to preview without writing files and `--force` to update an
+existing printer ID. The helper writes:
+
+```text
+configs/printer-status-exporter/printers.yaml
+configs/printers/printers.yaml
+```
+
+The approved registry URL always points at:
+
+```text
+http://printer-status-exporter:8091/printers/<printer-id>/supplies
+```
+
+2. Validate the registry mapping:
 
 ```bash
 python scripts/validate_printer_status.py
 ```
 
-4. If the exporter is running and you are inside a container/network that can
+3. If the exporter is running and you are inside a container/network that can
    resolve `printer-status-exporter`, perform the bounded live check:
 
 ```bash
