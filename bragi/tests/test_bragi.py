@@ -1521,6 +1521,37 @@ def context_api_fixture(method, path, payload=None):
                 }
             ]
         }
+    if path.startswith("/capability-proposals"):
+        return [
+            {
+                "id": "proposal-printer-1",
+                "status": "implementation_planned",
+                "title": "Printer Supply Monitoring",
+                "purpose": "Monitor approved printer supply status.",
+                "requested_by": "local_user",
+                "source_channel": "openwebui",
+                "suggested_capability_id": "printer_supply_status.v1",
+                "suggested_task_type": "printer_supply_status",
+                "likely_approval_level": "L1_NOTIFY_ONLY",
+                "created_at": "2026-05-18T18:00:00Z",
+                "decided_at": "2026-05-18T18:05:00Z",
+                "implementation_plan": {
+                    "id": "plan-printer-1",
+                    "status": "implementation_planned",
+                    "summary": "Plan printer supply capability.",
+                    "files_to_change": ["configs/capabilities.yaml"],
+                    "required_decisions": ["approved printer ID"],
+                    "security_boundaries": ["must not scan the LAN"],
+                    "acceptance_tests": ["dry-run does not send Discord"],
+                    "review_notes": "secret_token must-not-leak",
+                },
+                "execution": {
+                    "creates_task": False,
+                    "creates_approval": False,
+                    "can_be_applied": False,
+                },
+            }
+        ]
     if path == "/sources":
         return {
             "data": [
@@ -1590,6 +1621,27 @@ def test_context_query_capabilities_sources_and_checks(monkeypatch):
     serialized = json.dumps(context).lower()
     assert "https://github.com" not in serialized
     assert "http://automation-api" not in serialized
+
+
+def test_context_query_capability_proposals_reports_plan_without_execution(monkeypatch):
+    monkeypatch.setattr(bragi, "api_request", context_api_fixture)
+
+    context = bragi.build_context("what happened with the printer toner capability idea?")
+    answer = bragi.format_context_answer(context)
+
+    assert context["categories"] == ["capability_proposals"]
+    proposal = context["data"]["capability_proposals"][0]
+    assert proposal["suggested_capability_id"] == "printer_supply_status.v1"
+    assert proposal["implementation_plan"]["status"] == "implementation_planned"
+    assert proposal["execution"] == {
+        "creates_task": False,
+        "creates_approval": False,
+        "can_be_applied": False,
+    }
+    assert "Capability proposals are backlog only" in answer
+    serialized = json.dumps(context).lower()
+    assert "must-not-leak" not in serialized
+    assert "secret_token" not in serialized
 
 
 def test_context_query_recent_runs_omits_raw_logs_and_secrets(monkeypatch):

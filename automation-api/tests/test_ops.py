@@ -62,6 +62,8 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "capability-filter-q" in allowed.text
     assert "capability-page-size" in allowed.text
     assert "data-capability-action" in allowed.text
+    assert "Plan implementation" in allowed.text
+    assert "implementation_planned" in allowed.text
     assert "approval-filter-q" in allowed.text
     assert "task-detail" in allowed.text
     assert "data-task-detail-id" in allowed.text
@@ -333,6 +335,97 @@ def test_ops_can_accept_reject_and_close_capability_proposals_with_action_header
             "capability.accepted",
             "capability.rejected",
             "capability.closed",
+        ]
+
+
+def test_ops_can_plan_and_supersede_accepted_capability_proposal(client):
+    proposal = client.post(
+        "/capability-proposals/draft",
+        headers=TOOL_HEADERS,
+        json=capability_proposal_payload(),
+    ).json()
+
+    plan_before_accept = client.post(
+        f"/ops/capability-proposals/{proposal['id']}/plan",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Plan too early."},
+    )
+    accept_response = client.post(
+        f"/ops/capability-proposals/{proposal['id']}/accept",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Useful pilot."},
+    )
+    plan_response = client.post(
+        f"/ops/capability-proposals/{proposal['id']}/plan",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Plan it."},
+    )
+    repeat_plan = client.post(
+        f"/ops/capability-proposals/{proposal['id']}/plan",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Plan again."},
+    )
+    mark_implemented = client.post(
+        f"/ops/capability-proposals/{proposal['id']}/implemented",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Done."},
+    )
+    list_response = client.get(
+        "/capability-proposals?status=implementation_planned",
+        headers=TOOL_HEADERS,
+    )
+    ops_list_response = client.get(
+        "/ops/capability-proposals?status=implementation_planned&page_size=5",
+        headers=ADMIN_HEADERS,
+    )
+    supersede_response = client.post(
+        f"/ops/capability-proposals/{proposal['id']}/supersede",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Better capability will replace this."},
+    )
+
+    assert plan_before_accept.status_code == 409
+    assert "must be accepted" in plan_before_accept.text
+    assert accept_response.status_code == 200
+    assert accept_response.json()["status"] == "accepted"
+    assert plan_response.status_code == 200
+    planned = plan_response.json()
+    assert planned["status"] == "implementation_planned"
+    assert planned["implementation_plan"]["status"] == "implementation_planned"
+    assert planned["implementation_plan"]["execution"] == {
+        "creates_task": False,
+        "creates_approval": False,
+        "can_be_applied": False,
+    }
+    assert "configs/capabilities.yaml" in planned["implementation_plan"]["files_to_change"]
+    assert "automation-worker/worker/handlers/printer_supply_status.py" in planned["implementation_plan"]["files_to_change"]
+    assert repeat_plan.status_code == 409
+    assert mark_implemented.status_code == 409
+    assert "not registered yet" in mark_implemented.text
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["implementation_plan"]["capability_id"] == "printer_supply_status.v1"
+    assert ops_list_response.status_code == 200
+    assert ops_list_response.json()["proposals"][0]["implementation_plan"]["required_decisions"]
+    assert supersede_response.status_code == 200
+    assert supersede_response.json()["status"] == "superseded"
+    assert supersede_response.json()["implementation_plan"]["status"] == "superseded"
+    assert "Better capability" in supersede_response.json()["implementation_plan"]["review_notes"]
+    with Session(get_engine()) as session:
+        audits = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.resource_type == "capability_proposal")
+            .filter(
+                AuditEventModel.action.in_(
+                    ["capability.accepted", "capability.implementation_planned", "capability.superseded"]
+                )
+            )
+            .order_by(AuditEventModel.created_at)
+            .all()
+        )
+        assert [audit.action for audit in audits] == [
+            "capability.accepted",
+            "capability.implementation_planned",
+            "capability.superseded",
         ]
 
 

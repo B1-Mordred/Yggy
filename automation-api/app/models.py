@@ -129,6 +129,31 @@ class CapabilityProposalModel(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CapabilityImplementationPlanModel(Base):
+    __tablename__ = "capability_implementation_plans"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_id",
+            name="uq_capability_implementation_plans_proposal_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(String(64), ForeignKey("capability_proposals.id"), nullable=False, index=True)
+    capability_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="implementation_planned", nullable=False, index=True)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="ops_dashboard")
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    files_to_change: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    required_decisions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    security_boundaries: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    acceptance_tests: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    review_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RunModel(Base):
     __tablename__ = "runs"
 

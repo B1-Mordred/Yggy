@@ -394,6 +394,15 @@ not included in the OpenAPI tool schema. Accepting a capability proposal is only
 backlog state. It does not create a task, approval, run, worker action, or
 Yggdrasil request, and there is intentionally no apply button.
 
+Accepted capability proposals can be moved to `implementation_planned` from the
+same view. The generated implementation plan lists expected registry, template,
+worker, test, and documentation changes plus required operator decisions,
+security boundaries, and acceptance tests. This planning step is also
+non-executable. It does not create or modify a task and does not tell
+Yggdrasil to do anything. A planned capability can be marked `superseded`, or
+marked `implemented` only after the capability is actually present in the
+registered capability catalog.
+
 Prior config versions can be reverted from the task-detail panel. A revert does
 not immediately enable or run the task. It creates a new disabled
 `revert_draft` version from the selected snapshot, sets the task to

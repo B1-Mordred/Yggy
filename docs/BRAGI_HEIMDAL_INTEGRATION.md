@@ -286,6 +286,15 @@ draft and list proposals. Admin role may accept, reject, or close them. There is
 no `apply` endpoint; implementation still requires a human/Codex change to the
 capability registry, templates, worker handler, docs, and tests.
 
+After an operator accepts a capability proposal, the local `/ops` UI can create
+an `implementation_planned` record. That record is a checklist for engineering
+work: likely files to change, required operator decisions, security boundaries,
+and acceptance tests. It remains backlog only. It does not create a task,
+approval, run, task template, worker handler, or Yggdrasil request. Bragi may
+report this proposal and plan status through read-only context so the user can
+ask what happened with an automation idea, but Bragi still cannot implement,
+approve, or execute it.
+
 Unsafe requests still stay rejected instead of becoming proposals. For example,
 requests to restart Docker, reorganize arbitrary server files, change firewall
 rules, rotate credentials, or execute shell commands must not be forwarded to

@@ -63,6 +63,7 @@ INTAKE_TTL_SECONDS = int(os.getenv("BRAGI_INTAKE_TTL_SECONDS", "86400"))
 CONTEXT_CATEGORIES = {
     "tasks",
     "pending_reviews",
+    "capability_proposals",
     "capabilities",
     "sources",
     "health_checks",
@@ -608,6 +609,39 @@ def safe_capability_summary(capability: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def safe_capability_proposal_summary(proposal: dict[str, Any]) -> dict[str, Any]:
+    plan = proposal.get("implementation_plan") if isinstance(proposal.get("implementation_plan"), dict) else None
+    return context_redact(
+        {
+            "id": proposal.get("id"),
+            "status": proposal.get("status"),
+            "title": proposal.get("title"),
+            "purpose": proposal.get("purpose"),
+            "requested_by": proposal.get("requested_by"),
+            "source_channel": proposal.get("source_channel"),
+            "suggested_capability_id": proposal.get("suggested_capability_id"),
+            "suggested_task_type": proposal.get("suggested_task_type"),
+            "likely_approval_level": proposal.get("likely_approval_level"),
+            "created_at": proposal.get("created_at"),
+            "decided_at": proposal.get("decided_at"),
+            "implementation_plan": (
+                {
+                    "id": plan.get("id"),
+                    "status": plan.get("status"),
+                    "summary": plan.get("summary"),
+                    "files_to_change": plan.get("files_to_change", []),
+                    "required_decisions": plan.get("required_decisions", []),
+                    "security_boundaries": plan.get("security_boundaries", []),
+                    "acceptance_tests": plan.get("acceptance_tests", []),
+                }
+                if plan
+                else None
+            ),
+            "execution": proposal.get("execution"),
+        }
+    )
+
+
 def context_categories_for_text(text: str, requested_category: str | None = None) -> list[str]:
     if requested_category:
         category = requested_category.strip().lower()
@@ -622,8 +656,16 @@ def context_categories_for_text(text: str, requested_category: str | None = None
             if item not in categories:
                 categories.append(item)
 
-    if "what can you automate" in lowered or "what can yggy automate" in lowered or "capabilit" in lowered or "supported automation" in lowered:
+    proposal_status_question = (
+        ("proposal" in lowered or "idea" in lowered or "implementation plan" in lowered or "what happened" in lowered)
+        and any(term in lowered for term in ("capability", "printer", "toner", "ups", "unsupported", "automation"))
+    )
+    if "what can you automate" in lowered or "what can yggy automate" in lowered or "supported automation" in lowered:
         add("capabilities", "sources", "health_checks", "n8n_webhooks")
+    if proposal_status_question:
+        add("capability_proposals")
+    elif "capabilit" in lowered:
+        add("capabilities", "capability_proposals", "sources", "health_checks", "n8n_webhooks")
     if "what does yggy know" in lowered or "what do you know about my ai stack" in lowered:
         add("tasks", "capabilities", "sources", "health_checks", "n8n_webhooks", "memory")
     if "source" in lowered or "rss" in lowered or "feed" in lowered:
@@ -649,6 +691,8 @@ def context_categories_for_text(text: str, requested_category: str | None = None
         add("n8n_webhooks")
     if "pending" in lowered or "approval" in lowered or "review" in lowered:
         add("pending_reviews")
+        if "capability" in lowered or "proposal" in lowered or "idea" in lowered:
+            add("capability_proposals")
     if "live task" in lowered or "enabled task" in lowered or "draft task" in lowered or "task status" in lowered:
         add("tasks")
     if "recent run" in lowered or "run history" in lowered or "last run" in lowered:
@@ -690,6 +734,14 @@ def build_context(query: str, *, user_id: str = DEFAULT_USER_ID, category: str |
         capture("pending_reviews", pending_reviews)
     if "capabilities" in categories:
         capture("capabilities", lambda: [safe_capability_summary(item) for item in context_api_get("/capabilities")[:limit]])
+    if "capability_proposals" in categories:
+        capture(
+            "capability_proposals",
+            lambda: [
+                safe_capability_proposal_summary(item)
+                for item in context_api_get(f"/capability-proposals?limit={limit}")[:limit]
+            ],
+        )
     if "sources" in categories:
         capture("sources", lambda: approved_source_summaries(limit=limit))
     if "health_checks" in categories:
@@ -889,6 +941,20 @@ def format_context_answer(context: dict[str, Any]) -> str:
         lines.extend(["", "Supported capabilities:"])
         for capability in capabilities[:10]:
             lines.append(f"- `{capability.get('id')}`: {capability.get('purpose')}")
+    capability_proposals = data.get("capability_proposals")
+    if isinstance(capability_proposals, list):
+        lines.extend(["", f"Capability proposals: {len(capability_proposals)}."])
+        if capability_proposals:
+            for proposal in capability_proposals[:10]:
+                plan = proposal.get("implementation_plan") if isinstance(proposal.get("implementation_plan"), dict) else {}
+                plan_status = plan.get("status") if plan else "no plan"
+                lines.append(
+                    f"- `{proposal.get('suggested_capability_id')}`: `{proposal.get('status')}`; "
+                    f"plan `{plan_status}`; proposal `{proposal.get('id')}`"
+                )
+        else:
+            lines.append("- None.")
+        lines.append("Capability proposals are backlog only. They do not create tasks, approvals, runs, or Yggdrasil requests.")
     sources = data.get("sources")
     if isinstance(sources, list):
         lines.extend(["", "Approved sources:"])

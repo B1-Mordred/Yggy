@@ -50,6 +50,9 @@ from app.services.capability_proposal_service import (
     CapabilityProposalError,
     capability_proposal_to_dict,
     close_capability_proposal,
+    create_implementation_plan,
+    implementation_plan_for_proposal,
+    mark_implementation_plan_status,
 )
 from app.services.validation_service import redact_secrets
 
@@ -284,7 +287,7 @@ def ops_status(
         "approved_task_change_proposals": approved_task_changes,
         "open_task_change_proposals": pending_task_changes + approved_task_changes,
         "pending_capability_proposals": [
-            _capability_proposal_summary(proposal) for proposal in pending_capability_proposals
+            _capability_proposal_summary(session, proposal) for proposal in pending_capability_proposals
         ],
         "retention": {
             "policy": {
@@ -598,7 +601,7 @@ def ops_capability_proposals(
         },
         "counts": {"matched": total, "returned": len(proposals)},
         "pagination": _pagination(page, page_size, total, len(proposals)),
-        "proposals": [_capability_proposal_summary(proposal) for proposal in proposals],
+        "proposals": [_capability_proposal_summary(session, proposal) for proposal in proposals],
     }
 
 
@@ -611,13 +614,13 @@ def ops_capability_proposal_detail(
     proposal = session.get(CapabilityProposalModel, proposal_id)
     if not proposal:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="capability proposal not found")
-    return _capability_proposal_summary(proposal)
+    return _capability_proposal_summary(session, proposal)
 
 
 @router.post("/ops/capability-proposals/{proposal_id}/{decision}", include_in_schema=False)
 def ops_decide_capability_proposal(
     proposal_id: str,
-    decision: Literal["accept", "reject", "close"],
+    decision: Literal["accept", "reject", "close", "plan", "implemented", "supersede"],
     payload: OpsCapabilityProposalDecision | None = None,
     _: None = Depends(require_ops_access),
     __: None = Depends(require_ops_capability_proposal_action_header),
@@ -626,22 +629,45 @@ def ops_decide_capability_proposal(
     proposal = session.get(CapabilityProposalModel, proposal_id)
     if not proposal:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="capability proposal not found")
-    status_by_decision = {"accept": "accepted", "reject": "rejected", "close": "closed"}
     reason = payload.reason if payload else ""
-    if not reason:
-        reason = {
-            "accept": "Accepted for implementation review from ops dashboard.",
-            "reject": "Rejected from ops dashboard.",
-            "close": "Closed from ops dashboard.",
-        }[decision]
+    action_status = {
+        "accept": "accepted",
+        "reject": "rejected",
+        "close": "closed",
+        "plan": "implementation_planned",
+        "implemented": "implemented",
+        "supersede": "superseded",
+    }[decision]
+
     try:
-        close_capability_proposal(proposal, status=status_by_decision[decision], reason=reason)
+        if decision in {"accept", "reject", "close"}:
+            if not reason:
+                reason = {
+                    "accept": "Accepted for implementation review from ops dashboard.",
+                    "reject": "Rejected from ops dashboard.",
+                    "close": "Closed from ops dashboard.",
+                }[decision]
+            close_capability_proposal(proposal, status=action_status, reason=reason)
+        elif decision == "plan":
+            create_implementation_plan(session, proposal, created_by="ops_dashboard", reason=reason)
+        else:
+            if not reason:
+                reason = {
+                    "implemented": "Marked implemented from ops dashboard.",
+                    "supersede": "Superseded from ops dashboard.",
+                }[decision]
+            mark_implementation_plan_status(
+                session,
+                proposal,
+                status=action_status,
+                reason=reason,
+            )
     except CapabilityProposalError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     audit_event(
         session,
         "ops_dashboard",
-        f"capability.{status_by_decision[decision]}",
+        f"capability.{action_status}",
         "capability_proposal",
         proposal.id,
         {
@@ -652,7 +678,7 @@ def ops_decide_capability_proposal(
         },
     )
     session.commit()
-    return _capability_proposal_summary(proposal)
+    return _capability_proposal_summary(session, proposal)
 
 
 @router.get("/ops/task-change-proposals", include_in_schema=False)
@@ -1154,8 +1180,11 @@ def _task_change_proposal_summary(proposal: TaskChangeProposalModel, *, include_
     return payload
 
 
-def _capability_proposal_summary(proposal: CapabilityProposalModel) -> dict:
-    payload = capability_proposal_to_dict(proposal)
+def _capability_proposal_summary(session: Session, proposal: CapabilityProposalModel) -> dict:
+    payload = capability_proposal_to_dict(
+        proposal,
+        implementation_plan=implementation_plan_for_proposal(session, proposal.id),
+    )
     return _bounded_value(
         redact_secrets(payload),
         max_depth=MAX_AUDIT_DETAIL_DEPTH,
@@ -2102,6 +2131,9 @@ DASHBOARD_HTML = f"""<!doctype html>
           <select id="capability-filter-status" aria-label="Capability proposal status">
             <option value="pending">Pending</option>
             <option value="accepted">Accepted</option>
+            <option value="implementation_planned">Implementation planned</option>
+            <option value="implemented">Implemented</option>
+            <option value="superseded">Superseded</option>
             <option value="rejected">Rejected</option>
             <option value="closed">Closed</option>
             <option value="">All statuses</option>
@@ -3098,9 +3130,22 @@ DASHBOARD_HTML = f"""<!doctype html>
         ? `<ul class="diff-list">${{items.map(item => `<li>${{esc(item)}}</li>`).join('')}}</ul>`
         : `<div class="empty">${{esc(emptyText)}}</div>`;
     }}
+    function implementationPlanBlock(plan) {{
+      if (!plan) return '<div class="empty">No implementation plan recorded yet.</div>';
+      return `<details open>
+        <summary>Implementation plan <span class="pill">${{esc(plan.status)}}</span></summary>
+        <div class="meta">${{esc(plan.summary)}}</div>
+        <div><strong>Files to change</strong>${{itemList(plan.files_to_change)}}</div>
+        <div><strong>Required decisions</strong>${{itemList(plan.required_decisions)}}</div>
+        <div><strong>Security boundaries</strong>${{itemList(plan.security_boundaries)}}</div>
+        <div><strong>Acceptance tests</strong>${{itemList(plan.acceptance_tests)}}</div>
+      </details>`;
+    }}
     function capabilityProposalCards(proposals, emptyText) {{
       return proposals.length ? proposals.map(item => {{
         const pending = item.status === 'pending';
+        const accepted = item.status === 'accepted';
+        const planned = item.status === 'implementation_planned';
         return `<div class="approval">
           <div class="approval-head">
             <div>
@@ -3119,14 +3164,19 @@ DASHBOARD_HTML = f"""<!doctype html>
           </div>
           <div><strong>Required inputs</strong>${{itemList(item.required_inputs)}}</div>
           <div><strong>Safety rules</strong>${{itemList(item.safety_rules)}}</div>
+          ${{item.implementation_plan ? `<div>${{implementationPlanBlock(item.implementation_plan)}}</div>` : ''}}
           <div><strong>Execution boundary</strong><br>
             <span class="meta">creates task: ${{esc(item.execution?.creates_task)}}; creates approval: ${{esc(item.execution?.creates_approval)}}; can be applied: ${{esc(item.execution?.can_be_applied)}}</span>
           </div>
           <div class="approval-actions">
-            ${{pending ? '<input type="text" autocomplete="off" placeholder="Review note (optional)" aria-label="Capability proposal review note">' : ''}}
+            ${{pending || accepted || planned ? '<input type="text" autocomplete="off" placeholder="Review note (optional)" aria-label="Capability proposal review note">' : ''}}
             ${{pending ? `<button type="button" data-capability-action="accept" data-capability-id="${{esc(item.id)}}">Accept</button>` : ''}}
             ${{pending ? `<button type="button" class="danger" data-capability-action="reject" data-capability-id="${{esc(item.id)}}">Reject</button>` : ''}}
             ${{pending ? `<button type="button" data-capability-action="close" data-capability-id="${{esc(item.id)}}">Close</button>` : ''}}
+            ${{accepted ? `<button type="button" data-capability-action="plan" data-capability-id="${{esc(item.id)}}">Plan implementation</button>` : ''}}
+            ${{accepted ? `<button type="button" data-capability-action="close" data-capability-id="${{esc(item.id)}}">Close</button>` : ''}}
+            ${{planned ? `<button type="button" data-capability-action="implemented" data-capability-id="${{esc(item.id)}}" title="Requires the capability to be registered first">Mark implemented</button>` : ''}}
+            ${{planned ? `<button type="button" class="danger" data-capability-action="supersede" data-capability-id="${{esc(item.id)}}">Supersede</button>` : ''}}
             <button type="button" data-capability-detail-id="${{esc(item.id)}}">Details</button>
             <span class="meta approval-message"></span>
           </div>
@@ -3398,7 +3448,11 @@ DASHBOARD_HTML = f"""<!doctype html>
               <h3>Review Notes</h3>
               <pre>${{esc(detail.review_notes || '')}}</pre>
             </div>
-            <div class="detail-block">
+            <div class="detail-block wide">
+              <h3>Implementation Plan</h3>
+              ${{implementationPlanBlock(detail.implementation_plan)}}
+            </div>
+            <div class="detail-block wide">
               <h3>Raw Proposal</h3>
               ${{jsonBlock(detail)}}
             </div>
