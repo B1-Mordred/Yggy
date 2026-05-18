@@ -318,9 +318,10 @@ The API serves a local operations and approval dashboard at:
 http://127.0.0.1:8088/ops
 ```
 
-It is split into views for overview, tasks, runs, proposals, approvals, audit,
-and retention so routine checks do not require scanning every table. It shows
-task state, latest runs, pending reviews, worker heartbeat, and retention status.
+It is split into views for overview, tasks, runs, task-change proposals,
+capability proposals, approvals, audit, and retention so routine checks do not
+require scanning every table. It shows task state, latest runs, pending reviews,
+worker heartbeat, and retention status.
 The task view includes browser-side filters for quick narrowing by text, state,
 and type. Runs, proposals, approvals, and audit use hidden server-side endpoints
 for filtering and pagination so larger queues can be narrowed without exposing
@@ -331,9 +332,10 @@ values locally. Click sortable table headers to reorder task, run, and audit
 views. Task sorting happens in the browser; run and audit sorting is handled by
 hidden server-side endpoints with allowlisted sort fields only. The header
 includes a compact saved-view selector for common checks: failed runs, pending
-approvals, pending proposals, recent Discord sends, task changes, and worker
-activity. Selecting a saved view applies the relevant filters, sort order, and
-dashboard tab without adding any model-facing capability.
+approvals, pending task-change proposals, pending capability proposals, recent
+Discord sends, task changes, and worker activity. Selecting a saved view applies
+the relevant filters, sort order, and dashboard tab without adding any
+model-facing capability.
 Pending approvals include actions, worst-case failure mode, and the redacted task
 config. The dashboard can approve or reject pending approvals when the operator
 enters the approval nonce. It does not expose secrets, does not expose nonce
@@ -380,6 +382,17 @@ or approved proposals can be rejected. These actions are local-only hidden
 `X-Yggy-Ops-Action: task-change-proposal` same-origin action header, and are not
 included in the OpenAPI tool schema. The `Approvals` view remains reserved for
 pending approvals that are not config proposals.
+
+The `Capabilities` view contains useful-but-unsupported capability proposals
+created through `POST /capability-proposals/draft`, usually by Bragi after it
+decides a request is reasonable but not executable by any registered capability.
+It can filter by text, requester, source channel, likely approval level, and
+status. Pending proposals can be accepted for implementation review, rejected,
+or closed. These actions are hidden `/ops/capability-proposals` endpoints,
+require dashboard access plus `X-Yggy-Ops-Action: capability-proposal`, and are
+not included in the OpenAPI tool schema. Accepting a capability proposal is only
+backlog state. It does not create a task, approval, run, worker action, or
+Yggdrasil request, and there is intentionally no apply button.
 
 Prior config versions can be reverted from the task-detail panel. A revert does
 not immediately enable or run the task. It creates a new disabled

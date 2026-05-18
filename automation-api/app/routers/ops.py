@@ -16,7 +16,16 @@ from app.audit import audit_event
 from app.auth import ApiRole, classify_api_key
 from app.config import get_settings
 from app.database import get_session
-from app.models import ApprovalModel, AuditEventModel, HeartbeatModel, RunModel, TaskChangeProposalModel, TaskModel, utcnow
+from app.models import (
+    ApprovalModel,
+    AuditEventModel,
+    CapabilityProposalModel,
+    HeartbeatModel,
+    RunModel,
+    TaskChangeProposalModel,
+    TaskModel,
+    utcnow,
+)
 from app.policy import PolicyViolation, load_policy, validate_task_policy
 from app.routers.health import WORKER_HEARTBEAT_MAX_AGE_SECONDS, heartbeat_to_dict
 from app.routers.tasks import queue_task_run
@@ -37,6 +46,11 @@ from app.services.task_change_service import (
     proposal_to_dict,
     reject_task_change_proposal,
 )
+from app.services.capability_proposal_service import (
+    CapabilityProposalError,
+    capability_proposal_to_dict,
+    close_capability_proposal,
+)
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(tags=["ops"])
@@ -46,6 +60,7 @@ OPS_RUN_ACTION_HEADER = "manual-run"
 OPS_TASK_STATE_ACTION_HEADER = "task-state"
 OPS_VERSION_REVERT_ACTION_HEADER = "version-revert"
 OPS_TASK_CHANGE_ACTION_HEADER = "task-change-proposal"
+OPS_CAPABILITY_PROPOSAL_ACTION_HEADER = "capability-proposal"
 MAX_RUN_DETAIL_ITEMS = 10
 MAX_RUN_DETAIL_ERRORS = 10
 MAX_RUN_DETAIL_TEXT = 6000
@@ -88,6 +103,10 @@ class OpsTaskRunRequest(BaseModel):
 
 class OpsTaskVersionRevertRequest(BaseModel):
     reason: str = Field(default="", max_length=500)
+
+
+class OpsCapabilityProposalDecision(BaseModel):
+    reason: str = Field(default="", max_length=1000)
 
 
 def require_ops_access(
@@ -154,6 +173,13 @@ def require_ops_task_change_action_header(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops task change action header")
 
 
+def require_ops_capability_proposal_action_header(
+    x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
+) -> None:
+    if x_yggy_ops_action != OPS_CAPABILITY_PROPOSAL_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops capability proposal action header")
+
+
 @router.get("/ops", response_class=HTMLResponse, include_in_schema=False)
 def ops_dashboard(_: None = Depends(require_ops_access)) -> HTMLResponse:
     return HTMLResponse(DASHBOARD_HTML)
@@ -189,6 +215,13 @@ def ops_status(
         session.query(TaskChangeProposalModel)
         .filter(TaskChangeProposalModel.status.in_(["pending", "approved"]))
         .order_by(TaskChangeProposalModel.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    pending_capability_proposals = (
+        session.query(CapabilityProposalModel)
+        .filter(CapabilityProposalModel.status == "pending")
+        .order_by(CapabilityProposalModel.created_at.desc())
         .limit(20)
         .all()
     )
@@ -238,7 +271,8 @@ def ops_status(
             "pending_task_change_proposals": len(pending_task_changes),
             "approved_task_change_proposals": len(approved_task_changes),
             "open_task_change_proposals": len(pending_task_changes) + len(approved_task_changes),
-            "pending_reviews": len(pending_approvals) + len(pending_task_changes),
+            "pending_capability_proposals": len(pending_capability_proposals),
+            "pending_reviews": len(pending_approvals) + len(pending_task_changes) + len(pending_capability_proposals),
             "active_runs": len(active_runs),
         },
         "tasks": [_task_summary(task, latest_by_task.get(task.id)) for task in tasks],
@@ -249,6 +283,9 @@ def ops_status(
         "pending_task_change_proposals": pending_task_changes,
         "approved_task_change_proposals": approved_task_changes,
         "open_task_change_proposals": pending_task_changes + approved_task_changes,
+        "pending_capability_proposals": [
+            _capability_proposal_summary(proposal) for proposal in pending_capability_proposals
+        ],
         "retention": {
             "policy": {
                 "run_retention_days": get_settings().run_retention_days,
@@ -505,6 +542,117 @@ def ops_reviews(
         "pagination": _pagination(page, page_size, len(matched), len(selected)),
         "reviews": [_approval_summary(approval, session.get(TaskModel, approval.task_id), session=session) for approval in selected],
     }
+
+
+@router.get("/ops/capability-proposals", include_in_schema=False)
+def ops_capability_proposals(
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=DEFAULT_OPS_PAGE_SIZE, ge=MIN_OPS_PAGE_SIZE, le=MAX_OPS_PAGE_SIZE),
+    q: str | None = Query(default=None, min_length=1, max_length=128),
+    status_filter: str | None = Query(default=None, alias="status", min_length=1, max_length=32),
+    requested_by: str | None = Query(default=None, min_length=1, max_length=128),
+    source_channel: str | None = Query(default=None, min_length=1, max_length=64),
+    approval_level: str | None = Query(default=None, min_length=1, max_length=64),
+) -> dict:
+    query = session.query(CapabilityProposalModel)
+    if status_filter:
+        query = query.filter(CapabilityProposalModel.status == status_filter)
+    if requested_by:
+        query = query.filter(CapabilityProposalModel.requested_by.ilike(f"%{requested_by}%"))
+    if source_channel:
+        query = query.filter(CapabilityProposalModel.source_channel.ilike(f"%{source_channel}%"))
+    if approval_level:
+        query = query.filter(CapabilityProposalModel.likely_approval_level == approval_level)
+    if q:
+        query = query.filter(
+            or_(
+                CapabilityProposalModel.id.ilike(f"%{q}%"),
+                CapabilityProposalModel.title.ilike(f"%{q}%"),
+                CapabilityProposalModel.purpose.ilike(f"%{q}%"),
+                CapabilityProposalModel.suggested_capability_id.ilike(f"%{q}%"),
+                CapabilityProposalModel.suggested_task_type.ilike(f"%{q}%"),
+                CapabilityProposalModel.original_request_preview.ilike(f"%{q}%"),
+            )
+        )
+
+    total = query.count()
+    proposals = (
+        query.order_by(CapabilityProposalModel.created_at.desc(), CapabilityProposalModel.id.asc())
+        .offset(_pagination_offset(page, page_size))
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "generated_at": utcnow(),
+        "page": page,
+        "page_size": page_size,
+        "limit": page_size,
+        "filters": {
+            "q": q,
+            "status": status_filter,
+            "requested_by": requested_by,
+            "source_channel": source_channel,
+            "approval_level": approval_level,
+        },
+        "counts": {"matched": total, "returned": len(proposals)},
+        "pagination": _pagination(page, page_size, total, len(proposals)),
+        "proposals": [_capability_proposal_summary(proposal) for proposal in proposals],
+    }
+
+
+@router.get("/ops/capability-proposals/{proposal_id}", include_in_schema=False)
+def ops_capability_proposal_detail(
+    proposal_id: str,
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(CapabilityProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="capability proposal not found")
+    return _capability_proposal_summary(proposal)
+
+
+@router.post("/ops/capability-proposals/{proposal_id}/{decision}", include_in_schema=False)
+def ops_decide_capability_proposal(
+    proposal_id: str,
+    decision: Literal["accept", "reject", "close"],
+    payload: OpsCapabilityProposalDecision | None = None,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_capability_proposal_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(CapabilityProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="capability proposal not found")
+    status_by_decision = {"accept": "accepted", "reject": "rejected", "close": "closed"}
+    reason = payload.reason if payload else ""
+    if not reason:
+        reason = {
+            "accept": "Accepted for implementation review from ops dashboard.",
+            "reject": "Rejected from ops dashboard.",
+            "close": "Closed from ops dashboard.",
+        }[decision]
+    try:
+        close_capability_proposal(proposal, status=status_by_decision[decision], reason=reason)
+    except CapabilityProposalError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    audit_event(
+        session,
+        "ops_dashboard",
+        f"capability.{status_by_decision[decision]}",
+        "capability_proposal",
+        proposal.id,
+        {
+            "suggested_capability_id": proposal.suggested_capability_id,
+            "suggested_task_type": proposal.suggested_task_type,
+            "surface": "ops_ui",
+            "reason": reason,
+        },
+    )
+    session.commit()
+    return _capability_proposal_summary(proposal)
 
 
 @router.get("/ops/task-change-proposals", include_in_schema=False)
@@ -1004,6 +1152,17 @@ def _task_change_proposal_summary(proposal: TaskChangeProposalModel, *, include_
         payload["base_config"] = _bounded_value(redact_secrets(payload.get("base_config") or {}))
         payload["proposed_config"] = _bounded_value(redact_secrets(payload.get("proposed_config") or {}))
     return payload
+
+
+def _capability_proposal_summary(proposal: CapabilityProposalModel) -> dict:
+    payload = capability_proposal_to_dict(proposal)
+    return _bounded_value(
+        redact_secrets(payload),
+        max_depth=MAX_AUDIT_DETAIL_DEPTH,
+        max_keys=MAX_AUDIT_DETAIL_KEYS,
+        text_limit=MAX_AUDIT_DETAIL_TEXT,
+        field_text_limit=MAX_AUDIT_DETAIL_TEXT,
+    )
 
 
 def _task_action_eligibility(session: Session, task: TaskModel) -> dict:
@@ -1744,6 +1903,7 @@ DASHBOARD_HTML = f"""<!doctype html>
           <option value="failed_runs">Failed runs</option>
           <option value="pending_approvals">Pending approvals</option>
           <option value="pending_proposals">Pending proposals</option>
+          <option value="pending_capabilities">Pending capability proposals</option>
           <option value="recent_discord_sends">Recent Discord sends</option>
           <option value="task_changes">Task changes</option>
           <option value="worker_activity">Worker activity</option>
@@ -1757,6 +1917,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     <button class="tab-button" type="button" data-view-target="tasks">Tasks <span class="tab-count" data-count="tasks"></span></button>
     <button class="tab-button" type="button" data-view-target="runs">Runs <span class="tab-count" data-count="runs"></span></button>
     <button class="tab-button" type="button" data-view-target="proposals">Proposals <span class="tab-count" data-count="proposals"></span></button>
+    <button class="tab-button" type="button" data-view-target="capabilities">Capabilities <span class="tab-count" data-count="capabilities"></span></button>
     <button class="tab-button" type="button" data-view-target="approvals">Approvals <span class="tab-count" data-count="approvals"></span></button>
     <button class="tab-button" type="button" data-view-target="audit">Audit</button>
     <button class="tab-button" type="button" data-view-target="retention">Retention</button>
@@ -1917,6 +2078,43 @@ DASHBOARD_HTML = f"""<!doctype html>
         <div class="pager" id="proposal-pagination"></div>
       </section>
     </section>
+    <section class="view" data-view="capabilities">
+      <section class="section panel">
+        <div class="section-head">
+          <div>
+            <h2>Capability Proposals</h2>
+            <div class="meta" id="capability-filter-summary">Not loaded yet.</div>
+          </div>
+          <button id="capability-refresh" type="button">Refresh Capabilities</button>
+        </div>
+        <div class="filter-bar" aria-label="Capability proposal filters">
+          <input id="capability-filter-q" type="search" placeholder="Search capability proposals" aria-label="Search capability proposals">
+          <input id="capability-filter-requested-by" type="search" placeholder="Requested by" aria-label="Capability proposal requested by">
+          <input id="capability-filter-channel" type="search" placeholder="Channel" aria-label="Capability proposal source channel">
+          <select id="capability-filter-level" aria-label="Capability proposal approval level">
+            <option value="">All levels</option>
+            <option value="L0_READ_ONLY">L0_READ_ONLY</option>
+            <option value="L1_NOTIFY_ONLY">L1_NOTIFY_ONLY</option>
+            <option value="L2_LOCAL_WRITE">L2_LOCAL_WRITE</option>
+            <option value="L3_EXTERNAL_SIDE_EFFECT">L3_EXTERNAL_SIDE_EFFECT</option>
+            <option value="L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE">L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE</option>
+          </select>
+          <select id="capability-filter-status" aria-label="Capability proposal status">
+            <option value="pending">Pending</option>
+            <option value="accepted">Accepted</option>
+            <option value="rejected">Rejected</option>
+            <option value="closed">Closed</option>
+            <option value="">All statuses</option>
+          </select>
+          <label class="page-size" for="capability-page-size">Per page
+            <input id="capability-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Capability proposals per page">
+          </label>
+          <button id="capability-filter-clear" type="button">Clear</button>
+        </div>
+        <div id="capabilities"></div>
+        <div class="pager" id="capability-pagination"></div>
+      </section>
+    </section>
     <section class="view" data-view="audit">
       <section class="section panel">
         <div class="section-head">
@@ -1959,6 +2157,10 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="task_change.approve">task_change.approve</option>
             <option value="task_change.reject">task_change.reject</option>
             <option value="task_change.apply">task_change.apply</option>
+            <option value="capability.propose">capability.propose</option>
+            <option value="capability.accepted">capability.accepted</option>
+            <option value="capability.rejected">capability.rejected</option>
+            <option value="capability.closed">capability.closed</option>
             <option value="run.claim">run.claim</option>
             <option value="run.update">run.update</option>
             <option value="maintenance.retention.preview">maintenance.retention.preview</option>
@@ -1969,6 +2171,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="">All resources</option>
             <option value="task">task</option>
             <option value="task_change_proposal">task_change_proposal</option>
+            <option value="capability_proposal">capability_proposal</option>
             <option value="run">run</option>
             <option value="approval">approval</option>
             <option value="service">service</option>
@@ -2033,6 +2236,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       tasks: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.tasks'), DEFAULT_PAGE_SIZE)}},
       runs: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.runs'), DEFAULT_PAGE_SIZE)}},
       proposals: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.proposals'), DEFAULT_PAGE_SIZE)}},
+      capabilities: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.capabilities'), DEFAULT_PAGE_SIZE)}},
       approvals: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.approvals'), DEFAULT_PAGE_SIZE)}},
       audit: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.audit'), DEFAULT_PAGE_SIZE)}},
     }};
@@ -2058,6 +2262,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       tasks: ['task-filter-text', 'task-filter-state', 'task-filter-type'],
       runs: ['run-filter-text', 'run-filter-task-id', 'run-filter-status', 'run-filter-notification-sent'],
       proposals: ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-status', 'proposal-filter-risk'],
+      capabilities: ['capability-filter-q', 'capability-filter-requested-by', 'capability-filter-channel', 'capability-filter-level', 'capability-filter-status'],
       approvals: ['approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level'],
       audit: ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'],
     }};
@@ -2074,6 +2279,10 @@ DASHBOARD_HTML = f"""<!doctype html>
       pending_proposals: {{
         view: 'proposals',
         fields: {{}},
+      }},
+      pending_capabilities: {{
+        view: 'capabilities',
+        fields: {{'capability-filter-status': 'pending'}},
       }},
       recent_discord_sends: {{
         view: 'runs',
@@ -2147,7 +2356,8 @@ DASHBOARD_HTML = f"""<!doctype html>
       }});
     }}
     function pageSize(view) {{
-      const input = byId(`${{view.slice(0, -1)}}-page-size`) || byId(`${{view}}-page-size`);
+      const inputId = view === 'capabilities' ? 'capability-page-size' : `${{view.slice(0, -1)}}-page-size`;
+      const input = byId(inputId) || byId(`${{view}}-page-size`);
       const size = boundedNumber(input?.value, pageState[view].pageSize);
       pageState[view].pageSize = size;
       if (input) input.value = size;
@@ -2190,6 +2400,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         'task-filter-text', 'task-filter-state', 'task-filter-type',
         'run-filter-text', 'run-filter-task-id', 'run-filter-status', 'run-filter-notification-sent',
         'proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-status', 'proposal-filter-risk',
+        'capability-filter-q', 'capability-filter-requested-by', 'capability-filter-channel', 'capability-filter-level', 'capability-filter-status',
         'approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level',
         'audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type',
       ].forEach(id => {{
@@ -2197,7 +2408,8 @@ DASHBOARD_HTML = f"""<!doctype html>
         if (value !== null && byId(id)) byId(id).value = value;
       }});
       Object.entries(pageState).forEach(([view, state]) => {{
-        const input = byId(`${{view.slice(0, -1)}}-page-size`) || byId(`${{view}}-page-size`);
+        const inputId = view === 'capabilities' ? 'capability-page-size' : `${{view.slice(0, -1)}}-page-size`;
+        const input = byId(inputId) || byId(`${{view}}-page-size`);
         if (input) input.value = state.pageSize;
       }});
     }}
@@ -2217,6 +2429,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       if (view === 'runs') loadRuns();
       if (view === 'audit') loadAudit();
       if (view === 'proposals') loadTaskChangeProposals();
+      if (view === 'capabilities') loadCapabilityProposals();
       if (view === 'approvals') loadReviewQueue('approvals');
     }}
     function wireViewTabs() {{
@@ -2880,6 +3093,61 @@ DASHBOARD_HTML = f"""<!doctype html>
         + taskChangeProposalCards(proposals, 'No task change proposals match the current filters.');
       wireTaskChangeProposalButtons(container);
     }}
+    function itemList(items, emptyText = 'none') {{
+      return Array.isArray(items) && items.length
+        ? `<ul class="diff-list">${{items.map(item => `<li>${{esc(item)}}</li>`).join('')}}</ul>`
+        : `<div class="empty">${{esc(emptyText)}}</div>`;
+    }}
+    function capabilityProposalCards(proposals, emptyText) {{
+      return proposals.length ? proposals.map(item => {{
+        const pending = item.status === 'pending';
+        return `<div class="approval">
+          <div class="approval-head">
+            <div>
+              <code>${{esc(item.id)}}</code>
+              <span class="pill">${{esc(item.status)}}</span>
+              <span class="pill">${{esc(item.likely_approval_level)}}</span>
+              <span class="pill">${{esc(item.source_channel)}}</span>
+            </div>
+            <span class="meta">requested by ${{esc(item.requested_by)}} at ${{esc(item.created_at)}}</span>
+          </div>
+          <div><strong>${{esc(item.title)}}</strong></div>
+          <div>${{esc(item.purpose)}}</div>
+          <div class="meta">
+            suggested capability <code>${{esc(item.suggested_capability_id)}}</code>;
+            task type <code>${{esc(item.suggested_task_type)}}</code>
+          </div>
+          <div><strong>Required inputs</strong>${{itemList(item.required_inputs)}}</div>
+          <div><strong>Safety rules</strong>${{itemList(item.safety_rules)}}</div>
+          <div><strong>Execution boundary</strong><br>
+            <span class="meta">creates task: ${{esc(item.execution?.creates_task)}}; creates approval: ${{esc(item.execution?.creates_approval)}}; can be applied: ${{esc(item.execution?.can_be_applied)}}</span>
+          </div>
+          <div class="approval-actions">
+            ${{pending ? '<input type="text" autocomplete="off" placeholder="Review note (optional)" aria-label="Capability proposal review note">' : ''}}
+            ${{pending ? `<button type="button" data-capability-action="accept" data-capability-id="${{esc(item.id)}}">Accept</button>` : ''}}
+            ${{pending ? `<button type="button" class="danger" data-capability-action="reject" data-capability-id="${{esc(item.id)}}">Reject</button>` : ''}}
+            ${{pending ? `<button type="button" data-capability-action="close" data-capability-id="${{esc(item.id)}}">Close</button>` : ''}}
+            <button type="button" data-capability-detail-id="${{esc(item.id)}}">Details</button>
+            <span class="meta approval-message"></span>
+          </div>
+          <div class="proposal-detail-panel"></div>
+        </div>`;
+      }}).join('<hr>') : `<div class="empty">${{esc(emptyText)}}</div>`;
+    }}
+    function wireCapabilityProposalButtons(container) {{
+      container.querySelectorAll('[data-capability-action]').forEach(button => {{
+        button.addEventListener('click', () => decideCapabilityProposal(button));
+      }});
+      container.querySelectorAll('[data-capability-detail-id]').forEach(button => {{
+        button.addEventListener('click', () => loadCapabilityProposalDetail(button));
+      }});
+    }}
+    function renderCapabilityProposals(proposals) {{
+      const container = document.getElementById('capabilities');
+      container.innerHTML = '<div class="meta">Capability proposals are implementation backlog only. Accepting one records operator interest; it does not create a task, approval, run, or executable Yggdrasil request.</div>'
+        + capabilityProposalCards(proposals, 'No capability proposals match the current filters.');
+      wireCapabilityProposalButtons(container);
+    }}
     function renderApprovals(approvals) {{
       const container = document.getElementById('approvals');
       container.innerHTML = '<div class="meta">Pending approvals that are not config proposals.</div>'
@@ -2894,6 +3162,15 @@ DASHBOARD_HTML = f"""<!doctype html>
         approval_level: fieldValue('proposal-filter-level'),
         status: fieldValue('proposal-filter-status'),
         risk: fieldValue('proposal-filter-risk'),
+      }};
+    }}
+    function capabilityProposalFilterValues() {{
+      return {{
+        q: fieldValue('capability-filter-q'),
+        requested_by: fieldValue('capability-filter-requested-by'),
+        source_channel: fieldValue('capability-filter-channel'),
+        approval_level: fieldValue('capability-filter-level'),
+        status: fieldValue('capability-filter-status'),
       }};
     }}
     function reviewFilterValues(kind) {{
@@ -2932,6 +3209,34 @@ DASHBOARD_HTML = f"""<!doctype html>
         renderPager('proposal-pagination', 'proposals', data.pagination.total, data.pagination.returned, loadTaskChangeProposals);
       }} catch (error) {{
         summary.textContent = `Unable to load task change proposals: ${{error.message}}`;
+      }}
+    }}
+    async function loadCapabilityProposals() {{
+      const summary = byId('capability-filter-summary');
+      summary.textContent = 'Loading capability proposals...';
+      try {{
+        const params = new URLSearchParams({{
+          page: String(pageState.capabilities.page),
+          page_size: String(pageSize('capabilities')),
+        }});
+        Object.entries(capabilityProposalFilterValues()).forEach(([key, value]) => {{
+          if (value) params.set(key, value);
+        }});
+        const response = await fetch(`/ops/capability-proposals?${{params.toString()}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const data = await response.json();
+        if (data.pagination.total > 0 && pageState.capabilities.page > data.pagination.total_pages) {{
+          pageState.capabilities.page = data.pagination.total_pages;
+          return loadCapabilityProposals();
+        }}
+        summary.textContent = `Showing ${{data.counts.returned}} of ${{data.counts.matched}} matching capability proposals.`;
+        renderCapabilityProposals(data.proposals || []);
+        renderPager('capability-pagination', 'capabilities', data.pagination.total, data.pagination.returned, loadCapabilityProposals);
+      }} catch (error) {{
+        summary.textContent = `Unable to load capability proposals: ${{error.message}}`;
       }}
     }}
     async function loadReviewQueue(kind) {{
@@ -3067,6 +3372,71 @@ DASHBOARD_HTML = f"""<!doctype html>
         button.disabled = false;
       }}
     }}
+    async function loadCapabilityProposalDetail(button) {{
+      const proposalId = button.dataset.capabilityDetailId;
+      const panel = button.closest('.approval').querySelector('.proposal-detail-panel');
+      panel.innerHTML = '<div class="empty">Loading capability proposal detail...</div>';
+      try {{
+        const response = await fetch(`/ops/capability-proposals/${{encodeURIComponent(proposalId)}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const detail = await response.json();
+        panel.innerHTML = `<details open>
+          <summary>Capability proposal detail</summary>
+          <div class="detail-grid section">
+            <div class="detail-block">
+              <h3>Original Request Preview</h3>
+              <pre>${{esc(detail.original_request_preview || '')}}</pre>
+            </div>
+            <div class="detail-block">
+              <h3>Non-goals</h3>
+              ${{itemList(detail.non_goals)}}
+            </div>
+            <div class="detail-block">
+              <h3>Review Notes</h3>
+              <pre>${{esc(detail.review_notes || '')}}</pre>
+            </div>
+            <div class="detail-block">
+              <h3>Raw Proposal</h3>
+              ${{jsonBlock(detail)}}
+            </div>
+          </div>
+        </details>`;
+      }} catch (error) {{
+        panel.innerHTML = `<div class="bad">Unable to load capability proposal detail: ${{esc(error.message)}}</div>`;
+      }}
+    }}
+    async function decideCapabilityProposal(button) {{
+      const proposalId = button.dataset.capabilityId;
+      const action = button.dataset.capabilityAction;
+      const panel = button.closest('.approval');
+      const message = panel.querySelector('.approval-message');
+      const input = panel.querySelector('input');
+      const reason = input?.value || '';
+      button.disabled = true;
+      message.textContent = `${{action}} pending...`;
+      message.className = 'meta approval-message';
+      try {{
+        const response = await fetch(`/ops/capability-proposals/${{encodeURIComponent(proposalId)}}/${{action}}`, {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'Content-Type': 'application/json', 'X-Yggy-Ops-Action': 'capability-proposal'}},
+          body: JSON.stringify({{reason}}),
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        await refresh();
+      }} catch (error) {{
+        message.textContent = error.message;
+        message.className = 'meta approval-message bad';
+      }} finally {{
+        button.disabled = false;
+      }}
+    }}
     async function loadStatus() {{
       const response = await fetch('/ops/status', {{credentials: 'same-origin'}});
       if (!response.ok) throw new Error(`status ${{response.status}}`);
@@ -3076,12 +3446,13 @@ DASHBOARD_HTML = f"""<!doctype html>
       setTabCount('tasks', data.counts.tasks);
       setTabCount('runs', data.recent_runs.length);
       setTabCount('proposals', data.counts.open_task_change_proposals || 0);
+      setTabCount('capabilities', data.counts.pending_capability_proposals || 0);
       setTabCount('approvals', data.counts.pending_general_approvals || 0);
       document.getElementById('metrics').innerHTML = [
         metric('Service', statusLabel(data.service.status), `worker age ${{text(data.service.worker.age_seconds)}}s`),
         metric('Tasks', data.counts.tasks, `${{data.counts.enabled_tasks}} enabled`),
         metric('Active Runs', data.counts.active_runs, 'queued or running'),
-        metric('Pending Reviews', data.counts.pending_reviews || data.counts.pending_approvals, `${{data.counts.pending_task_change_proposals || 0}} task changes; ${{data.counts.pending_general_approvals || 0}} general`),
+        metric('Pending Reviews', data.counts.pending_reviews || data.counts.pending_approvals, `${{data.counts.pending_task_change_proposals || 0}} task changes; ${{data.counts.pending_capability_proposals || 0}} capabilities; ${{data.counts.pending_general_approvals || 0}} general`),
       ].join('');
       document.getElementById('service').innerHTML = `
         <h2>Service Health</h2>
@@ -3224,6 +3595,32 @@ DASHBOARD_HTML = f"""<!doctype html>
         resetPage('proposals');
         loadTaskChangeProposals();
       }});
+      const reloadCapabilities = id => {{
+        markCustomView();
+        if (id) persistField(id);
+        resetPage('capabilities');
+        loadCapabilityProposals();
+      }};
+      ['capability-filter-q', 'capability-filter-requested-by', 'capability-filter-channel'].forEach(id => {{
+        byId(id).addEventListener('input', debounce(() => reloadCapabilities(id), 350));
+      }});
+      ['capability-filter-level', 'capability-filter-status'].forEach(id => {{
+        byId(id).addEventListener('change', () => reloadCapabilities(id));
+      }});
+      byId('capability-page-size').addEventListener('change', () => {{
+        resetPage('capabilities');
+        pageSize('capabilities');
+        loadCapabilityProposals();
+      }});
+      byId('capability-filter-clear').addEventListener('click', () => {{
+        markCustomView();
+        ['capability-filter-q', 'capability-filter-requested-by', 'capability-filter-channel', 'capability-filter-level', 'capability-filter-status'].forEach(id => {{
+          byId(id).value = '';
+          persistField(id);
+        }});
+        resetPage('capabilities');
+        loadCapabilityProposals();
+      }});
       const reloadApprovals = id => {{
         markCustomView();
         if (id) persistField(id);
@@ -3287,6 +3684,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         if (activeView === 'runs') await loadRuns();
         if (activeView === 'audit') await loadAudit();
         if (activeView === 'proposals') await loadTaskChangeProposals();
+        if (activeView === 'capabilities') await loadCapabilityProposals();
         if (activeView === 'approvals') await loadReviewQueue('approvals');
       }}
       catch (error) {{ document.getElementById('generated').textContent = `Unable to load status: ${{error.message}}`; }}
@@ -3295,6 +3693,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     document.getElementById('run-refresh').addEventListener('click', loadRuns);
     document.getElementById('audit-refresh').addEventListener('click', loadAudit);
     document.getElementById('proposal-refresh').addEventListener('click', loadTaskChangeProposals);
+    document.getElementById('capability-refresh').addEventListener('click', loadCapabilityProposals);
     document.getElementById('approval-refresh').addEventListener('click', () => loadReviewQueue('approvals'));
     document.getElementById('saved-view-select').addEventListener('change', event => applySavedView(event.target.value));
     wireViewTabs();

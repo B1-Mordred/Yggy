@@ -22,6 +22,25 @@ def task_change_payload(task_id: str, *, cron: str = "30 7 * * 1-5") -> dict:
     }
 
 
+def capability_proposal_payload(**overrides) -> dict:
+    payload = {
+        "title": "Printer Supply Monitoring",
+        "requested_by": "bragi",
+        "source_channel": "discord",
+        "original_request_preview": "Check my printer toner and warn me before it runs out.",
+        "purpose": "Monitor approved printer supply status and notify before toner or ink levels become low.",
+        "suggested_capability_id": "printer_supply_status.v1",
+        "suggested_task_type": "printer_supply_status",
+        "likely_approval_level": "L1_NOTIFY_ONLY",
+        "required_inputs": ["approved printer ID", "polling schedule", "low-supply threshold"],
+        "safety_rules": ["must not scan the LAN", "must not change printer configuration"],
+        "non_goals": ["no arbitrary shell execution", "no printer administration changes"],
+        "review_notes": "Useful but unsupported.",
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
@@ -36,8 +55,13 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "data-view-target=\"audit\"" in allowed.text
     assert "data-view=\"tasks\"" in allowed.text
     assert "data-view=\"proposals\"" in allowed.text
+    assert "data-view=\"capabilities\"" in allowed.text
     assert "data-count=\"proposals\"" in allowed.text
+    assert "data-count=\"capabilities\"" in allowed.text
     assert "proposal-filter-q" in allowed.text
+    assert "capability-filter-q" in allowed.text
+    assert "capability-page-size" in allowed.text
+    assert "data-capability-action" in allowed.text
     assert "approval-filter-q" in allowed.text
     assert "task-detail" in allowed.text
     assert "data-task-detail-id" in allowed.text
@@ -62,6 +86,7 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "sortHeader('audit', 'Action', 'action')" in allowed.text
     assert "saved-view-select" in allowed.text
     assert "failed_runs" in allowed.text
+    assert "pending_capabilities" in allowed.text
     assert "recent_discord_sends" in allowed.text
     assert "worker_activity" in allowed.text
     assert "runTimelineContext" in allowed.text
@@ -144,11 +169,13 @@ def test_ops_status_summarizes_without_logs_or_nonces(client, monkeypatch):
     assert body["counts"]["pending_approvals"] == 1
     assert body["counts"]["pending_proposals"] == 0
     assert body["counts"]["pending_general_approvals"] == 1
+    assert body["counts"]["pending_capability_proposals"] == 0
     assert body["tasks"][0]["latest_run"]["id"] == run_id
     assert body["recent_runs"][0]["notification"]["sent"] is True
     assert body["pending_approvals"][0]["review"]["actions"]
     assert body["pending_general_approvals"][0]["id"] == "approval-ops-test"
     assert body["pending_proposals"] == []
+    assert body["pending_capability_proposals"] == []
     assert body["pending_approvals"][0]["review"]["failure_mode"]
     assert body["pending_approvals"][0]["review"]["config_change"]["enabled_after_approval"] is True
     assert "nonce" not in response.text.lower()
@@ -182,6 +209,131 @@ def test_ops_status_and_queue_show_task_change_proposals(client):
     assert detail_response.status_code == 200
     assert detail_response.json()["proposed_config"]["trigger"]["cron"] == "30 7 * * 1-5"
     assert "nonce" not in detail_response.text.lower()
+
+
+def test_ops_status_and_queue_show_capability_proposals(client):
+    first = client.post("/capability-proposals/draft", headers=TOOL_HEADERS, json=capability_proposal_payload())
+    second = client.post(
+        "/capability-proposals/draft",
+        headers=TOOL_HEADERS,
+        json=capability_proposal_payload(
+            title="UPS Battery Monitoring",
+            original_request_preview="Warn me before the UPS battery fails.",
+            purpose="Monitor an approved UPS battery status source and notify before the battery becomes unhealthy.",
+            suggested_capability_id="ups_battery_status.v1",
+            suggested_task_type="ups_battery_status",
+            source_channel="openwebui",
+        ),
+    )
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    status_response = client.get("/ops/status", headers=ADMIN_HEADERS)
+    list_response = client.get(
+        "/ops/capability-proposals?status=pending&page=1&page_size=5&q=printer",
+        headers=ADMIN_HEADERS,
+    )
+    detail_response = client.get(f"/ops/capability-proposals/{first.json()['id']}", headers=ADMIN_HEADERS)
+    too_small = client.get("/ops/capability-proposals?page_size=4", headers=ADMIN_HEADERS)
+
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["counts"]["pending_capability_proposals"] == 2
+    assert status_body["counts"]["pending_reviews"] == 2
+    assert status_body["pending_capability_proposals"][0]["execution"] == {
+        "creates_task": False,
+        "creates_approval": False,
+        "can_be_applied": False,
+    }
+    assert "nonce" not in status_response.text.lower()
+    assert list_response.status_code == 200
+    list_body = list_response.json()
+    assert list_body["pagination"]["min_page_size"] == 5
+    assert list_body["counts"]["matched"] == 1
+    assert list_body["proposals"][0]["suggested_capability_id"] == "printer_supply_status.v1"
+    assert detail_response.status_code == 200
+    assert detail_response.json()["original_request_preview"] == "Check my printer toner and warn me before it runs out."
+    assert too_small.status_code == 422
+
+
+def test_ops_can_accept_reject_and_close_capability_proposals_with_action_header(client):
+    accepted = client.post("/capability-proposals/draft", headers=TOOL_HEADERS, json=capability_proposal_payload()).json()
+    rejected = client.post(
+        "/capability-proposals/draft",
+        headers=TOOL_HEADERS,
+        json=capability_proposal_payload(
+            title="UPS Battery Monitoring",
+            purpose="Monitor an approved UPS battery status source and notify before the battery becomes unhealthy.",
+            suggested_capability_id="ups_battery_status.v1",
+            suggested_task_type="ups_battery_status",
+        ),
+    ).json()
+    closed = client.post(
+        "/capability-proposals/draft",
+        headers=TOOL_HEADERS,
+        json=capability_proposal_payload(
+            title="NAS Disk Health Monitoring",
+            purpose="Monitor an approved NAS disk health status source and notify before the disk becomes unhealthy.",
+            suggested_capability_id="nas_disk_health.v1",
+            suggested_task_type="nas_disk_health",
+        ),
+    ).json()
+
+    missing_header = client.post(
+        f"/ops/capability-proposals/{accepted['id']}/accept",
+        headers=ADMIN_HEADERS,
+        json={"reason": "Useful."},
+    )
+    accept_response = client.post(
+        f"/ops/capability-proposals/{accepted['id']}/accept",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Implement later."},
+    )
+    reject_response = client.post(
+        f"/ops/capability-proposals/{rejected['id']}/reject",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Not needed."},
+    )
+    close_response = client.post(
+        f"/ops/capability-proposals/{closed['id']}/close",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Duplicate."},
+    )
+    repeat_accept = client.post(
+        f"/ops/capability-proposals/{accepted['id']}/accept",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Again."},
+    )
+
+    assert missing_header.status_code == 403
+    assert accept_response.status_code == 200
+    assert accept_response.json()["status"] == "accepted"
+    assert "Implement later" in accept_response.json()["review_notes"]
+    assert accept_response.json()["execution"]["creates_task"] is False
+    assert reject_response.status_code == 200
+    assert reject_response.json()["status"] == "rejected"
+    assert "Not needed" in reject_response.json()["review_notes"]
+    assert close_response.status_code == 200
+    assert close_response.json()["status"] == "closed"
+    assert "Duplicate" in close_response.json()["review_notes"]
+    assert repeat_accept.status_code == 409
+    with Session(get_engine()) as session:
+        audits = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.resource_type == "capability_proposal")
+            .filter(
+                AuditEventModel.action.in_(
+                    ["capability.accepted", "capability.rejected", "capability.closed"]
+                )
+            )
+            .order_by(AuditEventModel.created_at)
+            .all()
+        )
+        assert [audit.action for audit in audits] == [
+            "capability.accepted",
+            "capability.rejected",
+            "capability.closed",
+        ]
 
 
 def test_ops_can_approve_and_apply_task_change_proposal_with_action_header(client):
