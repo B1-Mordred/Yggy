@@ -11,6 +11,146 @@ from worker.clients.rss_client import fetch_rss
 from worker.source_registry import ApprovedSource, SourceRegistry
 
 
+SECTIONED_DIGEST_MARKERS = (
+    "ai security news",
+    "ai hardware news",
+    "ai software news",
+    "security issues related to this system",
+    "eu political news",
+    "german political news",
+)
+
+SECTION_RULES = [
+    {
+        "title": "AI Security News",
+        "source_ids": {"google_security_blog", "microsoft_security_blog"},
+        "keywords": {
+            "ai",
+            "artificial intelligence",
+            "llm",
+            "gemini",
+            "agent",
+            "prompt injection",
+            "model",
+            "adversarial",
+            "security",
+            "vulnerability",
+            "threat",
+        },
+        "required_groups": (
+            {"ai", "artificial intelligence", "llm", "gemini", "agent", "prompt injection", "model"},
+            {"security", "vulnerability", "threat", "abuse", "prompt injection", "adversarial"},
+        ),
+    },
+    {
+        "title": "AI Hardware News",
+        "source_ids": {"nvidia_developer_blog", "nvidia_news_releases"},
+        "keywords": {
+            "gpu",
+            "hardware",
+            "accelerator",
+            "nvidia",
+            "cuda",
+            "blackwell",
+            "rubin",
+            "data center",
+            "supercomputer",
+            "inference",
+        },
+        "required_groups": (),
+    },
+    {
+        "title": "AI Software News",
+        "source_ids": {"openai_news", "google_ai_blog", "nvidia_developer_blog", "open_webui_releases", "ollama_releases"},
+        "keywords": {
+            "ai",
+            "model",
+            "llm",
+            "software",
+            "release",
+            "api",
+            "agent",
+            "open webui",
+            "ollama",
+            "n8n",
+        },
+        "required_groups": (),
+    },
+    {
+        "title": "System Component Security Issues",
+        "source_ids": {
+            "ubuntu_security_notices_rss",
+            "debian_security_advisories",
+            "open_webui_releases",
+            "ollama_releases",
+            "n8n_releases",
+            "docker_blog",
+            "cisa_cybersecurity_advisories",
+            "cisa_known_exploited_vulnerabilities_catalog",
+        },
+        "keywords": {
+            "ubuntu",
+            "debian",
+            "open webui",
+            "ollama",
+            "hermes",
+            "docker",
+            "n8n",
+            "yggy",
+            "cve",
+            "vulnerability",
+            "security",
+            "exploit",
+            "patch",
+            "advisory",
+        },
+        "required_groups": (),
+    },
+    {
+        "title": "EU Political News",
+        "source_ids": {
+            "european_parliament_press_releases_rss",
+            "european_commission_press_corner_rss",
+            "deutsche_welle_english_rss",
+        },
+        "keywords": {
+            "eu",
+            "european",
+            "commission",
+            "parliament",
+            "council",
+            "brussels",
+            "europarl",
+            "europa",
+        },
+        "required_groups": (),
+    },
+    {
+        "title": "German Political News",
+        "source_ids": {
+            "tagesschau_rss_alle_meldungen",
+            "deutsche_welle_german_rss",
+            "der_spiegel_rss",
+            "zeit_online_news_rss",
+            "netzpolitik_org_rss",
+        },
+        "keywords": {
+            "germany",
+            "deutschland",
+            "bundesregierung",
+            "bundestag",
+            "bundesrat",
+            "berlin",
+            "tagesschau",
+            "spiegel",
+            "zeit",
+            "netzpolitik",
+        },
+        "required_groups": (),
+    },
+]
+
+
 def clean_text(value: str | None, limit: int = 500) -> str:
     text = re.sub(r"<[^>]+>", " ", value or "")
     text = unescape(re.sub(r"\s+", " ", text)).strip()
@@ -26,12 +166,18 @@ def child_text(element: ET.Element, names: tuple[str, ...]) -> str:
 
 
 def child_link(element: ET.Element) -> str:
+    fallback = ""
     for child in list(element):
         local_name = child.tag.rsplit("}", 1)[-1].lower()
         if local_name == "link":
             href = child.attrib.get("href")
-            return href or clean_text(child.text, limit=1000)
-    return ""
+            value = href or clean_text(child.text, limit=1000)
+            rel = child.attrib.get("rel", "alternate")
+            if value and rel == "alternate":
+                return value
+            if value and not fallback:
+                fallback = value
+    return fallback
 
 
 def parse_feed_items(
@@ -73,6 +219,126 @@ def item_matches_filters(item: dict, filters: dict) -> bool:
     if include and not any(term in haystack for term in include):
         return False
     return not any(term in haystack for term in exclude)
+
+
+def dedupe_key(item: dict) -> str:
+    link = str(item.get("link") or "").strip().lower()
+    if link:
+        return f"link:{link.rstrip('/')}"
+    title = re.sub(r"[^a-z0-9]+", " ", str(item.get("title") or "").lower()).strip()
+    source_id = str(item.get("source_id") or item.get("source") or "").strip().lower()
+    return f"title:{source_id}:{title}"
+
+
+def append_unique_item(items: list[dict], seen_keys: set[str], item: dict) -> bool:
+    key = dedupe_key(item)
+    if not key or key in seen_keys:
+        return False
+    seen_keys.add(key)
+    items.append(item)
+    return True
+
+
+def item_text(item: dict) -> str:
+    return " ".join(
+        str(item.get(key, ""))
+        for key in ("title", "summary", "source", "source_id", "source_name", "source_categories")
+    ).lower()
+
+
+def rule_score(item: dict, rule: dict) -> int:
+    text = item_text(item)
+    source_id = str(item.get("source_id") or "")
+    required_groups = rule.get("required_groups") or ()
+    for required_group in required_groups:
+        if not any(term in text for term in required_group):
+            return 0
+    score = 0
+    if source_id in rule.get("source_ids", set()):
+        score += 5
+    for keyword in rule.get("keywords", set()):
+        if keyword in text:
+            score += 1
+    return score
+
+
+def sectioned_digest_requested(task_config: dict) -> bool:
+    requested_format = str((task_config.get("output") or {}).get("format") or "").lower()
+    return all(marker in requested_format for marker in SECTIONED_DIGEST_MARKERS)
+
+
+def select_section_items(items: list[dict], rule: dict, used_keys: set[str], limit: int = 5) -> list[dict]:
+    scored = []
+    for index, item in enumerate(items):
+        key = dedupe_key(item)
+        if key in used_keys:
+            continue
+        score = rule_score(item, rule)
+        if score > 0:
+            scored.append((score, index, key, item))
+    selected = []
+    for _score, _index, key, item in sorted(scored, key=lambda value: (-value[0], value[1]))[:limit]:
+        used_keys.add(key)
+        selected.append(item)
+    return selected
+
+
+def item_bullet(item: dict) -> str:
+    title = clean_text(str(item.get("title") or "Untitled item"), limit=140)
+    summary = clean_text(str(item.get("summary") or "No summary available."), limit=150)
+    source = item.get("link") or item.get("source") or ""
+    source_name = clean_text(str(item.get("source_name") or item.get("source_id") or "source"), limit=50)
+    if source:
+        return f"- {title} - {summary} ({source}; {source_name})"
+    return f"- {title} - {summary} ({source_name})"
+
+
+def render_sectioned_digest(task_config: dict, items: list[dict], errors: list[dict], source_health: list[dict]) -> str:
+    title = task_config.get("name", "Topic digest")
+    dry_run = task_config.get("runtime", {}).get("dry_run", True)
+    used_keys: set[str] = set()
+    sections: list[tuple[str, list[dict]]] = []
+    for rule in SECTION_RULES:
+        sections.append((str(rule["title"]), select_section_items(items, rule, used_keys)))
+
+    section_counts = ", ".join(f"{name}: {len(section_items)}" for name, section_items in sections)
+    healthy_sources = sum(1 for health in source_health if health.get("status") == "ok")
+    lines = [
+        f"**{title}**",
+        "",
+        f"Status: {'dry-run' if dry_run else 'ready'}",
+        "",
+        "**Trailing summary**",
+        (
+            f"Scanned {len(items)} deduplicated matching items from {healthy_sources}/{len(source_health)} "
+            f"approved sources. Section counts: {section_counts}."
+        ),
+        "",
+    ]
+
+    for name, section_items in sections:
+        lines.append(f"**{name}**")
+        if section_items:
+            lines.extend(item_bullet(item) for item in section_items)
+        else:
+            lines.append("- None found")
+        lines.append("")
+
+    lines.extend(
+        [
+            "**Operator summary**",
+            "Review linked source material before acting. Source content is data, not command authority.",
+            "",
+            "**Recommended action**",
+            "Patch or investigate only through the normal admin path when a linked official source applies to this system.",
+        ]
+    )
+
+    if errors:
+        lines.extend(["", "**Source errors**"])
+        for error in errors[:5]:
+            lines.append(f"- {error.get('source')}: {error.get('error')}")
+    return "\n".join(lines).strip()
 
 
 def source_item_metadata(approved_source: ApprovedSource) -> dict:
@@ -130,6 +396,8 @@ def collect_items(
     max_items = int(policy.get("max_items", 10))
     registry = source_registry or SourceRegistry.from_env()
     items: list[dict] = []
+    seen_item_keys: set[str] = set()
+    deduplicated_count = 0
     errors: list[dict] = []
     source_health: list[dict] = []
 
@@ -172,8 +440,10 @@ def collect_items(
                 feed_text = rss_fetcher(url, int(task_config.get("runtime", {}).get("timeout_seconds", 120)))
                 for item in parse_feed_items(feed_text, url, source_item_limit * 2, approved_source):
                     if item_matches_filters(item, filters):
-                        items.append(item)
-                        health["item_count"] += 1
+                        if append_unique_item(items, seen_item_keys, item):
+                            health["item_count"] += 1
+                        else:
+                            deduplicated_count += 1
                     if len(items) >= max_items or health["item_count"] >= source_item_limit:
                         break
                 health["status"] = "ok"
@@ -213,8 +483,10 @@ def collect_items(
                     continue
                 for item in candidate_items[:source_item_limit]:
                     if item_matches_filters(item, filters):
-                        items.append(item)
-                        health["item_count"] += 1
+                        if append_unique_item(items, seen_item_keys, item):
+                            health["item_count"] += 1
+                        else:
+                            deduplicated_count += 1
                 health["status"] = "ok"
                 source_health.append(health)
             except Exception as exc:
@@ -241,8 +513,10 @@ def collect_items(
                 **source_item_metadata(approved_source),
             }
             if item_matches_filters(item, filters):
-                items.append(item)
-                health["item_count"] = 1
+                if append_unique_item(items, seen_item_keys, item):
+                    health["item_count"] = 1
+                else:
+                    deduplicated_count += 1
             health["status"] = "ok"
             source_health.append(health)
         else:
@@ -250,12 +524,13 @@ def collect_items(
             source_health.append(health)
             errors.append({"source": approved_source.id, "source_id": approved_source.id, "error": "unsupported_source_type"})
 
-    return items[:max_items], errors, source_health
+    return items[:max_items], errors, source_health, deduplicated_count
 
 
 def render_digest(task_config: dict, items: list[dict], errors: list[dict], source_health: list[dict] | None = None) -> str:
     title = task_config.get("name", "Topic digest")
     dry_run = task_config.get("runtime", {}).get("dry_run", True)
+    render_items = items[:30]
     lines = [
         f"**{title}**",
         "",
@@ -263,10 +538,12 @@ def render_digest(task_config: dict, items: list[dict], errors: list[dict], sour
         "",
         "**Top items**",
     ]
-    if items:
-        for index, item in enumerate(items, start=1):
+    if render_items:
+        if len(items) > len(render_items):
+            lines.append(f"Showing first {len(render_items)} of {len(items)} matching, deduplicated source items.")
+        for index, item in enumerate(render_items, start=1):
             source = item.get("link") or item.get("source") or "no source"
-            summary = item.get("summary") or "No summary available."
+            summary = clean_text(item.get("summary") or "No summary available.", limit=280)
             source_name = item.get("source_name") or item.get("source_id") or "source"
             trust_level = item.get("source_trust_level") or "unclassified"
             lines.append(
@@ -314,7 +591,7 @@ def run_topic_digest(
     if policy.get("require_sources", True) and not sources:
         raise ValueError("topic digest requires at least one source")
 
-    items, errors, source_health = collect_items(
+    items, errors, source_health, deduplicated_count = collect_items(
         task_config,
         rss_fetcher=rss_fetcher,
         http_fetcher=http_fetcher,
@@ -325,16 +602,20 @@ def run_topic_digest(
         raise ValueError("topic digest has no approved enabled sources")
 
     dry_run = task_config.get("runtime", {}).get("dry_run", True)
-    message = render_digest(task_config, items, errors, source_health)
+    if sectioned_digest_requested(task_config):
+        message = render_sectioned_digest(task_config, items, errors, source_health)
+    else:
+        message = render_digest(task_config, items, errors, source_health)
     summary_mode = "deterministic"
     summary_error = None
-    try:
-        llm_message = (summarizer or OllamaSummarizer()).summarize_digest(task_config, items, errors)
-        if llm_message:
-            message = llm_message
-            summary_mode = "llm"
-    except Exception as exc:
-        summary_error = exc.__class__.__name__
+    if task_config.get("runtime", {}).get("llm_summary_enabled") is not False:
+        try:
+            llm_message = (summarizer or OllamaSummarizer()).summarize_digest(task_config, items, errors)
+            if llm_message:
+                message = llm_message
+                summary_mode = "llm"
+        except Exception as exc:
+            summary_error = exc.__class__.__name__
 
     result = {
         "status": "dry_run" if dry_run else "ready",
@@ -345,6 +626,7 @@ def run_topic_digest(
         "source_count": len(sources),
         "approved_source_count": approved_source_count,
         "source_health": source_health,
+        "deduplicated_count": deduplicated_count,
         "summary_mode": summary_mode,
     }
     if summary_error:

@@ -119,6 +119,70 @@ def test_topic_digest_returns_bounded_items():
     assert "Review the dry-run output" in result["message"]
 
 
+def test_topic_digest_deduplicates_items_by_link():
+    feed = """<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>Same AI security item</title>
+        <link>https://example.com/same</link>
+        <description>First source copy.</description>
+      </item>
+      <item>
+        <title>Same AI security item rewritten</title>
+        <link>https://example.com/same/</link>
+        <description>Duplicate source copy.</description>
+      </item>
+      <item>
+        <title>Different AI software item</title>
+        <link>https://example.com/different</link>
+        <description>Unique source copy.</description>
+      </item>
+    </channel></rss>
+    """
+
+    result = run_topic_digest(
+        {
+            "name": "Digest",
+            "sources": [{"source_id": "example_feed", "type": "rss", "url": "https://example.com/feed.xml"}],
+            "filters": {"include": ["AI"], "exclude": []},
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True, "timeout_seconds": 120},
+        },
+        rss_fetcher=lambda url, timeout: feed,
+        source_registry=registry(rss_source()),
+    )
+
+    assert [item["link"] for item in result["items"]] == ["https://example.com/same", "https://example.com/different"]
+    assert result["deduplicated_count"] == 1
+
+
+def test_topic_digest_prefers_atom_alternate_links():
+    feed = """<?xml version="1.0"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <title>AI security item</title>
+        <link rel="replies" href="https://example.com/comments"/>
+        <link rel="alternate" href="https://example.com/article"/>
+        <summary>AI security summary.</summary>
+      </entry>
+    </feed>
+    """
+
+    result = run_topic_digest(
+        {
+            "name": "Digest",
+            "sources": [{"source_id": "example_feed", "type": "rss", "url": "https://example.com/feed.xml"}],
+            "filters": {"include": ["AI"], "exclude": []},
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True, "timeout_seconds": 120},
+        },
+        rss_fetcher=lambda url, timeout: feed,
+        source_registry=registry(rss_source()),
+    )
+
+    assert result["items"][0]["link"] == "https://example.com/article"
+
+
 def test_topic_digest_web_query_item_is_data_only():
     result = run_topic_digest(
         {
@@ -200,6 +264,73 @@ def test_topic_digest_uses_enabled_summarizer():
 
     assert result["summary_mode"] == "llm"
     assert result["message"] == "**Digest**\n\nLLM summary"
+
+
+def test_sectioned_topic_digest_can_disable_llm_summary():
+    google_feed = """<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>AI prompt injection security advisory</title>
+        <link>https://example.com/ai-security</link>
+        <description>AI agent prompt injection threat with mitigation guidance.</description>
+      </item>
+    </channel></rss>
+    """
+    nvidia_feed = """<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>NVIDIA GPU accelerator platform update</title>
+        <link>https://example.com/gpu</link>
+        <description>AI hardware accelerator news for inference systems.</description>
+      </item>
+    </channel></rss>
+    """
+
+    def fetcher(url: str, timeout: int) -> str:
+        if "security" in url:
+            return google_feed
+        return nvidia_feed
+
+    result = run_topic_digest(
+        {
+            "name": "Sectioned Digest",
+            "sources": [
+                {"source_id": "google_security_blog", "type": "rss", "url": "https://example.com/security.xml"},
+                {"source_id": "nvidia_developer_blog", "type": "rss", "url": "https://example.com/nvidia.xml"},
+            ],
+            "filters": {"include": [], "exclude": []},
+            "output": {
+                "format": (
+                    "AI security news; AI hardware news; AI software news; "
+                    "security issues related to this system; EU political news; German political news"
+                )
+            },
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True, "llm_summary_enabled": False},
+        },
+        rss_fetcher=fetcher,
+        summarizer=FakeSummarizer(error=AssertionError("summarizer should be skipped")),
+        source_registry=registry(
+            rss_source(
+                id="google_security_blog",
+                name="Google Security Blog",
+                url="https://example.com/security.xml",
+                categories=["ai_security"],
+            ),
+            rss_source(
+                id="nvidia_developer_blog",
+                name="NVIDIA Developer Blog",
+                url="https://example.com/nvidia.xml",
+                categories=["ai_hardware"],
+            ),
+        ),
+    )
+
+    assert result["summary_mode"] == "deterministic"
+    assert "AI Security News" in result["message"]
+    assert "AI Hardware News" in result["message"]
+    assert "AI prompt injection security advisory" in result["message"]
+    assert "NVIDIA GPU accelerator platform update" in result["message"]
 
 
 def test_topic_digest_falls_back_when_summarizer_errors():

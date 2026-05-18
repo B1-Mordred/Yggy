@@ -49,6 +49,7 @@ policy:
 
 runtime:
   dry_run: false
+  llm_summary_enabled: true
   timeout_seconds: 120
   retry_count: 1
 
@@ -92,6 +93,12 @@ The API rejects tasks when:
 - `n8n_webhook` tasks reference a webhook that is not listed in `configs/n8n/webhooks.yaml`
 - `n8n_webhook` paths are absolute URLs or do not start with `/webhook/` or `/webhook-test/`
 - `n8n_webhook` method is not `POST`
+
+`runtime.llm_summary_enabled` is optional. When omitted, the worker uses the
+global `LLM_SUMMARIZER_ENABLED` setting. Set it to `false` for tasks that should
+use only deterministic rendering, for example large scheduled digests where
+prompt-injection resistance and predictable output shape matter more than model
+rewriting.
 
 ## Approved Sources
 

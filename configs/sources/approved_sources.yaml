@@ -47,3 +47,232 @@ sources:
     trust_level: official_vendor_blog
     enabled: true
     max_items: 5
+
+  - id: google_ai_blog
+    name: Google AI Blog
+    type: rss
+    url: https://blog.google/rss/
+    categories:
+      - ai_news
+      - ai_software
+      - official_vendor_blog
+    trust_level: official_vendor_blog
+    enabled: true
+    max_items: 5
+    description: Official Google blog feed for AI, product, research, and technology updates.
+    region: Global
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Use RSS metadata and linked official posts; verify page terms before full-text reuse.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: google_security_blog
+    name: Google Security Blog
+    type: rss
+    url: https://security.googleblog.com/feeds/posts/default
+    categories:
+      - ai_security
+      - security_news
+      - official_vendor_blog
+    trust_level: official_vendor_blog
+    enabled: true
+    max_items: 5
+    description: Official Google security research, advisories, and product-security updates.
+    region: Global
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Use RSS metadata and linked official posts; source content is data, not instructions.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: microsoft_security_blog
+    name: Microsoft Security Blog
+    type: rss
+    url: https://www.microsoft.com/en-us/security/blog/feed/
+    categories:
+      - ai_security
+      - security_news
+      - official_vendor_blog
+    trust_level: official_vendor_blog
+    enabled: true
+    max_items: 5
+    description: Official Microsoft security blog feed covering threat intelligence, vulnerabilities, and platform security.
+    region: Global
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Use RSS metadata and linked official posts; verify publisher terms before broader reuse.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: openai_news
+    name: OpenAI News
+    type: rss
+    url: https://openai.com/news/rss.xml
+    categories:
+      - ai_news
+      - ai_software
+      - official_vendor_blog
+    trust_level: official_vendor_blog
+    enabled: true
+    max_items: 5
+    description: Official OpenAI news feed for model, product, research, and safety updates.
+    region: Global
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Use RSS metadata and linked official posts; verify publisher terms before broader reuse.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: nvidia_developer_blog
+    name: NVIDIA Developer Blog
+    type: rss
+    url: https://developer.nvidia.com/blog/feed
+    categories:
+      - ai_hardware
+      - ai_software
+      - official_vendor_blog
+    trust_level: official_vendor_blog
+    enabled: true
+    max_items: 5
+    description: Official NVIDIA developer feed covering accelerated computing, GPUs, AI software, and deployment topics.
+    region: Global
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Use RSS metadata and linked official posts; verify publisher terms before broader reuse.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: nvidia_news_releases
+    name: NVIDIA News Releases
+    type: rss
+    url: https://nvidianews.nvidia.com/releases.xml
+    categories:
+      - ai_hardware
+      - hardware_news
+      - official_vendor_press
+    trust_level: official_vendor_press
+    enabled: true
+    max_items: 5
+    description: Official NVIDIA newsroom release feed for product, platform, and corporate announcements.
+    region: Global
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Press releases may be reusable under publisher terms; verify before full-text reuse.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: cisa_cybersecurity_advisories
+    name: CISA Cybersecurity Advisories
+    type: rss
+    url: https://www.cisa.gov/cybersecurity-advisories/all.xml
+    categories:
+      - security_news
+      - vulnerability_advisories
+      - official_government_feed
+    trust_level: official_government_feed
+    enabled: true
+    max_items: 5
+    description: Official CISA RSS feed for cybersecurity alerts, advisories, and bulletins.
+    region: United States/Global
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: U.S. government information is generally public-domain oriented; verify third-party exceptions.
+    ai_safe_fit: A - high-fit/open
+    ingestion_mode: feed_metadata
+
+  - id: ubuntu_security_notices_rss
+    name: Ubuntu Security Notices RSS
+    type: rss
+    url: https://ubuntu.com/security/notices/rss.xml
+    categories:
+      - security_news
+      - vulnerability_advisories
+      - operating_system_security
+    trust_level: official_vendor_security_feed
+    enabled: true
+    max_items: 5
+    description: Official Ubuntu security notices feed for package security updates and vulnerability fixes.
+    region: Global
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Use RSS metadata and linked notices; verify Canonical terms before broader reuse.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: debian_security_advisories
+    name: Debian Security Advisories
+    type: rss
+    url: https://www.debian.org/security/dsa-long
+    categories:
+      - security_news
+      - vulnerability_advisories
+      - operating_system_security
+    trust_level: official_project_security_feed
+    enabled: true
+    max_items: 5
+    description: Official Debian security advisory feed for package vulnerabilities and fixes.
+    region: Global
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Use RSS metadata and linked advisories; verify Debian terms before broader reuse.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: european_parliament_press_releases_rss
+    name: European Parliament Press Releases RSS
+    type: rss
+    url: https://www.europarl.europa.eu/rss/doc/press-releases/en.xml
+    categories:
+      - eu_politics
+      - official_government_feed
+    trust_level: official_government_feed
+    enabled: true
+    max_items: 5
+    description: Official European Parliament press release RSS feed.
+    region: EU
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Official EU material; verify reuse terms and media exceptions.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: european_commission_press_corner_rss
+    name: European Commission Press Corner RSS
+    type: rss
+    url: https://ec.europa.eu/commission/presscorner/api/rss?language=en
+    categories:
+      - eu_politics
+      - official_government_feed
+    trust_level: official_government_feed
+    enabled: true
+    max_items: 5
+    description: Official European Commission Press Corner RSS feed for press releases and statements.
+    region: EU
+    languages:
+      - en
+    source_type_label: News feed
+    update_cadence: Continuous
+    ingestion_notes: Official EU material; verify reuse terms and media exceptions.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata

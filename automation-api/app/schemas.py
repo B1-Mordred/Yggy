@@ -140,6 +140,7 @@ class RuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dry_run: bool = True
+    llm_summary_enabled: bool | None = None
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
     retry_count: int = Field(default=1, ge=0, le=10)
 

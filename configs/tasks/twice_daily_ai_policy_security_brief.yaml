@@ -1,0 +1,178 @@
+id: twice_daily_ai_policy_security_brief
+name: Twice Daily AI, Security, and Policy Brief
+type: topic_digest
+enabled: true
+owner: local_user
+created_by: local_admin
+
+trigger:
+  kind: schedule
+  cron: "0 6,17 * * *"
+  timezone: Europe/Berlin
+
+sources:
+  - source_id: google_security_blog
+    type: rss
+    url: https://security.googleblog.com/feeds/posts/default
+  - source_id: nvidia_developer_blog
+    type: rss
+    url: https://developer.nvidia.com/blog/feed
+  - source_id: openai_news
+    type: rss
+    url: https://openai.com/news/rss.xml
+  - source_id: ubuntu_security_notices_rss
+    type: rss
+    url: https://ubuntu.com/security/notices/rss.xml
+  - source_id: european_parliament_press_releases_rss
+    type: rss
+    url: https://www.europarl.europa.eu/rss/doc/press-releases/en.xml
+  - source_id: tagesschau_rss_alle_meldungen
+    type: rss
+    url: https://www.tagesschau.de/infoservices/alle-meldungen-100~rss2.xml
+  - source_id: cisa_cybersecurity_advisories
+    type: rss
+    url: https://www.cisa.gov/cybersecurity-advisories/all.xml
+  - source_id: nvidia_news_releases
+    type: rss
+    url: https://nvidianews.nvidia.com/releases.xml
+  - source_id: google_ai_blog
+    type: rss
+    url: https://blog.google/rss/
+  - source_id: open_webui_releases
+    type: rss
+    url: https://github.com/open-webui/open-webui/releases.atom
+  - source_id: european_commission_press_corner_rss
+    type: rss
+    url: https://ec.europa.eu/commission/presscorner/api/rss?language=en
+  - source_id: deutsche_welle_german_rss
+    type: rss
+    url: https://rss.dw.com/rdf/rss-de-all
+  - source_id: microsoft_security_blog
+    type: rss
+    url: https://www.microsoft.com/en-us/security/blog/feed/
+  - source_id: docker_blog
+    type: rss
+    url: https://www.docker.com/blog/feed/
+  - source_id: ollama_releases
+    type: rss
+    url: https://github.com/ollama/ollama/releases.atom
+  - source_id: n8n_releases
+    type: rss
+    url: https://github.com/n8n-io/n8n/releases.atom
+  - source_id: debian_security_advisories
+    type: rss
+    url: https://www.debian.org/security/dsa-long
+  - source_id: netzpolitik_org_rss
+    type: rss
+    url: https://netzpolitik.org/feed/
+  - source_id: cisa_known_exploited_vulnerabilities_catalog
+    type: http
+    url: https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+  - source_id: der_spiegel_rss
+    type: rss
+    url: https://www.spiegel.de/index.rss
+  - source_id: zeit_online_news_rss
+    type: rss
+    url: https://newsfeed.zeit.de/news/index
+  - source_id: deutsche_welle_english_rss
+    type: rss
+    url: https://rss.dw.com/rdf/rss-en-all
+
+filters:
+  include:
+    - AI
+    - artificial intelligence
+    - machine learning
+    - LLM
+    - GPU
+    - accelerator
+    - NVIDIA
+    - CUDA
+    - OpenAI
+    - Google
+    - Microsoft
+    - security
+    - vulnerability
+    - CVE
+    - exploit
+    - patch
+    - advisory
+    - CISA
+    - NIST
+    - Ubuntu
+    - Debian
+    - Open WebUI
+    - Ollama
+    - Hermes
+    - Docker
+    - n8n
+    - EU
+    - Europe
+    - European
+    - europarl
+    - europa
+    - Commission
+    - Parliament
+    - Council
+    - Germany
+    - Deutschland
+    - Bundesregierung
+    - Bundestag
+    - Bundesrat
+    - Berlin
+    - tagesschau
+    - spiegel
+    - zeit
+    - dw.com
+    - br.de
+    - netzpolitik
+  exclude:
+    - sponsored
+    - advertorial
+    - rumor
+    - rumour
+    - gossip
+
+output:
+  channel: discord
+  target: briefings
+  format: >-
+    Discord Markdown brief under 4000 characters, split by the delivery bridge if
+    needed. Start with a short trailing summary covering what changed since the
+    previous scheduled brief. Then provide up to five deduplicated items in each
+    section: 1) AI security news, 2) AI hardware news, 3) AI software news,
+    4) new security issues related to this system's components if any
+    (Ubuntu, Hermes, Open WebUI, Ollama, Docker, n8n, Yggy), 5) EU political
+    news, 6) German political news. Include source links. If a section has no
+    relevant item, write "None found". End with a compact operator summary and
+    recommended action.
+
+policy:
+  approval_level: L1_NOTIFY_ONLY
+  max_items: 100
+  require_sources: true
+  max_runs_per_hour: 2
+  max_runs_per_day: 6
+  min_seconds_between_runs: 1800
+  allow_external_side_effects: false
+  allow_shell: false
+  allow_docker_socket: false
+  allow_filesystem_write: false
+
+runtime:
+  dry_run: false
+  llm_summary_enabled: false
+  timeout_seconds: 120
+  retry_count: 1
+
+notifications:
+  on_success: true
+  on_failure: true
+  on_empty_result: false
+  quiet_hours:
+    enabled: false
+    start: "22:00"
+    end: "05:59"
+    timezone: Europe/Berlin
+  collapse_repeated_failures: true
+  failure_collapse_window_minutes: 360
