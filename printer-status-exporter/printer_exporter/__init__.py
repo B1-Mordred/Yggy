@@ -1,0 +1,1 @@
+"""Yggy printer status exporter."""

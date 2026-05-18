@@ -151,7 +151,12 @@ secret data.
 ## Printer Supply Tasks
 
 `printer_supply_status` tasks check read-only supply endpoints from the approved
-printer registry. A task must include at least one `printer_supplies` entry:
+printer registry. In the default deployment those endpoints are served by the
+internal `printer-status-exporter`, which reads
+`configs/printer-status-exporter/printers.yaml` and exposes normalized supply
+JSON under `http://printer-status-exporter:8091/printers/<id>/supplies`.
+
+A task must include at least one `printer_supplies` entry:
 
 ```yaml
 type: printer_supply_status

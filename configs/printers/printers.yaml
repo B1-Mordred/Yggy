@@ -8,4 +8,4 @@ printers:
     enabled: true
     default_low_threshold_percent: 20
     expected_status: 200
-    description: Example read-only printer supply exporter endpoint. Replace with a real approved endpoint before enabling a live task.
+    description: Example read-only printer supply exporter endpoint backed by configs/printer-status-exporter/printers.yaml. Replace with a real approved endpoint before enabling a live task.

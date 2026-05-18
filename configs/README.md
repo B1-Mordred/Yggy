@@ -66,6 +66,12 @@ status exporter URLs that do not require credentials in the URL. The worker uses
 these endpoints only for `printer_supply_status` tasks and does not scan the
 LAN, use SNMP directly, submit print jobs, or change printer settings.
 
+`configs/printer-status-exporter/printers.yaml` configures the internal
+`printer-status-exporter` service. It can expose static dry-run sample data or
+perform a bounded HTTP GET against one operator-configured upstream URL per
+printer. Do not place credentials, raw webhook URLs, or printer admin endpoints
+in this file.
+
 Backup verification tasks use an explicit `backup:` block and may read only the
 worker's read-only `/app/backups` mount. They validate backup age, manifest
 flags, required files, MySQL dump headers, and bounded secret-scan markers, then

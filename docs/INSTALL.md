@@ -12,9 +12,9 @@
 cd /srv/Yggy
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]" -e "bragi[test]" -e "channel-bridge[test]"
+python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]" -e "printer-status-exporter[test]" -e "bragi[test]" -e "channel-bridge[test]"
 python scripts/validate_configs.py
-pytest automation-api/tests automation-worker/tests metrics-exporter/tests bragi/tests yggdrasil/tests channel-bridge/tests
+pytest automation-api/tests automation-worker/tests metrics-exporter/tests printer-status-exporter/tests bragi/tests yggdrasil/tests channel-bridge/tests
 docker compose -f docker-compose.automation.yml config >/dev/null
 ```
 
@@ -38,7 +38,7 @@ Deployment is manual:
 
 ```bash
 docker compose -f docker-compose.automation.yml up -d automation-mysql
-docker compose -f docker-compose.automation.yml up -d --build automation-api metrics-exporter automation-worker bragi
+docker compose -f docker-compose.automation.yml up -d --build automation-api metrics-exporter printer-status-exporter automation-worker bragi
 ```
 
 `bragi` is optional but recommended for natural human-facing interaction. Keep

@@ -96,6 +96,14 @@ configs/printers/printers.yaml
 
 This is for read-only HTTP JSON supply exporters. It does not discover printers,
 use SNMP directly, submit print jobs, or change printer settings.
+The default exporter service is configured in:
+
+```text
+configs/printer-status-exporter/printers.yaml
+```
+
+and is reachable only on the internal Compose networks as
+`http://printer-status-exporter:8091`.
 
 For n8n webhook tasks, rendering can select only approved webhook IDs:
 

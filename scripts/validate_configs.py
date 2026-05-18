@@ -14,12 +14,14 @@ if sys.prefix == sys.base_prefix and VENV_PYTHON.exists():
 
 sys.path.insert(0, str(ROOT / "automation-api"))
 sys.path.insert(0, str(ROOT / "metrics-exporter"))
+sys.path.insert(0, str(ROOT / "printer-status-exporter"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from app.policy import PolicyViolation, load_policy, load_printer_registry, validate_policy_config, validate_task_policy  # noqa: E402
 from app.schemas import TaskConfig, TopicConfig  # noqa: E402
 from app.services.capability_gateway import CapabilityError, validate_capability_registry  # noqa: E402
 from exporter.config import load_config as load_metrics_config  # noqa: E402
+from printer_exporter.config import load_config as load_printer_exporter_config  # noqa: E402
 from task_template_lib import load_templates, render_task_from_template  # noqa: E402
 
 
@@ -101,11 +103,17 @@ def validate_metrics() -> list[str]:
 
 
 def validate_printers() -> list[str]:
+    errors: list[str] = []
     try:
         load_printer_registry(load_policy(str(ROOT / "configs" / "policies.yaml")))
     except Exception as exc:
-        return [f"{ROOT / 'configs' / 'printers' / 'printers.yaml'}: {exc}"]
-    return []
+        errors.append(f"{ROOT / 'configs' / 'printers' / 'printers.yaml'}: {exc}")
+    for path in sorted((ROOT / "configs" / "printer-status-exporter").glob("*.yaml")):
+        try:
+            load_printer_exporter_config(path)
+        except Exception as exc:
+            errors.append(f"{path}: {exc}")
+    return errors
 
 
 def validate_task_templates() -> list[str]:

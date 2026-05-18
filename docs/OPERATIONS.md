@@ -112,9 +112,24 @@ monitoring. It reads only printer IDs configured in:
 configs/printers/printers.yaml
 ```
 
-The first implementation supports `http_json` endpoints intended for a small
-read-only printer status exporter. It does not scan the LAN, use SNMP directly,
-submit print jobs, administer printers, or store printer credentials.
+The first implementation supports `http_json` endpoints served by the internal
+`printer-status-exporter` service. That exporter is configured in:
+
+```text
+configs/printer-status-exporter/printers.yaml
+```
+
+and exposes:
+
+```text
+GET http://printer-status-exporter:8091/health
+GET http://printer-status-exporter:8091/printers
+GET http://printer-status-exporter:8091/printers/<printer-id>/supplies
+```
+
+It can serve static dry-run sample data or perform one bounded HTTP GET against
+an operator-configured upstream URL. It does not scan the LAN, use SNMP
+directly, submit print jobs, administer printers, or store printer credentials.
 
 Expected endpoint shape:
 
@@ -143,8 +158,9 @@ python scripts/render_task_template.py printer_supply_status \
   --low-threshold-percent 20
 ```
 
-Replace the example printer registry entry with a real read-only exporter before
-enabling a live task.
+Replace the example exporter source and printer registry entry with a real
+read-only endpoint before enabling a live task. Keep the registry URL pointed at
+the internal exporter endpoint, not at arbitrary chat-provided URLs.
 
 ## Backup Verification
 

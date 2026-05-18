@@ -22,9 +22,9 @@ Open WebUI
       -> MySQL
       -> versioned YAML configs
       -> audit log
-      -> automation-worker
+          -> automation-worker
           -> metrics-exporter
-          -> read-only printer supply exporters
+          -> printer-status-exporter
           -> n8n webhooks
           -> Discord dry-run or whitelisted webhooks
           -> RSS / HTTP sources
@@ -42,7 +42,7 @@ cp .env.example .env
 # edit .env manually; do not commit it
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]" -e "bragi[test]" -e "channel-bridge[test]"
+python -m pip install -e "automation-api[test]" -e "automation-worker[test]" -e "metrics-exporter[test]" -e "printer-status-exporter[test]" -e "bragi[test]" -e "channel-bridge[test]"
 python scripts/validate_configs.py
 docker compose -f docker-compose.automation.yml config >/dev/null
 ```
@@ -50,7 +50,7 @@ docker compose -f docker-compose.automation.yml config >/dev/null
 Run tests locally:
 
 ```bash
-pytest automation-api/tests automation-worker/tests metrics-exporter/tests bragi/tests yggdrasil/tests channel-bridge/tests
+pytest automation-api/tests automation-worker/tests metrics-exporter/tests printer-status-exporter/tests bragi/tests yggdrasil/tests channel-bridge/tests
 python scripts/validate_configs.py
 ```
 
@@ -58,7 +58,7 @@ When ready, bring up only the new automation scaffold:
 
 ```bash
 docker compose -f docker-compose.automation.yml up -d automation-mysql
-docker compose -f docker-compose.automation.yml up -d --build automation-api metrics-exporter automation-worker bragi
+docker compose -f docker-compose.automation.yml up -d --build automation-api metrics-exporter printer-status-exporter automation-worker bragi
 curl http://127.0.0.1:8088/health
 curl http://127.0.0.1:8650/health
 ```
