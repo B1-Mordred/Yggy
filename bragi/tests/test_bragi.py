@@ -1384,8 +1384,10 @@ def test_yggdrasil_unauthorized_message_is_specific(monkeypatch):
 def test_route_diagnostic_for_operation_is_read_only():
     diagnostic = bragi.diagnose_route([{"role": "user", "content": "send daily brief now"}])
 
-    assert diagnostic["mode"] == "operation"
-    assert diagnostic["route"] == "yggdrasil_canonical_action"
+    assert diagnostic["mode"] == "goal_clarifier"
+    assert diagnostic["route"] == "bragi_goal_clarifier"
+    assert diagnostic["downstream_route"] == "yggdrasil_canonical_action"
+    assert diagnostic["request_kind"] == "run_existing"
     assert diagnostic["operation"] == {"action": "run_task", "task_id": "daily_local_ai_security_briefing"}
     assert diagnostic["calls_external_services"] is False
 
@@ -1403,8 +1405,10 @@ def test_route_diagnostic_for_draft_omits_raw_user_request():
         [{"role": "user", "content": "draft a weekday 08:00 topic digest about German politics"}]
     )
 
-    assert diagnostic["mode"] == "draft"
-    assert diagnostic["route"] == "heimdal_validate_intent"
+    assert diagnostic["mode"] == "goal_clarifier"
+    assert diagnostic["route"] == "bragi_goal_clarifier"
+    assert diagnostic["downstream_route"] == "heimdal_validate_intent"
+    assert diagnostic["request_kind"] == "create_new"
     assert diagnostic["candidate_intent"]["capability_id"] == "topic_digest.v1"
     assert "user_request" not in diagnostic["candidate_intent"]
 
@@ -1412,8 +1416,10 @@ def test_route_diagnostic_for_draft_omits_raw_user_request():
 def test_route_diagnostic_for_printer_supply_uses_gateway():
     diagnostic = bragi.diagnose_route([{"role": "user", "content": "Check my printer toner and warn me before it runs out."}])
 
-    assert diagnostic["mode"] == "draft"
-    assert diagnostic["route"] == "heimdal_validate_intent"
+    assert diagnostic["mode"] == "goal_clarifier"
+    assert diagnostic["route"] == "bragi_goal_clarifier"
+    assert diagnostic["downstream_route"] == "heimdal_validate_intent"
+    assert diagnostic["request_kind"] == "create_new"
     assert diagnostic["calls_external_services"] is False
     assert diagnostic["candidate_intent"]["capability_id"] == "printer_supply_status.v1"
     assert "user_request" not in diagnostic["candidate_intent"]
@@ -1476,6 +1482,7 @@ def test_route_diagnostic_chat_command_formats_result():
     answer = bragi.route_chat([{"role": "user", "content": "diagnose route: send daily brief now"}])
 
     assert "Bragi route diagnostic" in answer
+    assert "bragi_goal_clarifier" in answer
     assert "yggdrasil_canonical_action" in answer
     assert "run_task" in answer
 

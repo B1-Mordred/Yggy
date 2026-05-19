@@ -46,6 +46,8 @@ from .goal_router import (
     AutomationRequestKind,
     classify_automation_request,
 )
+from .goal_models import GOAL_CAPABILITY_IDS
+from .hermes_client import HermesClarifierClient
 
 MODEL_ID = os.getenv("BRAGI_MODEL_ID", "bragi")
 DISPLAY_NAME = "Bragi"
@@ -79,6 +81,13 @@ GOAL_CLARIFIER_PROVIDER = os.getenv("BRAGI_GOAL_CLARIFIER_PROVIDER", "hermes").s
 GOAL_CLARIFIER_BASE_URL = os.getenv("BRAGI_GOAL_CLARIFIER_BASE_URL", "").strip()
 GOAL_CLARIFIER_MODEL = os.getenv("BRAGI_GOAL_CLARIFIER_MODEL", "hermes-clarifier").strip()
 GOAL_CLARIFIER_TIMEOUT = int(os.getenv("BRAGI_GOAL_CLARIFIER_TIMEOUT", "30"))
+GOAL_CLARIFIER_MAX_TURNS = max(1, min(int(os.getenv("BRAGI_GOAL_CLARIFIER_MAX_TURNS", "6")), 20))
+GOAL_CLARIFIER_USE_LLM_JUDGE = os.getenv("BRAGI_GOAL_CLARIFIER_USE_LLM_JUDGE", "false").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 CONTEXT_CATEGORIES = {
     "tasks",
     "pending_reviews",
@@ -524,7 +533,7 @@ def channel_required_capability(diagnostic: dict[str, Any]) -> str:
         return "source_proposal"
     if route in {"heimdal_validate_intent", "heimdal_prepare_yggdrasil_request"}:
         return "draft_task"
-    if route == "yggdrasil_canonical_action":
+    if route in {"yggdrasil_canonical_action", "bragi_goal_clarifier"}:
         operation = diagnostic.get("operation") if isinstance(diagnostic.get("operation"), dict) else {}
         action = operation.get("action")
         if action in {"list_tasks", "show_task"}:
@@ -533,6 +542,9 @@ def channel_required_capability(diagnostic: dict[str, Any]) -> str:
             return "run_l1"
         if action == "pause_task":
             return "pause_l1"
+        intent = diagnostic.get("candidate_intent") if isinstance(diagnostic.get("candidate_intent"), dict) else {}
+        if intent.get("intent") in {"draft_task", "propose_task_change"}:
+            return "draft_task"
         return "task_read"
     return "chat"
 
@@ -1362,6 +1374,24 @@ def diagnostic_capability_proposal(text: str, *, user_id: str, channel: str) -> 
     return payload
 
 
+def goal_diagnostic_fields(classification: AutomationRequestClassification) -> dict[str, Any]:
+    return {
+        "mode": "goal_clarifier",
+        "route": "bragi_goal_clarifier",
+        "request_kind": classification.request_kind.value,
+        "target_kind": classification.target_kind.value,
+        "target_task_id": classification.target_task_id,
+        "target_task_candidates": classification.target_task_candidates,
+        "capability_id": classification.capability_id,
+        "operation": classification.operation,
+        "candidate_intent": diagnostic_intent(classification.candidate_intent),
+        "missing_information": classification.missing_information,
+        "assumptions": classification.assumptions,
+        "reason": classification.reason,
+        "goal_classification": classification.model_dump(mode="json"),
+    }
+
+
 def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID, channel: str = "openwebui") -> dict[str, Any]:
     user_text = latest_user_request(messages)
     preview = redact_diagnostic_text(user_text)[:240]
@@ -1622,9 +1652,35 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
             }
         )
         return diagnostic
+
+    if goal_classification.request_kind not in {AutomationRequestKind.CHAT, AutomationRequestKind.HELP}:
+        goal_diagnostic = goal_diagnostic_fields(goal_classification)
+        if goal_classification.operation is not None and goal_classification.operation.get("action"):
+            goal_diagnostic["downstream_route"] = "yggdrasil_canonical_action"
+        elif goal_classification.request_kind == AutomationRequestKind.UNSAFE:
+            goal_diagnostic["downstream_route"] = "safe_rejection"
+        elif goal_classification.request_kind == AutomationRequestKind.NEEDS_CLARIFICATION:
+            goal_diagnostic["downstream_route"] = "bragi_intake_collecting_slots"
+        elif goal_classification.request_kind == AutomationRequestKind.MODIFY_EXISTING:
+            if source_search_requested(user_text):
+                goal_diagnostic["downstream_route"] = "source_selection"
+            else:
+                intent = safe_candidate_intent_from_classification(goal_classification, expected_intent="propose_task_change") or topic_digest_subject_change_intent(user_text)
+                if goal_classification.target_task_id:
+                    intent.setdefault("slots", {})["task_id"] = goal_classification.target_task_id
+                goal_diagnostic["candidate_intent"] = diagnostic_intent(intent)
+                goal_diagnostic["downstream_route"] = "heimdal_validate_intent"
+        elif goal_classification.request_kind == AutomationRequestKind.CREATE_NEW:
+            intent = intent_for_goal_create(user_text, goal_classification)
+            goal_diagnostic["candidate_intent"] = diagnostic_intent(intent)
+            goal_diagnostic["downstream_route"] = "heimdal_validate_intent" if intent else "bragi_capability_proposal"
+        elif goal_classification.request_kind == AutomationRequestKind.PROPOSE_NEW_CAPABILITY:
+            goal_diagnostic["downstream_route"] = "bragi_capability_proposal"
+            goal_diagnostic["capability_proposal"] = diagnostic_capability_proposal(user_text, user_id=user_id, channel=channel)
+        diagnostic.update(goal_diagnostic)
+        return diagnostic
+
     operation = operation_from_text(user_text)
-    if goal_classification.operation is not None and goal_classification.operation.get("action"):
-        operation = goal_classification.operation
     if operation is not None:
         diagnostic.update(
             {
@@ -1691,6 +1747,10 @@ def format_route_diagnostic(diagnostic: dict[str, Any]) -> str:
     categories = diagnostic.get("context_categories")
     if isinstance(categories, list) and categories:
         lines.append(f"- Context categories: {', '.join(f'`{item}`' for item in categories)}")
+    if diagnostic.get("request_kind"):
+        lines.append(f"- Request kind: `{diagnostic.get('request_kind')}`")
+    if diagnostic.get("downstream_route"):
+        lines.append(f"- Downstream route: `{diagnostic.get('downstream_route')}`")
     memory_candidate = diagnostic.get("memory_candidate")
     if isinstance(memory_candidate, dict):
         lines.extend(["", "Memory candidate:", f"```json\n{json.dumps(memory_candidate, indent=2, sort_keys=True)}\n```"])
@@ -4012,6 +4072,15 @@ def format_intake_summary(intake: dict[str, Any], *, include_intent: bool = Fals
         f"  Updated: `{intake.get('updated_at')}`",
         f"  Expires: `{intake.get('expires_at')}`",
     ]
+    goal = summary.get("goal") if isinstance(summary.get("goal"), dict) else {}
+    if goal:
+        lines.append(
+            f"  Goal: `{goal.get('request_kind')}` target `{goal.get('target_kind')}` "
+            f"(turns `{goal.get('turns_used')}/{goal.get('max_turns')}`)"
+        )
+        question = (goal.get("questions_asked") or [])[-1] if isinstance(goal.get("questions_asked"), list) and goal.get("questions_asked") else None
+        if question:
+            lines.append(f"  Question: {question}")
     sources = slots.get("source_ids") or summary.get("sources")
     if isinstance(sources, list) and sources:
         lines.append(f"  Sources: {', '.join(f'`{item}`' for item in sources[:8])}")
@@ -4325,24 +4394,57 @@ def visible_tasks_for_goal_router() -> list[dict[str, Any]]:
     return []
 
 
-def classify_goal_request(user_text: str, *, visible_tasks: list[dict[str, Any]] | None = None) -> AutomationRequestClassification:
+def goal_clarifier_client() -> HermesClarifierClient | None:
+    if not GOAL_CLARIFIER_ENABLED:
+        return None
+    if GOAL_CLARIFIER_PROVIDER.lower() != "hermes":
+        return None
+    if not GOAL_CLARIFIER_BASE_URL:
+        return None
+    return HermesClarifierClient(
+        base_url=GOAL_CLARIFIER_BASE_URL,
+        model=GOAL_CLARIFIER_MODEL,
+        timeout=GOAL_CLARIFIER_TIMEOUT,
+    )
+
+
+def classify_goal_request(
+    user_text: str,
+    *,
+    visible_tasks: list[dict[str, Any]] | None = None,
+    use_hermes: bool = False,
+) -> AutomationRequestClassification:
+    hermes = goal_clarifier_client() if use_hermes else None
     return classify_automation_request(
         user_text,
         visible_tasks=visible_tasks,
         task_aliases=TASK_ALIASES,
         max_candidates=GOAL_ROUTER_MAX_CANDIDATES,
+        hermes_client=hermes,
+        use_hermes=hermes is not None,
+        capability_ids=GOAL_CAPABILITY_IDS,
     )
 
 
-def classify_goal_request_with_context(user_text: str) -> AutomationRequestClassification:
-    classification = classify_goal_request(user_text)
+def classify_goal_request_with_context(user_text: str, *, use_hermes: bool = True) -> AutomationRequestClassification:
+    classification = classify_goal_request(user_text, use_hermes=False)
     if (
         classification.request_kind == AutomationRequestKind.NEEDS_CLARIFICATION
         and "target_task_id" in classification.missing_information
     ):
         visible_tasks = visible_tasks_for_goal_router()
         if visible_tasks:
-            classification = classify_goal_request(user_text, visible_tasks=visible_tasks)
+            classification = classify_goal_request(user_text, visible_tasks=visible_tasks, use_hermes=False)
+    if use_hermes and GOAL_CLARIFIER_ENABLED:
+        visible_tasks = visible_tasks_for_goal_router() if classification.request_kind in {
+            AutomationRequestKind.NEEDS_CLARIFICATION,
+            AutomationRequestKind.PROPOSE_NEW_CAPABILITY,
+            AutomationRequestKind.CHAT,
+            AutomationRequestKind.HELP,
+        } else []
+        hermes_classification = classify_goal_request(user_text, visible_tasks=visible_tasks, use_hermes=True)
+        if hermes_classification.request_kind != classification.request_kind or hermes_classification.candidate_intent:
+            return hermes_classification
     return classification
 
 
@@ -4355,6 +4457,47 @@ def goal_router_intake_payload(user_text: str, classification: AutomationRequest
     }
 
 
+def goal_summary_payload(
+    user_text: str,
+    classification: AutomationRequestClassification,
+    *,
+    existing_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    existing_goal = existing_summary.get("goal") if isinstance(existing_summary, dict) and isinstance(existing_summary.get("goal"), dict) else {}
+    turns_used = int(existing_goal.get("turns_used") or 0) + 1
+    goal = {
+        "kind": "automation_clarification",
+        "request_kind": classification.request_kind.value,
+        "target_kind": classification.target_kind.value,
+        "target_task_id": classification.target_task_id,
+        "target_task_candidates": classification.target_task_candidates,
+        "original_request_preview": redact_diagnostic_text(user_text)[:240],
+        "turns_used": min(turns_used, GOAL_CLARIFIER_MAX_TURNS),
+        "max_turns": GOAL_CLARIFIER_MAX_TURNS,
+        "assumptions": classification.assumptions,
+        "questions_asked": list(existing_goal.get("questions_asked") or []),
+        "last_judge_reason": classification.reason,
+        "done": False,
+    }
+    question = goal_clarification_question(classification)
+    if question and question not in goal["questions_asked"]:
+        goal["questions_asked"].append(question)
+    return goal
+
+
+def goal_clarification_question(classification: AutomationRequestClassification) -> str:
+    missing = set(classification.missing_information)
+    if classification.target_task_candidates:
+        return "Which existing automation should I use?"
+    if "target_task_id" in missing and ("change_type" in missing or "subject_change" in missing):
+        return "Which existing briefing automation should I change, and what should change: sources, subjects, schedule, or output target?"
+    if "target_task_id" in missing:
+        return "Which existing automation should I use?"
+    if "change_type" in missing or "subject_change" in missing:
+        return "What should change: approved sources, subjects or filters, schedule, or output target?"
+    return "What missing detail should I use for this automation request?"
+
+
 def create_goal_clarification_intake(
     user_text: str,
     classification: AutomationRequestClassification,
@@ -4363,14 +4506,24 @@ def create_goal_clarification_intake(
     channel: str,
     existing_intake_id: str | None = None,
 ) -> dict[str, Any] | None:
+    existing_summary: dict[str, Any] | None = None
+    if existing_intake_id:
+        try:
+            existing = get_intake(intake_id=existing_intake_id, user_id=user_id)
+            existing_summary = existing.get("summary") if isinstance(existing.get("summary"), dict) else None
+        except Exception:
+            existing_summary = None
+    goal = goal_summary_payload(user_text, classification, existing_summary=existing_summary)
     summary = {
         "kind": "automation_request_routing",
         "request_kind": classification.request_kind.value,
         "target_kind": classification.target_kind.value,
         "target_task_id": classification.target_task_id,
+        "task_id": classification.target_task_id,
         "target_task_candidates": classification.target_task_candidates,
         "missing_slots": classification.missing_information,
         "reason": classification.reason,
+        "goal": goal,
     }
     intent = goal_router_intake_payload(user_text, classification)
     try:
@@ -4416,7 +4569,11 @@ def format_goal_clarification(
         existing_intake_id=existing_intake_id,
     )
     intake_id = str((intake or {}).get("id") or "")
-    lines = ["I need one more clean decision before anything goes near Yggdrasil."]
+    lines = [
+        "I need one more clean decision before anything goes near Yggdrasil.",
+        "",
+        f"Question: {goal_clarification_question(classification)}",
+    ]
     if classification.target_task_candidates:
         lines.extend(["", "Possible existing automations:"])
         for index, task_id in enumerate(classification.target_task_candidates, start=1):
@@ -4445,7 +4602,7 @@ def format_goal_clarification(
                 f"- Delete it: reply `delete intake {intake_id}` or `cancel intake {intake_id}`.",
             ]
         )
-    lines.extend(["", "I have not sent anything to Yggdrasil. The ravens remain unemployed for the moment."])
+    lines.extend(["", "I have not sent anything to Yggdrasil. This is only stored clarification state."])
     return "\n".join(lines)
 
 
@@ -4461,7 +4618,30 @@ def format_goal_unsafe(classification: AutomationRequestClassification) -> str:
     return "\n".join(lines)
 
 
+def safe_candidate_intent_from_classification(classification: AutomationRequestClassification, *, expected_intent: str | None = None) -> dict[str, Any] | None:
+    candidate = classification.candidate_intent
+    if not isinstance(candidate, dict):
+        return None
+    intent_name = str(candidate.get("intent") or "")
+    if expected_intent and intent_name != expected_intent:
+        return None
+    if intent_name not in {"draft_task", "propose_task_change"}:
+        return None
+    normalized = json.loads(json.dumps(candidate, default=str))
+    normalized["requires_user_confirmation"] = GOAL_ROUTER_REQUIRE_CONFIRMATION
+    normalized["user_confirmation_obtained"] = False
+    normalized.setdefault("confidence", max(float(classification.confidence or 0.0), 0.70))
+    if classification.capability_id and not normalized.get("capability_id"):
+        normalized["capability_id"] = classification.capability_id
+    if not isinstance(normalized.get("slots"), dict):
+        normalized["slots"] = {}
+    return normalized
+
+
 def intent_for_goal_create(user_text: str, classification: AutomationRequestClassification) -> dict[str, Any] | None:
+    candidate = safe_candidate_intent_from_classification(classification, expected_intent="draft_task")
+    if candidate is not None:
+        return candidate
     capability_id = classification.capability_id
     if capability_id == "server_health.v1":
         intent = server_health_intent(user_text)
@@ -4486,7 +4666,7 @@ def handle_goal_router_classification(
     channel: str,
     existing_intake_id: str | None = None,
 ) -> str | None:
-    if classification.request_kind == AutomationRequestKind.CHAT:
+    if classification.request_kind in {AutomationRequestKind.CHAT, AutomationRequestKind.HELP}:
         return None
     if classification.request_kind == AutomationRequestKind.UNSAFE:
         return format_goal_unsafe(classification)
@@ -4521,7 +4701,7 @@ def handle_goal_router_classification(
                 source_selection["task_id"] = classification.target_task_id
             intake = create_source_selection_intake(source_selection, user_id=user_id, channel=channel)
             return format_source_selection(source_selection, intake=intake)
-        intent = topic_digest_subject_change_intent(user_text)
+        intent = safe_candidate_intent_from_classification(classification, expected_intent="propose_task_change") or topic_digest_subject_change_intent(user_text)
         if classification.target_task_id:
             intent.setdefault("slots", {})["task_id"] = classification.target_task_id
         intent["requires_user_confirmation"] = GOAL_ROUTER_REQUIRE_CONFIRMATION
@@ -4739,6 +4919,15 @@ def health() -> dict[str, Any]:
         "memory_store": memory_store_status(),
         "intake_store": intake_store_status(),
         "channel_registry": channel_registry_status(),
+        "goal_clarifier": {
+            "enabled": GOAL_CLARIFIER_ENABLED,
+            "provider": GOAL_CLARIFIER_PROVIDER,
+            "base_url_configured": bool(GOAL_CLARIFIER_BASE_URL),
+            "model": GOAL_CLARIFIER_MODEL,
+            "timeout": GOAL_CLARIFIER_TIMEOUT,
+            "max_turns": GOAL_CLARIFIER_MAX_TURNS,
+            "use_llm_judge": GOAL_CLARIFIER_USE_LLM_JUDGE,
+        },
     }
 
 
@@ -4822,7 +5011,13 @@ def discord_channel_message(payload: DiscordMessageRequest, authorization: str |
         }
 
     reply = route_chat(messages, user_id=user_id, channel=channel_scope)
-    forwarded_to_yggdrasil = diagnostic.get("route") == "yggdrasil_canonical_action" or (
+    forwarded_to_yggdrasil = (
+        diagnostic.get("route") == "yggdrasil_canonical_action"
+        or (
+            diagnostic.get("route") == "bragi_goal_clarifier"
+            and diagnostic.get("downstream_route") == "yggdrasil_canonical_action"
+        )
+    ) or (
         diagnostic.get("route") == "heimdal_prepare_yggdrasil_request"
         and diagnostic.get("mode") in {"confirmation", "intake_confirmation"}
     )

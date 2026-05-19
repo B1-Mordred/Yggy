@@ -89,11 +89,23 @@ forward only accepted deterministic actions to Yggdrasil. User confirmation is
 not Yggy approval. Existing-brief changes become Yggy task-change proposals;
 Bragi does not approve or apply them and does not expose approval nonces.
 
-Bragi's deterministic goal router first decides whether a request targets an
-existing task, a new task from a registered capability, a new non-executable
-capability proposal, unsafe work, missing clarification, or ordinary chat. This
-keeps natural conversation in Bragi while preserving Yggdrasil as a strict
-canonical-action endpoint.
+Bragi's goal loop first decides whether a request targets an existing task, a
+new task from a registered capability, a new non-executable capability proposal,
+unsafe work, missing clarification, help, or ordinary chat. The deterministic
+path is the default. If `BRAGI_GOAL_CLARIFIER_ENABLED=true`, Bragi may call a
+configured local Hermes-compatible endpoint for JSON-only advisory
+classification, but Hermes still receives no tools, no admin key, no approval
+nonces, no shell or Docker access, no raw webhook URLs, and no secrets.
+Hermes output is validated as a Pydantic classification, forced through user
+confirmation rules, and then through Heimdal before any canonical intent can be
+prepared.
+
+This keeps natural conversation in Bragi while preserving Yggdrasil as a strict
+canonical-action endpoint. Direct existing-task requests such as list, show,
+run, and pause become deterministic canonical operations only. Existing-task
+changes become `propose_task_change` intents. New automations become
+`draft_task` intents. Unsupported safe ideas become capability proposals.
+Unsafe ideas are rejected or redirected to safer monitoring and notification.
 
 Ordinary chat, such as greetings or general questions, stays inside Bragi's
 no-tool chat fallback. Bragi should not describe normal conversation as a
@@ -188,6 +200,11 @@ suggest topic-digest source IDs and filters, but the resulting automation still
 must be represented as a canonical intent, confirmed by the user, validated by
 Heimdal, forwarded deterministically to Yggdrasil, and approved through Yggy
 policy before live delivery.
+
+Hermes clarification is not a research or execution path. It must not fetch
+arbitrary URLs, accept raw webhook URLs, inspect local files, run shell commands,
+or decide approval. If Hermes is down, unauthorized, or returns malformed JSON,
+Bragi falls back to the deterministic classifier.
 
 For recurring task shapes, prefer the reviewed templates in
 `configs/task_templates/` and the workflow in `docs/TASK_TEMPLATES.md`.

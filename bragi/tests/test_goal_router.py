@@ -112,6 +112,73 @@ def test_what_tasks_question_routes_to_list_existing():
     assert result.operation == {"action": "list_tasks"}
 
 
+def test_inspect_existing_by_explicit_id_and_alias():
+    explicit = classify_automation_request("inspect task daily_local_ai_security_briefing", task_aliases=bragi.TASK_ALIASES)
+    alias = classify_automation_request("show the daily brief", task_aliases=bragi.TASK_ALIASES)
+
+    assert explicit.request_kind == AutomationRequestKind.INSPECT_EXISTING
+    assert explicit.operation == {"action": "show_task", "task_id": "daily_local_ai_security_briefing"}
+    assert alias.request_kind == AutomationRequestKind.INSPECT_EXISTING
+    assert alias.operation == {"action": "show_task", "task_id": "daily_local_ai_security_briefing"}
+
+
+def test_modify_existing_topic_digest_classifies_to_task_change_intent():
+    result = classify_automation_request("include Ubuntu security notices in the daily brief", task_aliases=bragi.TASK_ALIASES)
+
+    assert result.request_kind == AutomationRequestKind.MODIFY_EXISTING
+    assert result.capability_id == "topic_digest.modify_subjects.v1"
+    assert result.target_task_id == "daily_local_ai_security_briefing"
+
+
+def test_new_n8n_webhook_uses_registered_capability():
+    result = classify_automation_request("create an n8n webhook task for the approved daily briefing workflow", task_aliases=bragi.TASK_ALIASES)
+
+    assert result.request_kind == AutomationRequestKind.CREATE_NEW
+    assert result.capability_id == "n8n_webhook.v1"
+
+
+def test_unsupported_safe_idea_becomes_capability_proposal_classification():
+    result = classify_automation_request("track UPS battery status and alert me", task_aliases=bragi.TASK_ALIASES)
+
+    assert result.request_kind == AutomationRequestKind.PROPOSE_NEW_CAPABILITY
+    assert result.target_kind.value == "new_capability"
+
+
+def test_unsupported_safe_idea_routes_to_non_executable_capability_proposal(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        assert (method, path) == ("POST", "/capability-proposals/draft")
+        return {
+            "id": "capability_proposal_ups_battery",
+            "status": "pending",
+            "suggested_capability_id": payload["suggested_capability_id"],
+            "suggested_task_type": payload["suggested_task_type"],
+            "likely_approval_level": payload["likely_approval_level"],
+            "purpose": payload["purpose"],
+        }
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))
+
+    answer = bragi.route_chat([{"role": "user", "content": "track UPS battery status and alert me"}])
+
+    assert calls[0][0:2] == ("POST", "/capability-proposals/draft")
+    assert "Capability proposal drafted" in answer
+    assert "This is backlog state only" in answer
+
+
+def test_arbitrary_urls_webhook_urls_and_secrets_are_unsafe():
+    arbitrary = classify_automation_request("create a brief from https://example.com/feed.xml", task_aliases=bragi.TASK_ALIASES)
+    webhook = classify_automation_request("trigger this webhook URL https://example.com/webhook/abc every morning", task_aliases=bragi.TASK_ALIASES)
+    secret = classify_automation_request("remember this API key token abc123 for the task", task_aliases=bragi.TASK_ALIASES)
+
+    assert arbitrary.request_kind == AutomationRequestKind.UNSAFE
+    assert webhook.request_kind == AutomationRequestKind.UNSAFE
+    assert secret.request_kind == AutomationRequestKind.UNSAFE
+
+
 def test_multiple_visible_brief_tasks_need_clarification():
     visible_tasks = [
         {"id": "daily_local_ai_security_briefing", "name": "Daily Local AI Security Briefing"},
@@ -252,3 +319,36 @@ def test_ambiguous_existing_change_creates_goal_clarification_intake(monkeypatch
     stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
     assert stored["intent"]["intent"] == "automation_request_routing"
     assert stored["status"] == "collecting_slots"
+    assert stored["summary"]["goal"]["kind"] == "automation_clarification"
+    assert stored["summary"]["goal"]["request_kind"] == "needs_clarification"
+    assert stored["summary"]["goal"]["target_task_candidates"] == [
+        "daily_local_ai_security_briefing",
+        "weekly_security_digest",
+    ]
+
+
+def test_goal_clarification_metadata_survives_show_and_continue(monkeypatch):
+    def fake_api_request(method, path, payload=None):
+        if method == "GET" and path == "/tasks":
+            return {
+                "data": [
+                    {"id": "daily_local_ai_security_briefing", "name": "Daily Local AI Security Briefing"},
+                    {"id": "weekly_security_digest", "name": "Weekly Security Digest"},
+                ]
+            }
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))
+
+    answer = bragi.route_chat([{"role": "user", "content": "Mach den Brief besser."}])
+    intake_id = bragi.intake_id_from_text(answer)
+    detail = bragi.route_chat([{"role": "user", "content": f"show intake {intake_id}"}])
+    continued = bragi.route_chat([{"role": "user", "content": f"continue intake {intake_id}"}])
+    cannot_confirm = bragi.route_chat([{"role": "user", "content": f"confirm intake {intake_id}"}])
+
+    assert intake_id is not None
+    assert "Goal: `needs_clarification`" in detail
+    assert "Question:" in detail
+    assert "Goal: `needs_clarification`" in continued
+    assert "incomplete" in cannot_confirm

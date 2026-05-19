@@ -104,8 +104,19 @@ BRAGI_GOAL_ROUTER_REQUIRE_CONFIRMATION=true
 BRAGI_GOAL_ROUTER_MAX_CANDIDATES=5
 ```
 
-The MVP router has no Hermes or LLM dependency. It classifies each automation
-shaped request into one of these internal request kinds:
+The default router is deterministic and has no Hermes or LLM dependency. The
+implementation lives in:
+
+```text
+bragi/bragi/goal_models.py
+bragi/bragi/goal_loop.py
+bragi/bragi/hermes_client.py
+bragi/bragi/goal_prompts.py
+```
+
+`bragi/bragi/goal_router.py` remains as a compatibility import layer for older
+tests and callers. The goal loop classifies each automation-shaped request into
+one of these internal request kinds:
 
 ```text
 list_existing
@@ -122,9 +133,11 @@ chat
 
 The router also records whether the target is an existing task, a new task, a
 new capability proposal, or still unknown. Existing task references are resolved
-only through explicit task IDs, configured `TASK_ALIASES`, and exact or
-substring-based visible task name matches. If more than one task matches, Bragi
-asks the user to choose and does not forward anything.
+before creating new tasks. Explicit slug-like task IDs win; configured
+`TASK_ALIASES` are allowed; and visible task summaries from the automation API
+can be used read-only when an ambiguous target must be resolved. If more than
+one task matches, Bragi asks the user to choose, stores a `collecting_slots`
+intake, and does not forward anything.
 
 The routing outcomes map to the existing safe paths:
 
@@ -139,6 +152,20 @@ new capability     -> non-executable capability proposal
 unsafe             -> safe rejection or monitoring-only alternative
 needs_clarification -> Bragi intake, collecting_slots
 chat               -> ordinary Bragi conversation
+```
+
+Diagnostics expose this classifier without invoking Hermes by default:
+
+```json
+{
+  "mode": "goal_clarifier",
+  "route": "bragi_goal_clarifier",
+  "request_kind": "run_existing",
+  "target_kind": "existing_task",
+  "target_task_id": "daily_local_ai_security_briefing",
+  "operation": {"action": "run_task", "task_id": "daily_local_ai_security_briefing"},
+  "downstream_route": "yggdrasil_canonical_action"
+}
 ```
 
 Existing task changes never mutate task YAML directly from Bragi. They become
@@ -160,8 +187,10 @@ Unsafe requests are rejected before Heimdal/Yggdrasil. Examples include admin
 approval handling, approval nonces, admin API keys, shell commands, Docker
 socket access, Docker/service restarts, broad host filesystem changes, firewall
 changes, raw webhook URLs, automatic update installation, purchases, and
-secret-like material. Bragi may suggest a safer monitoring-plus-alert version,
-but it must not forward the unsafe request.
+secret-like material. Arbitrary URLs are not accepted into executable task
+intents; public source URLs must go through the separate source-proposal review
+path. Bragi may suggest a safer monitoring-plus-alert version, but it must not
+forward the unsafe request.
 
 User confirmation and Yggy approval remain separate:
 
@@ -184,6 +213,50 @@ If a request maps to a registered capability but the Bragi service is not
 authorized to call Yggdrasil, Bragi should say that the understood automation
 request could not be forwarded because the service is not authorized. That is
 an authorization failure, not a capability failure.
+
+### Optional Hermes Clarifier
+
+Hermes can be enabled as an advisory local JSON clarifier:
+
+```text
+BRAGI_GOAL_CLARIFIER_ENABLED=false
+BRAGI_GOAL_CLARIFIER_PROVIDER=hermes
+BRAGI_GOAL_CLARIFIER_BASE_URL=http://host.docker.internal:8642
+BRAGI_GOAL_CLARIFIER_MODEL=hermes-clarifier
+BRAGI_GOAL_CLARIFIER_TIMEOUT=30
+BRAGI_GOAL_CLARIFIER_MAX_TURNS=6
+BRAGI_GOAL_CLARIFIER_USE_LLM_JUDGE=false
+```
+
+This is disabled by default and must degrade safely if Hermes is unavailable,
+unauthorized, returns invalid JSON, or proposes unsupported material. Hermes is
+called only as a no-tools, JSON-only classifier. It receives redacted request
+text, safe visible task summaries, aliases, allowed capability IDs, and the
+deterministic classifier result. It must not receive `.env`, secrets, approval
+nonces, admin keys, raw logs, webhook URLs, private file paths, or execution
+authority.
+
+Hermes output is validated with Pydantic and remains advisory. Existing
+deterministic high-confidence operations win unless Hermes supplies a same-kind
+candidate intent that still goes through Heimdal. Candidate intents from Hermes
+are forced back to `requires_user_confirmation=true` and
+`user_confirmation_obtained=false`, then sent to
+`POST /capabilities/validate-intent`. Unsafe slots, unknown capabilities, and
+unsupported IDs are rejected by Heimdal or become non-executable backlog.
+
+Goal clarification state is stored in existing `bragi_intake_records`, not a
+parallel persistence model. `summary_json.goal` records non-secret metadata such
+as request kind, target kind, candidate task IDs, assumptions, questions asked,
+turn count, and the last classifier reason. The existing channel/user scoping,
+statuses, confirmation rules, and follow-up commands continue to apply.
+
+Relevant tests:
+
+```bash
+pytest bragi/tests
+pytest automation-api/tests/test_capability_gateway.py automation-api/tests/test_task_templates.py
+python scripts/validate_configs.py
+```
 
 ## Read-Only Context
 

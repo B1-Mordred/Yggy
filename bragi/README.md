@@ -253,6 +253,12 @@ BRAGI_GOAL_ROUTER_ENABLED=true
 BRAGI_GOAL_ROUTER_REQUIRE_CONFIRMATION=true
 BRAGI_GOAL_ROUTER_MAX_CANDIDATES=5
 BRAGI_GOAL_CLARIFIER_ENABLED=false
+BRAGI_GOAL_CLARIFIER_PROVIDER=hermes
+BRAGI_GOAL_CLARIFIER_BASE_URL=http://host.docker.internal:8642
+BRAGI_GOAL_CLARIFIER_MODEL=hermes-clarifier
+BRAGI_GOAL_CLARIFIER_TIMEOUT=30
+BRAGI_GOAL_CLARIFIER_MAX_TURNS=6
+BRAGI_GOAL_CLARIFIER_USE_LLM_JUDGE=false
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 DISCORD_HOME_CHANNEL=...
 DISCORD_ALLOWED_USER_IDS=...
@@ -262,7 +268,10 @@ DISCORD_ALLOWED_USER_IDS=...
 service aliases, and style notes, but never credentials, approval nonces, or
 execution state.
 
-The goal router is deterministic in the MVP. It separates existing-task
+The goal router is deterministic by default. It separates existing-task
 operations, existing-task change proposals, new task drafts, new capability
 proposals, unsafe requests, missing clarifications, and ordinary chat before any
-canonical Yggdrasil action is prepared.
+canonical Yggdrasil action is prepared. If `BRAGI_GOAL_CLARIFIER_ENABLED=true`,
+Bragi may ask the configured local Hermes-compatible JSON endpoint for advisory
+classification only. Hermes receives redacted, non-secret request context, gets
+no tools or credentials, and cannot approve, execute, or bypass Heimdal.
