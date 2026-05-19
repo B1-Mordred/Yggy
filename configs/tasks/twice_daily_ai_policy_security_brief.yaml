@@ -165,6 +165,15 @@ runtime:
   timeout_seconds: 120
   retry_count: 1
 
+quality:
+  enabled: true
+  min_items: 20
+  min_successful_sources: 18
+  alert_on_source_errors: true
+  alert_on_empty_sections: false
+  alert_on_delivery_failure: true
+  alert_target: alerts
+
 notifications:
   on_success: true
   on_failure: true

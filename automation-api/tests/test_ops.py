@@ -508,6 +508,7 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
                         "title": "Daily Local AI Security Briefing",
                         "message": "digest body",
                         "source_count": 4,
+                        "approved_source_count": 3,
                         "summary_mode": "llm",
                         "items": [
                             {
@@ -519,6 +520,31 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
                             }
                         ],
                         "errors": [{"source": "https://example.com/feed.xml", "error": "Timeout"}],
+                        "source_health": [
+                            {
+                                "source": "open_webui_releases",
+                                "source_id": "open_webui_releases",
+                                "url": "https://example.com/secret-ish-but-not-needed",
+                                "status": "ok",
+                                "item_count": 1,
+                                "trust_level": "official_project_release_feed",
+                                "ingestion_mode": "feed_metadata",
+                            }
+                        ],
+                        "quality": {
+                            "enabled": True,
+                            "status": "degraded",
+                            "alert_needed": True,
+                            "alert_target": "alerts",
+                            "metrics": {
+                                "item_count": 1,
+                                "successful_source_count": 1,
+                                "processed_source_count": 2,
+                                "configured_source_count": 4,
+                            },
+                            "thresholds": {"min_items": 5, "alert_on_delivery_failure": True},
+                            "reasons": [{"code": "source_errors", "message": "Digest recorded 1 source error."}],
+                        },
                         "n8n": {
                             "status": "ready",
                             "notify": False,
@@ -547,6 +573,10 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
                         "status_code": 200,
                         "discord_token": "hidden-secret",
                     },
+                    "quality_alert": {
+                        "decision": {"send": True, "classification": "failure"},
+                        "notification": {"sent": True, "target": "alerts"},
+                    },
                     "api_token": "hidden-secret",
                 },
                 created_at=utcnow(),
@@ -564,6 +594,11 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
     assert body["digest"]["item_count"] == 1
     assert body["digest"]["error_count"] == 1
     assert body["digest"]["summary_mode"] == "llm"
+    assert body["digest"]["approved_source_count"] == 3
+    assert body["digest"]["quality"]["status"] == "degraded"
+    assert body["digest"]["quality"]["reasons"][0]["code"] == "source_errors"
+    assert body["digest"]["source_health"][0]["source_id"] == "open_webui_releases"
+    assert "secret-ish-but-not-needed" not in response.text
     assert body["digest"]["items"][0]["url"] == "https://example.com/open-webui"
     assert body["n8n"]["webhook_id"] == "daily_briefing_stub"
     assert body["n8n"]["response"]["action"] == "normalize_digest_payload"
@@ -572,6 +607,7 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
     assert body["notification_decision"]["secret_token"] == "[REDACTED]"
     assert body["notification"]["sent"] is True
     assert body["notification"]["discord_token"] == "[REDACTED]"
+    assert body["quality_alert"]["notification"]["target"] == "alerts"
     assert "hidden-secret" not in response.text
     assert "api_token" not in response.text
 

@@ -268,6 +268,22 @@ Notification preferences are stored in each task config. The worker records a
 sent, skipped for quiet hours, skipped because the result was empty, or collapsed
 as a repeated failure.
 
+## Digest Quality Alerts
+
+Topic digest tasks can define a `quality` block. The worker evaluates it after
+item collection and primary Discord delivery:
+
+- too few matching items can mark the digest `degraded`
+- too few successful sources can mark the digest `degraded`
+- source fetch errors can mark the digest `degraded`
+- empty sectioned-digest sections can mark the digest `degraded`
+- primary Discord delivery failure can mark the digest `failed`
+
+The normal brief still goes to its configured output target. If quality is
+degraded or failed, the worker sends a second anomaly notification to the
+configured `quality.alert_target`, usually `alerts`. The run detail view shows
+the quality status, metrics, reasons, source health, and alert send result.
+
 ## Pause A Task
 
 ```bash

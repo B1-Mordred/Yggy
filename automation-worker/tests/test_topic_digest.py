@@ -333,6 +333,97 @@ def test_sectioned_topic_digest_can_disable_llm_summary():
     assert "NVIDIA GPU accelerator platform update" in result["message"]
 
 
+def test_topic_digest_quality_is_ok_when_thresholds_are_met():
+    feed = """<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>AI security item</title>
+        <link>https://example.com/ai-security</link>
+        <description>AI vulnerability advisory.</description>
+      </item>
+      <item>
+        <title>AI software item</title>
+        <link>https://example.com/ai-software</link>
+        <description>AI model release notes.</description>
+      </item>
+    </channel></rss>
+    """
+
+    result = run_topic_digest(
+        {
+            "name": "Digest",
+            "sources": [{"source_id": "example_feed", "type": "rss", "url": "https://example.com/feed.xml"}],
+            "filters": {"include": ["AI"], "exclude": []},
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True, "timeout_seconds": 120},
+            "quality": {
+                "min_items": 2,
+                "min_successful_sources": 1,
+                "alert_on_source_errors": True,
+                "alert_target": "alerts",
+            },
+        },
+        rss_fetcher=lambda url, timeout: feed,
+        source_registry=registry(rss_source()),
+    )
+
+    assert result["quality"]["status"] == "ok"
+    assert result["quality"]["alert_needed"] is False
+    assert result["quality"]["metrics"]["successful_source_count"] == 1
+    assert result["quality"]["metrics"]["item_count"] == 2
+
+
+def test_topic_digest_quality_marks_source_errors_degraded():
+    good_feed = """<?xml version="1.0"?>
+    <rss><channel>
+      <item>
+        <title>Open WebUI security release</title>
+        <link>https://example.com/open-webui</link>
+        <description>Docker deployment hardening update.</description>
+      </item>
+    </channel></rss>
+    """
+
+    def fetcher(url: str, timeout: int) -> str:
+        if "broken" in url:
+            raise TimeoutError("feed timed out")
+        return good_feed
+
+    result = run_topic_digest(
+        {
+            "name": "Digest",
+            "sources": [
+                {"source_id": "broken_feed", "type": "rss", "url": "https://example.com/broken.xml"},
+                {"source_id": "example_feed", "type": "rss", "url": "https://example.com/feed.xml"},
+            ],
+            "filters": {"include": ["Open WebUI", "Docker"], "exclude": []},
+            "policy": {"require_sources": True, "max_items": 10},
+            "runtime": {"dry_run": True, "timeout_seconds": 120},
+            "quality": {
+                "min_items": 2,
+                "min_successful_sources": 2,
+                "alert_on_source_errors": True,
+                "alert_target": "alerts",
+            },
+        },
+        rss_fetcher=fetcher,
+        source_registry=registry(
+            rss_source(id="broken_feed", name="Broken feed", url="https://example.com/broken.xml"),
+            rss_source(),
+        ),
+    )
+
+    assert result["quality"]["status"] == "degraded"
+    assert result["quality"]["alert_needed"] is True
+    assert {reason["code"] for reason in result["quality"]["reasons"]} == {
+        "too_few_items",
+        "too_few_successful_sources",
+        "source_errors",
+    }
+    assert result["quality"]["metrics"]["successful_source_count"] == 1
+    assert result["quality"]["metrics"]["failed_source_count"] == 1
+
+
 def test_topic_digest_falls_back_when_summarizer_errors():
     result = run_topic_digest(
         {

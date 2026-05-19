@@ -67,6 +67,20 @@ def test_invalid_failure_collapse_window_fails():
         raise AssertionError("invalid failure collapse window was accepted")
 
 
+def test_quality_alert_target_must_be_whitelisted():
+    policy = load_policy(str(ROOT / "configs" / "policies.yaml"))
+    data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_daily_briefing.yaml").read_text(encoding="utf-8"))
+    data["id"] = "invalid_quality_alert_target"
+    data["quality"] = {"alert_target": "not_allowed"}
+    task = TaskConfig.model_validate(data)
+    try:
+        validate_task_policy(task, policy)
+    except Exception as exc:
+        assert "quality alert target is not whitelisted" in str(exc)
+    else:
+        raise AssertionError("unapproved quality alert target was accepted")
+
+
 def test_n8n_webhook_requires_n8n_config():
     data = yaml.safe_load((ROOT / "configs" / "tasks" / "example_n8n_webhook.yaml").read_text(encoding="utf-8"))
     data["id"] = "missing_n8n_config"

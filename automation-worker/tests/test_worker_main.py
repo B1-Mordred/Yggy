@@ -277,6 +277,114 @@ def test_process_topic_digest_optionally_normalizes_with_n8n_before_discord(monk
     assert client.completed_calls[0]["log"]["result"]["n8n"]["response"]["action"] == "normalize_digest_payload"
 
 
+def test_degraded_topic_digest_sends_primary_digest_and_quality_alert(monkeypatch):
+    client = FakeClient()
+
+    def fake_digest(config: dict) -> dict:
+        return {
+            "status": "ready",
+            "message": "live digest body",
+            "items": [{"title": "Item"}],
+            "quality": {
+                "status": "degraded",
+                "alert_needed": True,
+                "alert_target": "alerts",
+                "reasons": [{"code": "source_errors", "message": "Digest recorded 1 source error."}],
+                "metrics": {
+                    "item_count": 1,
+                    "successful_source_count": 1,
+                    "processed_source_count": 2,
+                    "configured_source_count": 2,
+                },
+                "thresholds": {"alert_on_delivery_failure": True},
+            },
+        }
+
+    monkeypatch.setattr("worker.main.run_topic_digest", fake_digest)
+
+    result = process_task(
+        client,
+        {
+            "enabled": True,
+            "config": {
+                "id": "twice_daily_ai_policy_security_brief",
+                "name": "Twice Daily AI, Security, and Policy Brief",
+                "type": "topic_digest",
+                "runtime": {"dry_run": True},
+                "output": {"channel": "discord", "target": "briefings"},
+                "notifications": {"on_failure": True},
+                "quality": {"alert_target": "alerts"},
+            },
+        },
+    )
+
+    assert result["status"] == "completed_dry_run"
+    assert client.discord_calls[0] == {"target": "briefings", "content": "live digest body", "dry_run": True}
+    assert client.discord_calls[1]["target"] == "alerts"
+    assert "Brief quality alert" in client.discord_calls[1]["content"]
+    assert client.completed_calls[0]["log"]["notification_decision"]["classification"] == "failure"
+    assert client.completed_calls[0]["log"]["quality_alert"]["decision"]["classification"] == "failure"
+
+
+def test_topic_digest_delivery_failure_marks_quality_failed_and_alerts(monkeypatch):
+    client = FakeClient()
+    task = {
+        "id": "twice_daily_ai_policy_security_brief",
+        "enabled": True,
+        "config": {
+            "id": "twice_daily_ai_policy_security_brief",
+            "name": "Twice Daily AI, Security, and Policy Brief",
+            "type": "topic_digest",
+            "runtime": {"dry_run": False},
+            "output": {"channel": "discord", "target": "briefings"},
+            "notifications": {"on_success": True, "on_failure": True},
+            "quality": {"alert_target": "alerts", "alert_on_delivery_failure": True},
+        },
+    }
+    client.tasks = {task["id"]: task}
+    client.runs = [
+        {
+            "id": "manual-run-1",
+            "task_id": "twice_daily_ai_policy_security_brief",
+            "status": "queued",
+            "completed_at": None,
+        }
+    ]
+
+    def fake_digest(config: dict) -> dict:
+        return {
+            "status": "ready",
+            "message": "live digest body",
+            "items": [{"title": "Item"}],
+            "quality": {
+                "status": "ok",
+                "alert_needed": False,
+                "alert_target": "alerts",
+                "reasons": [],
+                "metrics": {
+                    "item_count": 1,
+                    "successful_source_count": 1,
+                    "processed_source_count": 1,
+                    "configured_source_count": 1,
+                },
+                "thresholds": {"alert_on_delivery_failure": True},
+            },
+        }
+
+    monkeypatch.setattr("worker.main.run_topic_digest", fake_digest)
+
+    processed = process_queued_runs(client)
+
+    assert processed == {"twice_daily_ai_policy_security_brief"}
+    assert client.discord_calls[0] == {"target": "briefings", "content": "live digest body", "dry_run": False}
+    assert client.discord_calls[1]["target"] == "alerts"
+    assert client.completed_calls[0]["status"] == "failed"
+    quality = client.completed_calls[0]["log"]["result"]["quality"]
+    assert quality["status"] == "failed"
+    assert quality["alert_needed"] is True
+    assert quality["reasons"][0]["code"] == "discord_delivery_failure"
+
+
 def test_queued_dry_run_preserves_dry_run_even_if_task_is_live(monkeypatch):
     client = FakeClient()
     task = {

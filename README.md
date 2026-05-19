@@ -163,6 +163,9 @@ For Discord notifications about pending approvals, see
 - Task templates are convenience scaffolds only; they do not approve, enable, or bypass policy.
 - The worker re-validates approved sources at execution time and records source
   health/trust metadata in digest run logs.
+- Topic digests can define quality thresholds that trigger separate anomaly
+  alerts when sources fail, item counts fall below policy, sections are empty,
+  or primary Discord delivery does not succeed.
 - n8n webhook tasks must use approved `webhook_id` entries and internal paths.
 - Task notifications are governed by declarative per-task preferences for
   success, failure, empty results, quiet hours, and repeated-failure collapse.

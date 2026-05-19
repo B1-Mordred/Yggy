@@ -53,6 +53,15 @@ runtime:
   timeout_seconds: 120
   retry_count: 1
 
+quality:
+  enabled: true
+  min_items: 20
+  min_successful_sources: 18
+  alert_on_source_errors: true
+  alert_on_empty_sections: false
+  alert_on_delivery_failure: true
+  alert_target: alerts
+
 notifications:
   on_success: true
   on_failure: true
@@ -82,6 +91,7 @@ The API rejects tasks when:
 - external side effects are requested below L3
 - filesystem writes are requested below L2
 - Discord target is not whitelisted
+- topic digest quality alert target is not whitelisted
 - source URL scheme is not `http` or `https`
 - topic digest sources are not listed in `configs/sources/approved_sources.yaml`
 - topic digest sources omit `source_id`
@@ -118,6 +128,29 @@ The worker enforces the same registry before fetching. Run logs include
 `source_health` records with `ok`, `error`, or `blocked` status, plus
 `approved_source_count`. Each digest item includes `source_id`, `source_name`,
 `source_trust_level`, and `source_categories`.
+
+## Digest Quality Guard
+
+Topic digest tasks may include a `quality` block. It does not change source
+selection or approval; it classifies the completed digest as `ok`, `degraded`,
+or `failed` after the worker has gathered items and attempted Discord delivery.
+
+- `min_items`: minimum matching item count before the digest is considered
+  complete.
+- `min_successful_sources`: minimum number of fetched sources with `ok` source
+  health.
+- `alert_on_source_errors`: mark the digest degraded when any source fetch or
+  source approval error is recorded.
+- `alert_on_empty_sections`: mark sectioned digests degraded when one or more
+  configured sections has no selected item.
+- `alert_on_delivery_failure`: mark the digest failed when the primary Discord
+  delivery does not report a successful send.
+- `alert_target`: whitelisted Discord target for the secondary quality alert,
+  normally `alerts`.
+
+Normal successful digests still go to their configured output target, such as
+`briefings`. Quality alerts are separate anomaly notifications and are sent only
+when the digest is degraded or failed.
 
 This keeps source selection declarative and reviewable. Webpages, feeds, release
 notes, and other retrieved content remain untrusted data; they do not gain command

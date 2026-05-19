@@ -87,6 +87,7 @@ SECTION_RULES = [
             "docker_blog",
             "cisa_cybersecurity_advisories",
             "cisa_known_exploited_vulnerabilities_catalog",
+            "cisa_known_exploited_vulnerabilities_json",
         },
         "keywords": {
             "ubuntu",
@@ -283,6 +284,11 @@ def select_section_items(items: list[dict], rule: dict, used_keys: set[str], lim
     return selected
 
 
+def sectioned_digest_sections(items: list[dict]) -> list[tuple[str, list[dict]]]:
+    used_keys: set[str] = set()
+    return [(str(rule["title"]), select_section_items(items, rule, used_keys)) for rule in SECTION_RULES]
+
+
 def item_bullet(item: dict) -> str:
     title = clean_text(str(item.get("title") or "Untitled item"), limit=140)
     summary = clean_text(str(item.get("summary") or "No summary available."), limit=150)
@@ -296,10 +302,7 @@ def item_bullet(item: dict) -> str:
 def render_sectioned_digest(task_config: dict, items: list[dict], errors: list[dict], source_health: list[dict]) -> str:
     title = task_config.get("name", "Topic digest")
     dry_run = task_config.get("runtime", {}).get("dry_run", True)
-    used_keys: set[str] = set()
-    sections: list[tuple[str, list[dict]]] = []
-    for rule in SECTION_RULES:
-        sections.append((str(rule["title"]), select_section_items(items, rule, used_keys)))
+    sections = sectioned_digest_sections(items)
 
     section_counts = ", ".join(f"{name}: {len(section_items)}" for name, section_items in sections)
     healthy_sources = sum(1 for health in source_health if health.get("status") == "ok")
@@ -527,6 +530,111 @@ def collect_items(
     return items[:max_items], errors, source_health, deduplicated_count
 
 
+def quality_config(task_config: dict) -> dict:
+    configured = dict(task_config.get("quality") or {})
+    return {
+        "enabled": configured.get("enabled", True),
+        "min_items": int(configured.get("min_items", 0) or 0),
+        "min_successful_sources": configured.get("min_successful_sources"),
+        "alert_on_source_errors": configured.get("alert_on_source_errors", False),
+        "alert_on_empty_sections": configured.get("alert_on_empty_sections", False),
+        "alert_on_delivery_failure": configured.get("alert_on_delivery_failure", True),
+        "alert_target": configured.get("alert_target", "alerts"),
+    }
+
+
+def evaluate_digest_quality(
+    task_config: dict,
+    items: list[dict],
+    errors: list[dict],
+    source_health: list[dict],
+    deduplicated_count: int,
+) -> dict:
+    config = quality_config(task_config)
+    source_count = len(task_config.get("sources", []))
+    successful_sources = [health for health in source_health if health.get("status") == "ok"]
+    failed_sources = [health for health in source_health if health.get("status") not in {"ok", "pending"}]
+    blocked_sources = [health for health in source_health if health.get("status") == "blocked"]
+    empty_sections: list[str] = []
+    if sectioned_digest_requested(task_config):
+        empty_sections = [name for name, section_items in sectioned_digest_sections(items) if not section_items]
+
+    reasons: list[dict] = []
+    min_items = int(config["min_items"])
+    if min_items and len(items) < min_items:
+        reasons.append(
+            {
+                "code": "too_few_items",
+                "message": f"Digest has {len(items)} items, below configured minimum {min_items}.",
+                "actual": len(items),
+                "expected": min_items,
+            }
+        )
+
+    min_successful_sources = config["min_successful_sources"]
+    if min_successful_sources is not None:
+        min_successful_sources = int(min_successful_sources)
+        if len(successful_sources) < min_successful_sources:
+            reasons.append(
+                {
+                    "code": "too_few_successful_sources",
+                    "message": (
+                        f"Digest has {len(successful_sources)} successful sources, "
+                        f"below configured minimum {min_successful_sources}."
+                    ),
+                    "actual": len(successful_sources),
+                    "expected": min_successful_sources,
+                }
+            )
+
+    if config["alert_on_source_errors"] and errors:
+        reasons.append(
+            {
+                "code": "source_errors",
+                "message": f"Digest recorded {len(errors)} source error(s).",
+                "source_ids": [error.get("source_id") or error.get("source") for error in errors[:10]],
+            }
+        )
+
+    if config["alert_on_empty_sections"] and empty_sections:
+        reasons.append(
+            {
+                "code": "empty_sections",
+                "message": f"Digest has {len(empty_sections)} empty section(s).",
+                "sections": empty_sections,
+            }
+        )
+
+    status = "ok"
+    if reasons and config["enabled"]:
+        status = "degraded"
+
+    return {
+        "enabled": bool(config["enabled"]),
+        "status": status,
+        "alert_needed": bool(config["enabled"] and reasons),
+        "alert_target": str(config["alert_target"]),
+        "reasons": reasons,
+        "metrics": {
+            "configured_source_count": source_count,
+            "processed_source_count": len(source_health),
+            "successful_source_count": len(successful_sources),
+            "failed_source_count": len(failed_sources),
+            "blocked_source_count": len(blocked_sources),
+            "item_count": len(items),
+            "deduplicated_count": deduplicated_count,
+            "empty_sections": empty_sections,
+        },
+        "thresholds": {
+            "min_items": min_items,
+            "min_successful_sources": min_successful_sources,
+            "alert_on_source_errors": bool(config["alert_on_source_errors"]),
+            "alert_on_empty_sections": bool(config["alert_on_empty_sections"]),
+            "alert_on_delivery_failure": bool(config["alert_on_delivery_failure"]),
+        },
+    }
+
+
 def render_digest(task_config: dict, items: list[dict], errors: list[dict], source_health: list[dict] | None = None) -> str:
     title = task_config.get("name", "Topic digest")
     dry_run = task_config.get("runtime", {}).get("dry_run", True)
@@ -628,6 +736,7 @@ def run_topic_digest(
         "source_health": source_health,
         "deduplicated_count": deduplicated_count,
         "summary_mode": summary_mode,
+        "quality": evaluate_digest_quality(task_config, items, errors, source_health, deduplicated_count),
     }
     if summary_error:
         result["summary_error"] = summary_error

@@ -142,6 +142,8 @@ def validate_task_policy(task: TaskConfig, policy: dict[str, Any] | None = None)
         allowed = set(active_policy.get("allowed_discord_targets", []))
         if task.output.target not in allowed:
             errors.append(f"discord target is not whitelisted: {task.output.target}")
+        if task.type == "topic_digest" and task.quality.enabled and task.quality.alert_target not in allowed:
+            errors.append(f"quality alert target is not whitelisted: {task.quality.alert_target}")
 
     source_policy = active_policy.get("source_policy", {})
     required_task_types = set(source_policy.get("require_approved_sources_for_task_types", []))

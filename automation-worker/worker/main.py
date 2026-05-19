@@ -120,6 +120,9 @@ def notification_preferences(config: dict) -> dict:
 def classify_result(result: dict, failed: bool = False) -> str:
     if failed:
         return "failure"
+    quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
+    if quality.get("status") in {"degraded", "failed"}:
+        return "failure"
     status = str(result.get("status", "")).lower()
     if status in {"failed", "failure", "error", "degraded"} or int(result.get("failed_count") or 0) > 0:
         return "failure"
@@ -185,6 +188,113 @@ def notification_decision(
     ):
         return {**decision, "send": False, "reason": "repeated_failure_collapsed"}
     return decision
+
+
+def apply_digest_delivery_quality(config: dict, result: dict, notification: dict | None, decision: dict, *, dry_run: bool) -> dict:
+    if config.get("type") != "topic_digest":
+        return result
+    quality = result.get("quality") if isinstance(result.get("quality"), dict) else None
+    if not quality:
+        return result
+    thresholds = quality.get("thresholds") if isinstance(quality.get("thresholds"), dict) else {}
+    if dry_run or not thresholds.get("alert_on_delivery_failure", True):
+        return result
+    if not decision.get("send"):
+        return result
+    if notification and notification.get("sent") is True:
+        return result
+
+    updated_quality = dict(quality)
+    reasons = list(updated_quality.get("reasons") or [])
+    reasons.append(
+        {
+            "code": "discord_delivery_failure",
+            "message": "Primary Discord delivery did not report a successful send.",
+            "target": (config.get("output") or {}).get("target"),
+        }
+    )
+    updated_quality.update({"status": "failed", "alert_needed": True, "reasons": reasons})
+    return {**result, "quality": updated_quality}
+
+
+def digest_quality_alert_message(config: dict, result: dict, run_id: str, notification: dict | None) -> str:
+    quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
+    metrics = quality.get("metrics") if isinstance(quality.get("metrics"), dict) else {}
+    reasons = quality.get("reasons") if isinstance(quality.get("reasons"), list) else []
+    delivery = "n/a"
+    if notification:
+        delivery = "sent" if notification.get("sent") is True else "not sent"
+        if notification.get("target"):
+            delivery = f"{delivery} to {notification.get('target')}"
+    lines = [
+        f"**Brief quality alert: {config.get('name', config.get('id', 'Topic digest'))}**",
+        "",
+        f"Task: `{config.get('id', 'unknown')}`",
+        f"Run: `{run_id}`",
+        f"Quality: `{quality.get('status', 'unknown')}`",
+        f"Primary delivery: {delivery}",
+        "",
+        "**Metrics**",
+        (
+            f"- Items: {metrics.get('item_count', 0)}; sources ok: "
+            f"{metrics.get('successful_source_count', 0)}/{metrics.get('processed_source_count', 0)} "
+            f"processed ({metrics.get('configured_source_count', 0)} configured)"
+        ),
+    ]
+    empty_sections = metrics.get("empty_sections") if isinstance(metrics.get("empty_sections"), list) else []
+    if empty_sections:
+        lines.append(f"- Empty sections: {', '.join(str(section) for section in empty_sections[:8])}")
+    if reasons:
+        lines.extend(["", "**Reasons**"])
+        for reason in reasons[:8]:
+            code = reason.get("code", "quality_issue") if isinstance(reason, dict) else "quality_issue"
+            message = reason.get("message", "") if isinstance(reason, dict) else str(reason)
+            lines.append(f"- `{code}`: {message}")
+    lines.extend(
+        [
+            "",
+            "**Suggested action**",
+            "Inspect the run detail in the local ops UI and pause the task if the issue repeats.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def maybe_send_digest_quality_alert(
+    client: AutomationApiClient,
+    config: dict,
+    result: dict,
+    *,
+    run_id: str,
+    dry_run: bool,
+    notification: dict | None,
+    now: datetime | None = None,
+) -> dict | None:
+    if config.get("type") != "topic_digest":
+        return None
+    quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
+    if not quality.get("alert_needed"):
+        return None
+    alert_target = str(quality.get("alert_target") or "alerts")
+    alert_config = {**config, "output": {**(config.get("output") or {}), "channel": "discord", "target": alert_target}}
+    alert_result = {
+        "status": quality.get("status", "degraded"),
+        "message": digest_quality_alert_message(config, result, run_id, notification),
+        "failed_count": len(quality.get("reasons") or []),
+        "notify": True,
+    }
+    decision = notification_decision(client, alert_config, alert_result, run_id=run_id, failed=True, now=now)
+    alert_notification = None
+    if decision.get("send"):
+        try:
+            alert_notification = client.send_discord(
+                target=alert_target,
+                content=alert_result["message"],
+                dry_run=dry_run,
+            )
+        except Exception as exc:
+            alert_notification = {"sent": False, "dry_run": dry_run, "target": alert_target, "error": exc.__class__.__name__}
+    return {"decision": decision, "notification": alert_notification}
 
 
 def has_recent_failure(
@@ -299,18 +409,41 @@ def execute_task(
         output = effective_config.get("output", {})
         if output.get("channel") == "discord" and result.get("status") != "skipped":
             decision = notification_decision(client, effective_config, result, run_id=run_id)
+        notification_send_error = None
         if decision.get("send"):
-            notification = client.send_discord(
-                target=output["target"],
-                content=result_message(effective_config, result),
-                dry_run=dry_run,
-            )
+            try:
+                notification = client.send_discord(
+                    target=output["target"],
+                    content=result_message(effective_config, result),
+                    dry_run=dry_run,
+                )
+            except Exception as exc:
+                notification_send_error = exc
+                notification = {"sent": False, "dry_run": dry_run, "target": output.get("target"), "error": exc.__class__.__name__}
+        result = apply_digest_delivery_quality(effective_config, result, notification, decision, dry_run=dry_run)
+        quality_alert = maybe_send_digest_quality_alert(
+            client,
+            effective_config,
+            result,
+            run_id=run_id,
+            dry_run=dry_run,
+            notification=notification,
+        )
 
         status = "completed_dry_run" if dry_run else "completed"
+        result_quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
+        if not dry_run and (notification_send_error or result_quality.get("status") == "failed"):
+            status = "failed"
         completed = client.complete_run(
             run_id,
             status,
-            {"task_id": task_id, "result": result, "notification": notification, "notification_decision": decision},
+            {
+                "task_id": task_id,
+                "result": result,
+                "notification": notification,
+                "notification_decision": decision,
+                "quality_alert": quality_alert,
+            },
         )
         return {"task_id": task_id, "run_id": run_id, "status": completed["status"], "result": result}
     except Exception as exc:

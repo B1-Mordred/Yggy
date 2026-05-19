@@ -1263,6 +1263,7 @@ def _run_summary(run: RunModel | None) -> dict | None:
         return None
     log = run.log if isinstance(run.log, dict) else {}
     result = log.get("result") if isinstance(log.get("result"), dict) else {}
+    quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
     notification = log.get("notification") if isinstance(log.get("notification"), dict) else {}
     return {
         "id": run.id,
@@ -1271,6 +1272,7 @@ def _run_summary(run: RunModel | None) -> dict | None:
         "created_at": run.created_at,
         "completed_at": run.completed_at,
         "result_status": result.get("status"),
+        "quality_status": quality.get("status"),
         "failed_count": result.get("failed_count"),
         "notify": result.get("notify"),
         "notification": {
@@ -1297,7 +1299,10 @@ def _run_result(run: RunModel) -> dict:
 def _run_failed(run: RunModel) -> bool:
     result = _run_result(run)
     result_status = str(result.get("status") or "").lower()
+    quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
     if str(run.status or "").lower().startswith("failed"):
+        return True
+    if quality.get("status") in {"degraded", "failed"}:
         return True
     if result_status in {"failed", "failure", "error", "degraded"}:
         return True
@@ -1339,12 +1344,13 @@ def _run_collection_summary(runs: list[RunModel]) -> dict:
 
 
 def _run_detail(run: RunModel, task: TaskModel | None) -> dict:
-    log = _as_dict(_bounded_value(redact_secrets(run.log if isinstance(run.log, dict) else {})))
+    log = _as_dict(_bounded_value(redact_secrets(run.log if isinstance(run.log, dict) else {}), max_depth=MAX_RUN_DETAIL_DEPTH + 2))
     result = _as_dict(log.get("result"))
     notification = log.get("notification") if isinstance(log.get("notification"), dict) else None
     notification_decision = (
         log.get("notification_decision") if isinstance(log.get("notification_decision"), dict) else {}
     )
+    quality_alert = log.get("quality_alert") if isinstance(log.get("quality_alert"), dict) else None
     return {
         "run": _run_summary(run),
         "task": _task_summary(task, run) if task else {"id": run.task_id},
@@ -1352,6 +1358,7 @@ def _run_detail(run: RunModel, task: TaskModel | None) -> dict:
         "n8n": _n8n_detail(result),
         "notification_decision": notification_decision,
         "notification": notification,
+        "quality_alert": quality_alert,
         "failure": _failure_detail(log),
     }
 
@@ -1374,10 +1381,39 @@ def _digest_detail(result: dict) -> dict | None:
         "summary_mode": result.get("summary_mode"),
         "summary_error": result.get("summary_error"),
         "source_count": result.get("source_count"),
+        "approved_source_count": result.get("approved_source_count"),
         "item_count": len(items),
         "error_count": len(errors),
+        "quality": _digest_quality_detail(_as_dict(result.get("quality"))),
+        "source_health": [_source_health_detail(health) for health in _as_list(result.get("source_health"))[:MAX_RUN_DETAIL_ERRORS] if isinstance(health, dict)],
         "items": [_digest_item_detail(item) for item in items[:MAX_RUN_DETAIL_ITEMS] if isinstance(item, dict)],
         "errors": [_source_error_detail(error) for error in errors[:MAX_RUN_DETAIL_ERRORS] if isinstance(error, dict)],
+    }
+
+
+def _digest_quality_detail(quality: dict) -> dict | None:
+    if not quality:
+        return None
+    return {
+        "enabled": quality.get("enabled"),
+        "status": quality.get("status"),
+        "alert_needed": quality.get("alert_needed"),
+        "alert_target": quality.get("alert_target"),
+        "metrics": _bounded_value(quality.get("metrics")),
+        "thresholds": _bounded_value(quality.get("thresholds")),
+        "reasons": _bounded_value(quality.get("reasons")),
+    }
+
+
+def _source_health_detail(health: dict) -> dict:
+    return {
+        "source": _truncate_text(health.get("source"), MAX_RUN_DETAIL_FIELD_TEXT),
+        "source_id": _truncate_text(health.get("source_id"), MAX_RUN_DETAIL_FIELD_TEXT),
+        "status": _truncate_text(health.get("status"), 100),
+        "item_count": health.get("item_count"),
+        "trust_level": _truncate_text(health.get("trust_level"), 100),
+        "ingestion_mode": _truncate_text(health.get("ingestion_mode"), 100),
+        "error": _truncate_text(health.get("error"), 200),
     }
 
 
@@ -2890,7 +2926,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         runButton(run),
         `<code>${{esc(run.task_id)}}</code>`,
         statusLabel(run.status),
-        `${{esc(run.result_status)}}${{run.failed_count !== null && run.failed_count !== undefined ? `<br><span class="meta">failed checks ${{esc(run.failed_count)}}</span>` : ''}}`,
+        `${{esc(run.result_status)}}${{run.quality_status ? `<br><span class="meta">quality ${{esc(run.quality_status)}}</span>` : ''}}${{run.failed_count !== null && run.failed_count !== undefined ? `<br><span class="meta">failed checks ${{esc(run.failed_count)}}</span>` : ''}}`,
         `${{run.notification.sent === true ? 'sent' : run.notification.sent === false ? 'not sent' : 'n/a'}}<br><span class="meta">${{esc(run.notification.target || run.notification.transport)}}</span>`,
         esc(run.created_at),
         esc(run.completed_at),
@@ -2953,7 +2989,7 @@ DASHBOARD_HTML = f"""<!doctype html>
               </div>
               <div class="timeline-main">
                 <div>${{runButton(run)}} <code>${{esc(run.task_id)}}</code> ${{statusLabel(run.status)}}</div>
-                <div class="meta">result ${{esc(run.result_status)}}; ${{esc(runNotificationLabel(run))}}${{run.failed_count !== null && run.failed_count !== undefined ? `; failed checks ${{esc(run.failed_count)}}` : ''}}</div>
+                <div class="meta">result ${{esc(run.result_status)}}${{run.quality_status ? `; quality ${{esc(run.quality_status)}}` : ''}}; ${{esc(runNotificationLabel(run))}}${{run.failed_count !== null && run.failed_count !== undefined ? `; failed checks ${{esc(run.failed_count)}}` : ''}}</div>
               </div>
             </div>
           `).join('')}}
@@ -2976,6 +3012,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       const n8n = data.n8n;
       const decision = data.notification_decision || {{}};
       const notification = data.notification || null;
+      const qualityAlert = data.quality_alert || null;
       const failure = data.failure || null;
       document.getElementById('run-detail').innerHTML = `
         <h2>Run Detail</h2>
@@ -2985,10 +3022,12 @@ DASHBOARD_HTML = f"""<!doctype html>
           <div class="detail-block wide">
             <h3>Digest</h3>
             ${{digest ? `
-              <div class="meta">status ${{esc(digest.status)}}; mode ${{esc(digest.summary_mode)}}; items ${{esc(digest.item_count)}}; errors ${{esc(digest.error_count)}}; sources ${{esc(digest.source_count)}}</div>
+              <div class="meta">status ${{esc(digest.status)}}; quality ${{esc(digest.quality?.status || 'n/a')}}; mode ${{esc(digest.summary_mode)}}; items ${{esc(digest.item_count)}}; errors ${{esc(digest.error_count)}}; sources ${{esc(digest.approved_source_count ?? 'n/a')}}/${{esc(digest.source_count)}}</div>
+              ${{digest.quality ? `<h3>Quality</h3>${{jsonBlock(digest.quality)}}` : ''}}
               <pre>${{esc(digest.message || '')}}</pre>
               ${{digestItems(digest.items)}}
               ${{digest.errors && digest.errors.length ? `<h3>Source Errors</h3>${{jsonBlock(digest.errors)}}` : ''}}
+              ${{digest.source_health && digest.source_health.length ? `<h3>Source Health</h3>${{jsonBlock(digest.source_health)}}` : ''}}
             ` : '<div class="empty">No topic digest result recorded for this run.</div>'}}
           </div>
           <div class="detail-block">
@@ -3006,6 +3045,10 @@ DASHBOARD_HTML = f"""<!doctype html>
           <div class="detail-block">
             <h3>Discord Result</h3>
             ${{notification ? jsonBlock(notification) : '<div class="empty">No Discord send result recorded.</div>'}}
+          </div>
+          <div class="detail-block">
+            <h3>Quality Alert</h3>
+            ${{qualityAlert ? jsonBlock(qualityAlert) : '<div class="empty">No quality alert recorded.</div>'}}
           </div>
         </div>
       `;

@@ -300,6 +300,25 @@ class NotificationPreferencesConfig(BaseModel):
     failure_collapse_window_minutes: int = Field(default=360, ge=1, le=10080)
 
 
+class DigestQualityConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    min_items: int = Field(default=0, ge=0, le=1000)
+    min_successful_sources: int | None = Field(default=None, ge=0, le=1000)
+    alert_on_source_errors: bool = False
+    alert_on_empty_sections: bool = False
+    alert_on_delivery_failure: bool = True
+    alert_target: str = "alerts"
+
+    @field_validator("alert_target")
+    @classmethod
+    def alert_target_must_be_slug(cls, value: str) -> str:
+        if not SLUG_RE.match(value):
+            raise ValueError("quality alert_target must be slug-like")
+        return value
+
+
 class N8nWebhookConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -476,6 +495,7 @@ class TaskConfig(BaseModel):
     policy: PolicyConfig
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     notifications: NotificationPreferencesConfig = Field(default_factory=NotificationPreferencesConfig)
+    quality: DigestQualityConfig = Field(default_factory=DigestQualityConfig)
     n8n: N8nWebhookConfig | None = None
     backup: BackupVerificationConfig | None = None
     printer_supplies: list[PrinterSupplyEndpointConfig] = Field(default_factory=list)
