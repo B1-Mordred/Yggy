@@ -81,6 +81,7 @@ GOAL_CLARIFIER_PROVIDER = os.getenv("BRAGI_GOAL_CLARIFIER_PROVIDER", "hermes").s
 GOAL_CLARIFIER_BASE_URL = os.getenv("BRAGI_GOAL_CLARIFIER_BASE_URL", "").strip()
 GOAL_CLARIFIER_MODEL = os.getenv("BRAGI_GOAL_CLARIFIER_MODEL", "hermes-clarifier").strip()
 GOAL_CLARIFIER_TIMEOUT = int(os.getenv("BRAGI_GOAL_CLARIFIER_TIMEOUT", "30"))
+GOAL_CLARIFIER_API_KEY = os.getenv("BRAGI_GOAL_CLARIFIER_API_KEY", "").strip()
 GOAL_CLARIFIER_MAX_TURNS = max(1, min(int(os.getenv("BRAGI_GOAL_CLARIFIER_MAX_TURNS", "6")), 20))
 GOAL_CLARIFIER_USE_LLM_JUDGE = os.getenv("BRAGI_GOAL_CLARIFIER_USE_LLM_JUDGE", "false").strip().lower() not in {
     "0",
@@ -4405,6 +4406,7 @@ def goal_clarifier_client() -> HermesClarifierClient | None:
         base_url=GOAL_CLARIFIER_BASE_URL,
         model=GOAL_CLARIFIER_MODEL,
         timeout=GOAL_CLARIFIER_TIMEOUT,
+        api_key=GOAL_CLARIFIER_API_KEY,
     )
 
 
@@ -4439,12 +4441,11 @@ def classify_goal_request_with_context(user_text: str, *, use_hermes: bool = Tru
         visible_tasks = visible_tasks_for_goal_router() if classification.request_kind in {
             AutomationRequestKind.NEEDS_CLARIFICATION,
             AutomationRequestKind.PROPOSE_NEW_CAPABILITY,
-            AutomationRequestKind.CHAT,
-            AutomationRequestKind.HELP,
         } else []
-        hermes_classification = classify_goal_request(user_text, visible_tasks=visible_tasks, use_hermes=True)
-        if hermes_classification.request_kind != classification.request_kind or hermes_classification.candidate_intent:
-            return hermes_classification
+        if visible_tasks or classification.request_kind in {AutomationRequestKind.NEEDS_CLARIFICATION, AutomationRequestKind.PROPOSE_NEW_CAPABILITY}:
+            hermes_classification = classify_goal_request(user_text, visible_tasks=visible_tasks, use_hermes=True)
+            if hermes_classification.request_kind != classification.request_kind or hermes_classification.candidate_intent:
+                return hermes_classification
     return classification
 
 
@@ -4925,6 +4926,7 @@ def health() -> dict[str, Any]:
             "base_url_configured": bool(GOAL_CLARIFIER_BASE_URL),
             "model": GOAL_CLARIFIER_MODEL,
             "timeout": GOAL_CLARIFIER_TIMEOUT,
+            "api_key_configured": bool(GOAL_CLARIFIER_API_KEY),
             "max_turns": GOAL_CLARIFIER_MAX_TURNS,
             "use_llm_judge": GOAL_CLARIFIER_USE_LLM_JUDGE,
         },

@@ -285,6 +285,22 @@ def test_create_new_server_health_uses_health_capability(monkeypatch):
     assert "Canonical intent pending confirmation" in answer
 
 
+def test_create_new_ai_stack_monitor_uses_health_capability(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "set up an AI stack monitor every morning"}])
+
+    assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
+    assert calls[0][2]["capability_id"] == "server_health.v1"
+    assert "Canonical intent pending confirmation" in answer
+
+
 def test_unsafe_updates_and_restarts_are_rejected_without_forwarding(monkeypatch):
     monkeypatch.setattr(bragi, "api_request", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("api called")))
     monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))

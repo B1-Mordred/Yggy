@@ -93,10 +93,11 @@ def extract_json_object(text: str) -> dict[str, Any]:
 
 
 class HermesClarifierClient:
-    def __init__(self, *, base_url: str, model: str, timeout: float = 30.0):
+    def __init__(self, *, base_url: str, model: str, timeout: float = 30.0, api_key: str = ""):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.api_key = api_key.strip()
 
     def classify_request(
         self,
@@ -130,11 +131,13 @@ class HermesClarifierClient:
             ],
             "temperature": 0,
             "stream": False,
+            "max_tokens": 500,
             "response_format": {"type": "json_object"},
         }
         try:
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else None
             with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(f"{self.base_url}/v1/chat/completions", json=payload)
+                response = client.post(f"{self.base_url}/v1/chat/completions", json=payload, headers=headers)
             response.raise_for_status()
             raw = response.json()
         except Exception as exc:
@@ -149,5 +152,21 @@ class HermesClarifierClient:
                     content = message["content"]
             elif isinstance(raw.get("content"), str):
                 content = raw["content"]
-        parsed = extract_json_object(content)
+        parsed = normalize_classification_payload(extract_json_object(content))
         return AutomationRequestClassification.model_validate(parsed)
+
+
+def normalize_classification_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    if normalized.get("reason") is None:
+        normalized["reason"] = ""
+    if normalized.get("confidence") is None:
+        normalized["confidence"] = 0.0
+    for list_key in ("target_task_candidates", "missing_information", "assumptions", "unsafe_reasons"):
+        if not isinstance(normalized.get(list_key), list):
+            normalized[list_key] = []
+    if normalized.get("operation") is not None and not isinstance(normalized.get("operation"), dict):
+        normalized["operation"] = None
+    if normalized.get("candidate_intent") is not None and not isinstance(normalized.get("candidate_intent"), dict):
+        normalized["candidate_intent"] = None
+    return normalized

@@ -221,9 +221,10 @@ Hermes can be enabled as an advisory local JSON clarifier:
 ```text
 BRAGI_GOAL_CLARIFIER_ENABLED=false
 BRAGI_GOAL_CLARIFIER_PROVIDER=hermes
-BRAGI_GOAL_CLARIFIER_BASE_URL=http://host.docker.internal:8642
-BRAGI_GOAL_CLARIFIER_MODEL=hermes-clarifier
-BRAGI_GOAL_CLARIFIER_TIMEOUT=30
+BRAGI_GOAL_CLARIFIER_BASE_URL=http://host.docker.internal:8651
+BRAGI_GOAL_CLARIFIER_MODEL=bragi-clarifier
+BRAGI_GOAL_CLARIFIER_TIMEOUT=5
+BRAGI_GOAL_CLARIFIER_API_KEY=...
 BRAGI_GOAL_CLARIFIER_MAX_TURNS=6
 BRAGI_GOAL_CLARIFIER_USE_LLM_JUDGE=false
 ```
@@ -234,7 +235,11 @@ called only as a no-tools, JSON-only classifier. It receives redacted request
 text, safe visible task summaries, aliases, allowed capability IDs, and the
 deterministic classifier result. It must not receive `.env`, secrets, approval
 nonces, admin keys, raw logs, webhook URLs, private file paths, or execution
-authority.
+authority. The clarifier key must be a dedicated low-risk key for this profile,
+not the Yggdrasil action key, automation tool key, worker key, or admin key.
+On the local deployment, the `bragi-clarifier` profile runs as a dedicated
+local-only, OpenAI-compatible clarifier endpoint under the `hermes` user. It is
+kept separate from the `:8642` Yggdrasil action API and does not expose tools.
 
 Hermes output is validated with Pydantic and remains advisory. Existing
 deterministic high-confidence operations win unless Hermes supplies a same-kind

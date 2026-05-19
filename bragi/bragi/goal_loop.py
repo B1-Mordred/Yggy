@@ -541,7 +541,7 @@ def infer_registered_capability(text: str) -> str | None:
         return "printer_supply_status.v1"
     if re.search(r"\b(n8n|webhook)\b", lowered):
         return "n8n_webhook.v1"
-    if re.search(r"\b(health|broken|service|endpoint|server|open webui|ollama|automation api|worker|überwache|ueberwache|beobachte)\b", lowered):
+    if re.search(r"\b(ai stack|local ai stack|health|broken|service|endpoint|server|open webui|ollama|automation api|worker|überwache|ueberwache|beobachte)\b", lowered):
         if re.search(r"\b(monitor|watch|keep an eye|health|broken|check|überwache|ueberwache|beobachte|prüfe|pruefe)\b", lowered):
             return "server_health.v1"
     if re.search(r"\b(brief|briefing|digest|newsletter|summary|summar|news|nachrichten)\b", lowered):
