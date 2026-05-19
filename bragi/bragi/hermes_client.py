@@ -169,4 +169,9 @@ def normalize_classification_payload(payload: dict[str, Any]) -> dict[str, Any]:
         normalized["operation"] = None
     if normalized.get("candidate_intent") is not None and not isinstance(normalized.get("candidate_intent"), dict):
         normalized["candidate_intent"] = None
+    operation = normalized.get("operation")
+    if isinstance(operation, dict) and not normalized.get("target_task_id"):
+        task_id = operation.get("task_id")
+        if isinstance(task_id, str) and task_id:
+            normalized["target_task_id"] = task_id
     return normalized

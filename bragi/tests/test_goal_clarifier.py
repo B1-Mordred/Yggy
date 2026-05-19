@@ -113,6 +113,15 @@ def test_hermes_payload_normalization_handles_loose_json_fields():
     assert normalized["operation"] is None
     assert normalized["candidate_intent"] is None
 
+    with_task_id = normalize_classification_payload(
+        {
+            "request_kind": "run_existing",
+            "target_kind": "existing_task",
+            "operation": {"action": "run_task", "task_id": "daily_local_ai_security_briefing"},
+        }
+    )
+    assert with_task_id["target_task_id"] == "daily_local_ai_security_briefing"
+
 
 def test_dedicated_clarifier_api_classifies_from_prompt_payload():
     prompt = {
@@ -252,3 +261,23 @@ def test_hermes_invalid_capability_is_not_executed(monkeypatch):
     assert calls[0][0:2] == ("POST", "/capabilities/validate-intent")
     assert calls[0][2]["capability_id"] == "credential_rotation.v1"
     assert "not a registered executable Yggy capability" in answer
+
+
+def test_hermes_cannot_downgrade_deterministic_capability_proposal_to_clarification(monkeypatch):
+    classification = AutomationRequestClassification(
+        request_kind=AutomationRequestKind.NEEDS_CLARIFICATION,
+        target_kind=AutomationTargetKind.UNKNOWN,
+        missing_information=["data_source"],
+        confidence=0.41,
+        reason="Hermes wanted more information.",
+    )
+
+    monkeypatch.setattr(bragi, "GOAL_CLARIFIER_ENABLED", True)
+    monkeypatch.setattr(bragi, "goal_clarifier_client", lambda: FakeHermes(classification))
+    monkeypatch.setattr(bragi, "api_request", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("api called")))
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))
+
+    answer = bragi.route_chat([{"role": "user", "content": "track UPS battery status and alert me"}])
+
+    assert "not a registered executable Yggy capability yet" in answer
+    assert "Nothing was sent to Yggdrasil" in answer

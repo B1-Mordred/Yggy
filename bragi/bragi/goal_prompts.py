@@ -14,6 +14,8 @@ Map changes to an existing digest's sources, subjects, filters, or output target
 If the request is unsafe, return UNSAFE.
 If unsupported but reasonable, return PROPOSE_NEW_CAPABILITY.
 If missing information is required, return NEEDS_CLARIFICATION with one concise question in reason.
+For existing-task operations or changes, always set target_task_id when exactly one visible task or alias matches.
+For run_existing, pause_existing, inspect_existing, and list_existing, include the deterministic operation object.
 If a CanonicalIntent is proposed, it must still require user confirmation and must be validated by Heimdal.
 Never approve, execute, mutate, call shell, use Docker, use secrets, or forward raw natural language.
 Never request, reveal, or store admin keys, approval nonces, passwords, tokens, cookies, private keys, webhook URLs, or local file paths.

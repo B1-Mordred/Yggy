@@ -80,7 +80,7 @@ GOAL_CLARIFIER_ENABLED = os.getenv("BRAGI_GOAL_CLARIFIER_ENABLED", "false").stri
 GOAL_CLARIFIER_PROVIDER = os.getenv("BRAGI_GOAL_CLARIFIER_PROVIDER", "hermes").strip()
 GOAL_CLARIFIER_BASE_URL = os.getenv("BRAGI_GOAL_CLARIFIER_BASE_URL", "").strip()
 GOAL_CLARIFIER_MODEL = os.getenv("BRAGI_GOAL_CLARIFIER_MODEL", "hermes-clarifier").strip()
-GOAL_CLARIFIER_TIMEOUT = int(os.getenv("BRAGI_GOAL_CLARIFIER_TIMEOUT", "30"))
+GOAL_CLARIFIER_TIMEOUT = int(os.getenv("BRAGI_GOAL_CLARIFIER_TIMEOUT", "90"))
 GOAL_CLARIFIER_API_KEY = os.getenv("BRAGI_GOAL_CLARIFIER_API_KEY", "").strip()
 GOAL_CLARIFIER_MAX_TURNS = max(1, min(int(os.getenv("BRAGI_GOAL_CLARIFIER_MAX_TURNS", "6")), 20))
 GOAL_CLARIFIER_USE_LLM_JUDGE = os.getenv("BRAGI_GOAL_CLARIFIER_USE_LLM_JUDGE", "false").strip().lower() not in {
@@ -4428,6 +4428,23 @@ def classify_goal_request(
     )
 
 
+def should_use_hermes_classification(
+    deterministic: AutomationRequestClassification,
+    hermes: AutomationRequestClassification,
+) -> bool:
+    if hermes.request_kind == AutomationRequestKind.UNSAFE:
+        return True
+    if hermes.candidate_intent:
+        return True
+    if deterministic.request_kind == AutomationRequestKind.NEEDS_CLARIFICATION:
+        return hermes.request_kind not in {
+            AutomationRequestKind.CHAT,
+            AutomationRequestKind.HELP,
+            AutomationRequestKind.NEEDS_CLARIFICATION,
+        }
+    return False
+
+
 def classify_goal_request_with_context(user_text: str, *, use_hermes: bool = True) -> AutomationRequestClassification:
     classification = classify_goal_request(user_text, use_hermes=False)
     if (
@@ -4444,7 +4461,7 @@ def classify_goal_request_with_context(user_text: str, *, use_hermes: bool = Tru
         } else []
         if visible_tasks or classification.request_kind in {AutomationRequestKind.NEEDS_CLARIFICATION, AutomationRequestKind.PROPOSE_NEW_CAPABILITY}:
             hermes_classification = classify_goal_request(user_text, visible_tasks=visible_tasks, use_hermes=True)
-            if hermes_classification.request_kind != classification.request_kind or hermes_classification.candidate_intent:
+            if should_use_hermes_classification(classification, hermes_classification):
                 return hermes_classification
     return classification
 

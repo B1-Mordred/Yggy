@@ -223,7 +223,7 @@ BRAGI_GOAL_CLARIFIER_ENABLED=false
 BRAGI_GOAL_CLARIFIER_PROVIDER=hermes
 BRAGI_GOAL_CLARIFIER_BASE_URL=http://host.docker.internal:8651
 BRAGI_GOAL_CLARIFIER_MODEL=bragi-clarifier
-BRAGI_GOAL_CLARIFIER_TIMEOUT=5
+BRAGI_GOAL_CLARIFIER_TIMEOUT=90
 BRAGI_GOAL_CLARIFIER_API_KEY=...
 BRAGI_GOAL_CLARIFIER_MAX_TURNS=6
 BRAGI_GOAL_CLARIFIER_USE_LLM_JUDGE=false
@@ -238,13 +238,17 @@ nonces, admin keys, raw logs, webhook URLs, private file paths, or execution
 authority. The clarifier key must be a dedicated low-risk key for this profile,
 not the Yggdrasil action key, automation tool key, worker key, or admin key.
 On the local deployment, the `bragi-clarifier` profile runs as a dedicated
-local-only, OpenAI-compatible clarifier endpoint under the `hermes` user. It is
-kept separate from the `:8642` Yggdrasil action API and does not expose tools.
+local-only Hermes Agent API loop under the `hermes` user. It is kept separate
+from the `:8642` Yggdrasil action API. The profile must explicitly disable
+API-server tools with `platform_toolsets.api_server: [no_mcp]` and keep
+`agent.disabled_toolsets` populated so tool descriptions and tool authority do
+not enter the clarifier prompt.
 
 Hermes output is validated with Pydantic and remains advisory. Existing
-deterministic high-confidence operations win unless Hermes supplies a same-kind
-candidate intent that still goes through Heimdal. Candidate intents from Hermes
-are forced back to `requires_user_confirmation=true` and
+deterministic high-confidence operations and non-executable capability
+proposals win unless Hermes supplies an unsafe finding or a candidate intent
+that still goes through Heimdal. Candidate intents from Hermes are forced back
+to `requires_user_confirmation=true` and
 `user_confirmation_obtained=false`, then sent to
 `POST /capabilities/validate-intent`. Unsafe slots, unknown capabilities, and
 unsupported IDs are rejected by Heimdal or become non-executable backlog.

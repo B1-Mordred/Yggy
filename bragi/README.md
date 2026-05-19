@@ -256,7 +256,7 @@ BRAGI_GOAL_CLARIFIER_ENABLED=false
 BRAGI_GOAL_CLARIFIER_PROVIDER=hermes
 BRAGI_GOAL_CLARIFIER_BASE_URL=http://host.docker.internal:8651
 BRAGI_GOAL_CLARIFIER_MODEL=bragi-clarifier
-BRAGI_GOAL_CLARIFIER_TIMEOUT=5
+BRAGI_GOAL_CLARIFIER_TIMEOUT=90
 BRAGI_GOAL_CLARIFIER_API_KEY=...
 BRAGI_GOAL_CLARIFIER_MAX_TURNS=6
 BRAGI_GOAL_CLARIFIER_USE_LLM_JUDGE=false
@@ -273,8 +273,9 @@ The goal router is deterministic by default. It separates existing-task
 operations, existing-task change proposals, new task drafts, new capability
 proposals, unsafe requests, missing clarifications, and ordinary chat before any
 canonical Yggdrasil action is prepared. If `BRAGI_GOAL_CLARIFIER_ENABLED=true`,
-Bragi may ask the configured local Hermes-compatible JSON endpoint for advisory
-classification only. Hermes receives redacted, non-secret request context, gets
-no tools or credentials, and cannot approve, execute, or bypass Heimdal.
+Bragi may ask the configured local Hermes Agent API profile for advisory
+classification only. Hermes receives redacted, non-secret request context. The
+dedicated clarifier profile must have `platform_toolsets.api_server: [no_mcp]`
+and no enabled toolsets, and cannot approve, execute, or bypass Heimdal.
 Use a dedicated clarifier API key, not the Yggdrasil action key or any admin
 key.
