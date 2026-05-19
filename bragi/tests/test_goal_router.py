@@ -269,6 +269,39 @@ def test_multiple_visible_brief_tasks_need_clarification():
     assert result.target_task_candidates == ["daily_local_ai_security_briefing", "weekly_security_digest"]
 
 
+def test_run_brief_now_selects_only_enabled_matching_brief(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        if method == "GET" and path == "/tasks":
+            return {
+                "data": [
+                    {"id": "daily_briefing_n8n_stub", "name": "Daily Briefing n8n Stub", "enabled": False, "status": "draft"},
+                    {
+                        "id": "daily_local_ai_security_briefing",
+                        "name": "Daily Local AI Security Briefing",
+                        "enabled": False,
+                        "status": "paused",
+                    },
+                    {
+                        "id": "twice_daily_ai_policy_security_brief",
+                        "name": "Twice Daily AI, Security, and Policy Brief",
+                        "enabled": True,
+                        "status": "enabled",
+                    },
+                ]
+            }
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: calls.append(payload) or {"answer": "Run queued."})
+
+    answer = bragi.route_chat([{"role": "user", "content": "send brief now"}])
+
+    assert calls == [{"action": "run_task", "task_id": "twice_daily_ai_policy_security_brief"}]
+    assert "Run queued" in answer
+
+
 def test_run_existing_daily_brief_routes_to_yggdrasil(monkeypatch):
     calls = []
 

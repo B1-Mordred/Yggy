@@ -153,6 +153,15 @@ def classify_deterministic_automation_request(
         existing_kind = None
     if existing_kind == AutomationRequestKind.RUN_EXISTING and not target_task_id and not candidates and looks_like_useful_unsupported_automation(lowered):
         existing_kind = None
+    if existing_kind == AutomationRequestKind.RUN_EXISTING and not target_task_id and len(resolution.candidates) > 1:
+        enabled_candidates = [
+            candidate
+            for candidate in resolution.candidates
+            if candidate.get("enabled") is True or str(candidate.get("status") or "").lower() == "enabled"
+        ]
+        if len(enabled_candidates) == 1:
+            target_task_id = str(enabled_candidates[0].get("id"))
+            candidates = [target_task_id]
     if existing_kind in {
         AutomationRequestKind.INSPECT_EXISTING,
         AutomationRequestKind.RUN_EXISTING,
@@ -172,6 +181,7 @@ def classify_deterministic_automation_request(
                 operation={"action": action, "task_id": target_task_id},
                 confidence=0.92,
                 reason="request maps to a deterministic existing-task operation",
+                assumptions=["selected the only enabled matching automation"] if len(resolution.candidates) > 1 else [],
             )
         return AutomationRequestClassification(
             request_kind=AutomationRequestKind.NEEDS_CLARIFICATION,
