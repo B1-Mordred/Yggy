@@ -2143,6 +2143,7 @@ DASHBOARD_HTML = f"""<!doctype html>
           <option value="pending_approvals">Pending approvals</option>
           <option value="pending_proposals">Pending proposals</option>
           <option value="pending_capabilities">Pending capability proposals</option>
+          <option value="pending_sources">Pending source proposals</option>
           <option value="recent_discord_sends">Recent Discord sends</option>
           <option value="task_changes">Task changes</option>
           <option value="worker_activity">Worker activity</option>
@@ -2157,6 +2158,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     <button class="tab-button" type="button" data-view-target="runs">Runs <span class="tab-count" data-count="runs"></span></button>
     <button class="tab-button" type="button" data-view-target="proposals">Proposals <span class="tab-count" data-count="proposals"></span></button>
     <button class="tab-button" type="button" data-view-target="capabilities">Capabilities <span class="tab-count" data-count="capabilities"></span></button>
+    <button class="tab-button" type="button" data-view-target="sources">Sources <span class="tab-count" data-count="sources"></span></button>
     <button class="tab-button" type="button" data-view-target="approvals">Approvals <span class="tab-count" data-count="approvals"></span></button>
     <button class="tab-button" type="button" data-view-target="audit">Audit</button>
     <button class="tab-button" type="button" data-view-target="retention">Retention</button>
@@ -2357,6 +2359,35 @@ DASHBOARD_HTML = f"""<!doctype html>
         <div class="pager" id="capability-pagination"></div>
       </section>
     </section>
+    <section class="view" data-view="sources">
+      <section class="section panel">
+        <div class="section-head">
+          <div>
+            <h2>Source Proposals</h2>
+            <div class="meta" id="source-filter-summary">Not loaded yet.</div>
+          </div>
+          <button id="source-refresh" type="button">Refresh Sources</button>
+        </div>
+        <div class="filter-bar" aria-label="Source proposal filters">
+          <input id="source-filter-q" type="search" placeholder="Search source proposals" aria-label="Search source proposals">
+          <input id="source-filter-source-id" type="search" placeholder="Source id" aria-label="Source proposal source id">
+          <input id="source-filter-requested-by" type="search" placeholder="Requested by" aria-label="Source proposal requested by">
+          <select id="source-filter-status" aria-label="Source proposal status">
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="applied">Applied</option>
+            <option value="rejected">Rejected</option>
+            <option value="">All statuses</option>
+          </select>
+          <label class="page-size" for="source-page-size">Per page
+            <input id="source-page-size" type="number" min="5" max="100" step="5" value="10" aria-label="Source proposals per page">
+          </label>
+          <button id="source-filter-clear" type="button">Clear</button>
+        </div>
+        <div id="sources"></div>
+        <div class="pager" id="source-pagination"></div>
+      </section>
+    </section>
     <section class="view" data-view="audit">
       <section class="section panel">
         <div class="section-head">
@@ -2403,6 +2434,10 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="capability.accepted">capability.accepted</option>
             <option value="capability.rejected">capability.rejected</option>
             <option value="capability.closed">capability.closed</option>
+            <option value="source.propose">source.propose</option>
+            <option value="source.approve">source.approve</option>
+            <option value="source.reject">source.reject</option>
+            <option value="source.apply">source.apply</option>
             <option value="run.claim">run.claim</option>
             <option value="run.update">run.update</option>
             <option value="maintenance.retention.preview">maintenance.retention.preview</option>
@@ -2414,6 +2449,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <option value="task">task</option>
             <option value="task_change_proposal">task_change_proposal</option>
             <option value="capability_proposal">capability_proposal</option>
+            <option value="source_proposal">source_proposal</option>
             <option value="run">run</option>
             <option value="approval">approval</option>
             <option value="service">service</option>
@@ -2479,6 +2515,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       runs: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.runs'), DEFAULT_PAGE_SIZE)}},
       proposals: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.proposals'), DEFAULT_PAGE_SIZE)}},
       capabilities: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.capabilities'), DEFAULT_PAGE_SIZE)}},
+      sources: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.sources'), DEFAULT_PAGE_SIZE)}},
       approvals: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.approvals'), DEFAULT_PAGE_SIZE)}},
       audit: {{page: 1, pageSize: boundedNumber(storedValue('pageSize.audit'), DEFAULT_PAGE_SIZE)}},
     }};
@@ -2505,6 +2542,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       runs: ['run-filter-text', 'run-filter-task-id', 'run-filter-status', 'run-filter-notification-sent'],
       proposals: ['proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-status', 'proposal-filter-risk'],
       capabilities: ['capability-filter-q', 'capability-filter-requested-by', 'capability-filter-channel', 'capability-filter-level', 'capability-filter-status'],
+      sources: ['source-filter-q', 'source-filter-source-id', 'source-filter-requested-by', 'source-filter-status'],
       approvals: ['approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level'],
       audit: ['audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type'],
     }};
@@ -2525,6 +2563,10 @@ DASHBOARD_HTML = f"""<!doctype html>
       pending_capabilities: {{
         view: 'capabilities',
         fields: {{'capability-filter-status': 'pending'}},
+      }},
+      pending_sources: {{
+        view: 'sources',
+        fields: {{'source-filter-status': 'pending'}},
       }},
       recent_discord_sends: {{
         view: 'runs',
@@ -2643,6 +2685,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         'run-filter-text', 'run-filter-task-id', 'run-filter-status', 'run-filter-notification-sent',
         'proposal-filter-q', 'proposal-filter-task-id', 'proposal-filter-requested-by', 'proposal-filter-level', 'proposal-filter-status', 'proposal-filter-risk',
         'capability-filter-q', 'capability-filter-requested-by', 'capability-filter-channel', 'capability-filter-level', 'capability-filter-status',
+        'source-filter-q', 'source-filter-source-id', 'source-filter-requested-by', 'source-filter-status',
         'approval-filter-q', 'approval-filter-task-id', 'approval-filter-requested-by', 'approval-filter-level',
         'audit-filter-q', 'audit-filter-resource-id', 'audit-filter-actor', 'audit-filter-action', 'audit-filter-resource-type',
       ].forEach(id => {{
@@ -2672,6 +2715,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       if (view === 'audit') loadAudit();
       if (view === 'proposals') loadTaskChangeProposals();
       if (view === 'capabilities') loadCapabilityProposals();
+      if (view === 'sources') loadSourceProposals();
       if (view === 'approvals') loadReviewQueue('approvals');
     }}
     function wireViewTabs() {{
@@ -3415,6 +3459,60 @@ DASHBOARD_HTML = f"""<!doctype html>
         + capabilityProposalCards(proposals, 'No capability proposals match the current filters.');
       wireCapabilityProposalButtons(container);
     }}
+    function sourcePillList(items) {{
+      return Array.isArray(items) && items.length
+        ? items.slice(0, 6).map(item => `<span class="pill">${{esc(item)}}</span>`).join(' ')
+        : '<span class="meta">none</span>';
+    }}
+    function sourceProposalCards(proposals, emptyText) {{
+      return proposals.length ? proposals.map(item => {{
+        const source = item.source || {{}};
+        const risk = item.risk || {{}};
+        const pending = item.status === 'pending';
+        const approved = item.status === 'approved';
+        return `<div class="approval">
+          <div class="approval-head">
+            <div>
+              <code>${{esc(item.id)}}</code>
+              <span class="pill">${{esc(item.status)}}</span>
+              <span class="pill">${{esc(source.type || 'unknown')}}</span>
+              <span class="pill">${{esc(source.ingestion_mode || 'unknown')}}</span>
+            </div>
+            <span class="meta">requested by ${{esc(item.requested_by)}} at ${{esc(item.created_at)}}</span>
+          </div>
+          <div><strong>${{esc(source.name || item.source_id)}}</strong> <code>${{esc(item.source_id)}}</code></div>
+          <div class="meta">fit ${{esc(source.ai_safe_fit || 'n/a')}}; trust ${{esc(source.trust_level || 'n/a')}}; source URL is shown in detail only after operator review.</div>
+          <div>${{esc(item.summary)}}</div>
+          <div><strong>Categories</strong><br>${{sourcePillList(source.categories)}}</div>
+          <div><strong>Risk</strong><br>
+            <span class="meta">severity ${{esc(risk.severity || 'n/a')}}; requires admin ${{esc(risk.requires_admin)}}; network fetch ${{esc(risk.network_fetch)}}; registry mutation ${{esc(item.execution?.registry_mutation)}}</span>
+          </div>
+          <div class="approval-actions">
+            ${{pending || approved ? '<input type="text" autocomplete="off" placeholder="Review note (optional)" aria-label="Source proposal review note">' : ''}}
+            ${{pending ? `<button type="button" data-source-action="approve" data-source-id="${{esc(item.id)}}">Approve</button>` : ''}}
+            ${{approved ? `<button type="button" data-source-action="apply" data-source-id="${{esc(item.id)}}">Apply</button>` : ''}}
+            ${{pending || approved ? `<button type="button" class="danger" data-source-action="reject" data-source-id="${{esc(item.id)}}">Reject</button>` : ''}}
+            <button type="button" data-source-detail-id="${{esc(item.id)}}">Details</button>
+            <span class="meta approval-message"></span>
+          </div>
+          <div class="proposal-detail-panel"></div>
+        </div>`;
+      }}).join('<hr>') : `<div class="empty">${{esc(emptyText)}}</div>`;
+    }}
+    function wireSourceProposalButtons(container) {{
+      container.querySelectorAll('[data-source-action]').forEach(button => {{
+        button.addEventListener('click', () => decideSourceProposal(button));
+      }});
+      container.querySelectorAll('[data-source-detail-id]').forEach(button => {{
+        button.addEventListener('click', () => loadSourceProposalDetail(button));
+      }});
+    }}
+    function renderSourceProposals(proposals) {{
+      const container = document.getElementById('sources');
+      container.innerHTML = '<div class="meta">Source proposals add review backlog only. Approving one does not attach it to a task; applying returns YAML for normal repository review and deployment.</div>'
+        + sourceProposalCards(proposals, 'No source proposals match the current filters.');
+      wireSourceProposalButtons(container);
+    }}
     function renderApprovals(approvals) {{
       const container = document.getElementById('approvals');
       container.innerHTML = '<div class="meta">Pending approvals that are not config proposals.</div>'
@@ -3438,6 +3536,14 @@ DASHBOARD_HTML = f"""<!doctype html>
         source_channel: fieldValue('capability-filter-channel'),
         approval_level: fieldValue('capability-filter-level'),
         status: fieldValue('capability-filter-status'),
+      }};
+    }}
+    function sourceProposalFilterValues() {{
+      return {{
+        q: fieldValue('source-filter-q'),
+        source_id: fieldValue('source-filter-source-id'),
+        requested_by: fieldValue('source-filter-requested-by'),
+        status: fieldValue('source-filter-status'),
       }};
     }}
     function reviewFilterValues(kind) {{
@@ -3504,6 +3610,34 @@ DASHBOARD_HTML = f"""<!doctype html>
         renderPager('capability-pagination', 'capabilities', data.pagination.total, data.pagination.returned, loadCapabilityProposals);
       }} catch (error) {{
         summary.textContent = `Unable to load capability proposals: ${{error.message}}`;
+      }}
+    }}
+    async function loadSourceProposals() {{
+      const summary = byId('source-filter-summary');
+      summary.textContent = 'Loading source proposals...';
+      try {{
+        const params = new URLSearchParams({{
+          page: String(pageState.sources.page),
+          page_size: String(pageSize('sources')),
+        }});
+        Object.entries(sourceProposalFilterValues()).forEach(([key, value]) => {{
+          if (value) params.set(key, value);
+        }});
+        const response = await fetch(`/ops/source-proposals?${{params.toString()}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const data = await response.json();
+        if (data.pagination.total > 0 && pageState.sources.page > data.pagination.total_pages) {{
+          pageState.sources.page = data.pagination.total_pages;
+          return loadSourceProposals();
+        }}
+        summary.textContent = `Showing ${{data.counts.returned}} of ${{data.counts.matched}} matching source proposals.`;
+        renderSourceProposals(data.proposals || []);
+        renderPager('source-pagination', 'sources', data.pagination.total, data.pagination.returned, loadSourceProposals);
+      }} catch (error) {{
+        summary.textContent = `Unable to load source proposals: ${{error.message}}`;
       }}
     }}
     async function loadReviewQueue(kind) {{
@@ -3708,6 +3842,106 @@ DASHBOARD_HTML = f"""<!doctype html>
         button.disabled = false;
       }}
     }}
+    async function loadSourceProposalDetail(button) {{
+      const proposalId = button.dataset.sourceDetailId;
+      const panel = button.closest('.approval').querySelector('.proposal-detail-panel');
+      panel.innerHTML = '<div class="empty">Loading source proposal detail...</div>';
+      try {{
+        const response = await fetch(`/ops/source-proposals/${{encodeURIComponent(proposalId)}}`, {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const detail = await response.json();
+        const source = detail.source || {{}};
+        panel.innerHTML = `<details open>
+          <summary>Source proposal detail</summary>
+          <div class="detail-grid section">
+            <div class="detail-block">
+              <h3>Source</h3>
+              <div><strong>${{esc(source.name || detail.source_id)}}</strong></div>
+              <div class="meta">id <code>${{esc(detail.source_id)}}</code>; type ${{esc(source.type)}}; mode ${{esc(source.ingestion_mode)}}</div>
+              <div class="meta">url <code>${{esc(source.url)}}</code></div>
+              <div class="meta">fit ${{esc(source.ai_safe_fit)}}; trust ${{esc(source.trust_level)}}; enabled ${{esc(source.enabled)}}</div>
+            </div>
+            <div class="detail-block">
+              <h3>Review Boundary</h3>
+              <div class="meta">creates task: ${{esc(detail.execution?.creates_task)}}; creates approval: ${{esc(detail.execution?.creates_approval)}}; can be applied: ${{esc(detail.execution?.can_be_applied)}}</div>
+              <div class="meta">External content remains untrusted data. Approval only makes this source selectable after registry review.</div>
+            </div>
+            <div class="detail-block">
+              <h3>Risk</h3>
+              ${{jsonBlock(detail.risk)}}
+            </div>
+            <div class="detail-block">
+              <h3>Source Config</h3>
+              ${{jsonBlock(source)}}
+            </div>
+            <div class="detail-block wide">
+              <h3>Raw Proposal</h3>
+              ${{jsonBlock(detail)}}
+            </div>
+          </div>
+        </details>`;
+      }} catch (error) {{
+        panel.innerHTML = `<div class="bad">Unable to load source proposal detail: ${{esc(error.message)}}</div>`;
+      }}
+    }}
+    async function decideSourceProposal(button) {{
+      const proposalId = button.dataset.sourceId;
+      const action = button.dataset.sourceAction;
+      const panel = button.closest('.approval');
+      const message = panel.querySelector('.approval-message');
+      const input = panel.querySelector('input');
+      const reason = input?.value || '';
+      button.disabled = true;
+      message.textContent = `${{action}} pending...`;
+      message.className = 'meta approval-message';
+      try {{
+        const response = await fetch(`/ops/source-proposals/${{encodeURIComponent(proposalId)}}/${{action}}`, {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'Content-Type': 'application/json', 'X-Yggy-Ops-Action': 'source-proposal'}},
+          body: JSON.stringify({{reason}}),
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const result = await response.json();
+        if (action === 'apply' && result.apply) {{
+          const detailPanel = panel.querySelector('.proposal-detail-panel');
+          detailPanel.innerHTML = `<details open>
+            <summary>Reviewed source registry entry</summary>
+            <div class="detail-grid section">
+              <div class="detail-block wide">
+                <h3>Operator Action</h3>
+                <div>${{esc(result.apply.operator_action || '')}}</div>
+                <div class="meta">Registry file: <code>${{esc(result.apply.registry_file || '')}}</code></div>
+              </div>
+              <div class="detail-block wide">
+                <h3>YAML</h3>
+                <pre>${{esc(result.apply.source_yaml || '')}}</pre>
+              </div>
+              <div class="detail-block wide">
+                <h3>Source Entry</h3>
+                ${{jsonBlock(result.apply.source_entry)}}
+              </div>
+            </div>
+          </details>`;
+          message.textContent = 'Applied. Review the generated YAML below, then update the source registry through normal repo review.';
+          message.className = 'meta approval-message good';
+          await loadStatus();
+        }} else {{
+          await refresh();
+        }}
+      }} catch (error) {{
+        message.textContent = error.message;
+        message.className = 'meta approval-message bad';
+      }} finally {{
+        button.disabled = false;
+      }}
+    }}
     async function loadStatus() {{
       const response = await fetch('/ops/status', {{credentials: 'same-origin'}});
       if (!response.ok) throw new Error(`status ${{response.status}}`);
@@ -3718,12 +3952,13 @@ DASHBOARD_HTML = f"""<!doctype html>
       setTabCount('runs', data.recent_runs.length);
       setTabCount('proposals', data.counts.open_task_change_proposals || 0);
       setTabCount('capabilities', data.counts.pending_capability_proposals || 0);
+      setTabCount('sources', data.counts.open_source_proposals || 0);
       setTabCount('approvals', data.counts.pending_general_approvals || 0);
       document.getElementById('metrics').innerHTML = [
         metric('Service', statusLabel(data.service.status), `worker age ${{text(data.service.worker.age_seconds)}}s`),
         metric('Tasks', data.counts.tasks, `${{data.counts.enabled_tasks}} enabled`),
         metric('Active Runs', data.counts.active_runs, 'queued or running'),
-        metric('Pending Reviews', data.counts.pending_reviews || data.counts.pending_approvals, `${{data.counts.pending_task_change_proposals || 0}} task changes; ${{data.counts.pending_capability_proposals || 0}} capabilities; ${{data.counts.pending_general_approvals || 0}} general`),
+        metric('Pending Reviews', data.counts.pending_reviews || data.counts.pending_approvals, `${{data.counts.pending_task_change_proposals || 0}} task changes; ${{data.counts.pending_capability_proposals || 0}} capabilities; ${{data.counts.open_source_proposals || 0}} sources; ${{data.counts.pending_general_approvals || 0}} general`),
       ].join('');
       document.getElementById('service').innerHTML = `
         <h2>Service Health</h2>
@@ -3892,6 +4127,30 @@ DASHBOARD_HTML = f"""<!doctype html>
         resetPage('capabilities');
         loadCapabilityProposals();
       }});
+      const reloadSources = id => {{
+        markCustomView();
+        if (id) persistField(id);
+        resetPage('sources');
+        loadSourceProposals();
+      }};
+      ['source-filter-q', 'source-filter-source-id', 'source-filter-requested-by'].forEach(id => {{
+        byId(id).addEventListener('input', debounce(() => reloadSources(id), 350));
+      }});
+      byId('source-filter-status').addEventListener('change', () => reloadSources('source-filter-status'));
+      byId('source-page-size').addEventListener('change', () => {{
+        resetPage('sources');
+        pageSize('sources');
+        loadSourceProposals();
+      }});
+      byId('source-filter-clear').addEventListener('click', () => {{
+        markCustomView();
+        ['source-filter-q', 'source-filter-source-id', 'source-filter-requested-by', 'source-filter-status'].forEach(id => {{
+          byId(id).value = '';
+          persistField(id);
+        }});
+        resetPage('sources');
+        loadSourceProposals();
+      }});
       const reloadApprovals = id => {{
         markCustomView();
         if (id) persistField(id);
@@ -3956,6 +4215,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         if (activeView === 'audit') await loadAudit();
         if (activeView === 'proposals') await loadTaskChangeProposals();
         if (activeView === 'capabilities') await loadCapabilityProposals();
+        if (activeView === 'sources') await loadSourceProposals();
         if (activeView === 'approvals') await loadReviewQueue('approvals');
       }}
       catch (error) {{ document.getElementById('generated').textContent = `Unable to load status: ${{error.message}}`; }}
@@ -3965,6 +4225,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     document.getElementById('audit-refresh').addEventListener('click', loadAudit);
     document.getElementById('proposal-refresh').addEventListener('click', loadTaskChangeProposals);
     document.getElementById('capability-refresh').addEventListener('click', loadCapabilityProposals);
+    document.getElementById('source-refresh').addEventListener('click', loadSourceProposals);
     document.getElementById('approval-refresh').addEventListener('click', () => loadReviewQueue('approvals'));
     document.getElementById('saved-view-select').addEventListener('change', event => applySavedView(event.target.value));
     wireViewTabs();

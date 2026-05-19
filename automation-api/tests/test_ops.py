@@ -79,12 +79,20 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "data-view=\"tasks\"" in allowed.text
     assert "data-view=\"proposals\"" in allowed.text
     assert "data-view=\"capabilities\"" in allowed.text
+    assert "data-view=\"sources\"" in allowed.text
     assert "data-count=\"proposals\"" in allowed.text
     assert "data-count=\"capabilities\"" in allowed.text
+    assert "data-count=\"sources\"" in allowed.text
     assert "proposal-filter-q" in allowed.text
     assert "capability-filter-q" in allowed.text
     assert "capability-page-size" in allowed.text
     assert "data-capability-action" in allowed.text
+    assert "source-filter-q" in allowed.text
+    assert "source-filter-source-id" in allowed.text
+    assert "source-page-size" in allowed.text
+    assert "data-source-action" in allowed.text
+    assert "data-source-detail-id" in allowed.text
+    assert "pending_sources" in allowed.text
     assert "Plan implementation" in allowed.text
     assert "implementation_planned" in allowed.text
     assert "approval-filter-q" in allowed.text
@@ -103,6 +111,8 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "approval-page-size" in allowed.text
     assert "audit-filter-action" in allowed.text
     assert "audit-page-size" in allowed.text
+    assert "source.propose" in allowed.text
+    assert "source_proposal" in allowed.text
     assert "task-pagination" in allowed.text
     assert "run-pagination" in allowed.text
     assert "data-sort-view" in allowed.text

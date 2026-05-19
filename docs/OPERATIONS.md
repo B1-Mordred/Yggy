@@ -547,7 +547,11 @@ registered capability catalog.
 Bragi can also create approved-source proposals through `POST /sources/propose`
 when the user explicitly asks to register one public RSS/feed or website URL.
 Tool-created source proposals do not return the approval nonce. Operators can
-inspect them with hidden local-only endpoints:
+review them from the `/ops` `Sources` view. The view supports status, text,
+source-id, requester, and page-size filters, shows the safe proposal summary,
+and can load source/risk detail before a decision is made.
+
+The same workflow is backed by hidden local-only endpoints:
 
 ```text
 GET /ops/source-proposals
@@ -559,8 +563,8 @@ POST /ops/source-proposals/{proposal_id}/apply
 
 These routes require dashboard/admin access plus
 `X-Yggy-Ops-Action: source-proposal` for state-changing calls. Applying a source
-proposal only returns the reviewed YAML entry and operator instructions; the API
-does not write the checked-in source registry from inside the container.
+proposal shows the reviewed YAML entry and operator instructions; the API does
+not write the checked-in source registry from inside the container.
 
 Prior config versions can be reverted from the task-detail panel. A revert does
 not immediately enable or run the task. It creates a new disabled
