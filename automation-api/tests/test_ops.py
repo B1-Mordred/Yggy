@@ -666,6 +666,16 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
                         "decision": {"send": True, "classification": "failure"},
                         "notification": {"sent": True, "target": "alerts"},
                     },
+                    "observability": {
+                        "item_count": 1,
+                        "deduplicated_count": 1,
+                        "successful_source_count": 1,
+                        "processed_source_count": 2,
+                        "message_char_count": 11,
+                        "quality_status": "degraded",
+                        "delivery": {"sent": True, "target": "briefings", "decision_reason": "enabled"},
+                        "n8n": {"enabled": True, "status": "ready", "status_code": 200},
+                    },
                     "api_token": "hidden-secret",
                 },
                 created_at=utcnow(),
@@ -680,6 +690,9 @@ def test_ops_run_detail_shows_redacted_digest_n8n_and_discord_result(client, mon
     body = response.json()
     assert body["run"]["id"] == run_id
     assert body["task"]["id"] == task_id
+    assert body["observability"]["item_count"] == 1
+    assert body["observability"]["delivery"]["target"] == "briefings"
+    assert body["observability"]["n8n"]["status_code"] == 200
     assert body["digest"]["item_count"] == 1
     assert body["digest"]["error_count"] == 1
     assert body["digest"]["summary_mode"] == "llm"

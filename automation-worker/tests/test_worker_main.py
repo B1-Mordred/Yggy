@@ -85,6 +85,12 @@ def test_process_topic_digest_sends_discord_dry_run(monkeypatch):
     assert client.completed_calls[0]["run_id"] == "run-daily_local_ai_security_briefing"
     assert client.completed_calls[0]["status"] == "completed_dry_run"
     assert client.completed_calls[0]["log"]["notification_decision"]["classification"] == "empty"
+    observability = client.completed_calls[0]["log"]["observability"]
+    assert observability["task_id"] == "daily_local_ai_security_briefing"
+    assert observability["item_count"] == 0
+    assert observability["message_char_count"] == len("digest body")
+    assert observability["delivery"]["target"] == "briefings"
+    assert observability["delivery"]["decision_classification"] == "empty"
 
 
 def test_process_backup_verification_suppresses_clean_anomaly_only_result(monkeypatch):

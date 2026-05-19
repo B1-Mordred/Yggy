@@ -1528,12 +1528,65 @@ def _run_detail(run: RunModel, task: TaskModel | None) -> dict:
     return {
         "run": _run_summary(run),
         "task": _task_summary(task, run) if task else {"id": run.task_id},
+        "observability": _observability_detail(log, result),
         "digest": _digest_detail(result),
         "n8n": _n8n_detail(result),
         "notification_decision": notification_decision,
         "notification": notification,
         "quality_alert": quality_alert,
         "failure": _failure_detail(log),
+    }
+
+
+def _observability_detail(log: dict, result: dict) -> dict | None:
+    observed = _as_dict(log.get("observability"))
+    if observed:
+        return _bounded_value(observed)
+    if not result:
+        return None
+    quality = _as_dict(result.get("quality"))
+    metrics = _as_dict(quality.get("metrics"))
+    source_health = _as_list(result.get("source_health"))
+    notification = _as_dict(log.get("notification"))
+    decision = _as_dict(log.get("notification_decision"))
+    n8n = _as_dict(result.get("n8n"))
+    has_digest_fields = any(key in result for key in ("items", "errors", "source_count", "source_health", "message"))
+    if not has_digest_fields:
+        return None
+    return {
+        "task_id": log.get("task_id"),
+        "result_status": result.get("status"),
+        "quality_status": quality.get("status"),
+        "quality_alert_needed": quality.get("alert_needed"),
+        "summary_mode": result.get("summary_mode"),
+        "item_count": metrics.get("item_count", len(_as_list(result.get("items")))),
+        "deduplicated_count": result.get("deduplicated_count"),
+        "error_count": len(_as_list(result.get("errors"))),
+        "configured_source_count": metrics.get("configured_source_count", result.get("source_count")),
+        "approved_source_count": result.get("approved_source_count"),
+        "processed_source_count": metrics.get("processed_source_count"),
+        "successful_source_count": metrics.get("successful_source_count"),
+        "failed_source_count": metrics.get("failed_source_count"),
+        "blocked_source_count": sum(1 for health in source_health if isinstance(health, dict) and health.get("status") == "blocked"),
+        "empty_sections": metrics.get("empty_sections", []),
+        "message_char_count": len(str(result.get("message") or "")),
+        "delivery": {
+            "decision_send": decision.get("send"),
+            "decision_reason": decision.get("reason"),
+            "decision_classification": decision.get("classification"),
+            "sent": notification.get("sent"),
+            "target": notification.get("target"),
+            "dry_run": notification.get("dry_run"),
+            "transport": notification.get("transport"),
+            "status_code": notification.get("status_code"),
+            "error": notification.get("error"),
+        },
+        "n8n": {
+            "enabled": bool(n8n),
+            "status": n8n.get("status"),
+            "status_code": n8n.get("status_code"),
+            "webhook_id": n8n.get("webhook_id"),
+        },
     }
 
 
@@ -2074,6 +2127,10 @@ DASHBOARD_HTML = f"""<!doctype html>
     .detail-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
     .detail-block {{ min-width: 0; }}
     .detail-block.wide {{ grid-column: 1 / -1; }}
+    .observability-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }}
+    .observability-card {{ border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: rgba(255,255,255,0.02); }}
+    .observability-card .label {{ color: var(--muted); font-size: 11px; }}
+    .observability-card .value {{ font-size: 16px; font-weight: 700; margin-top: 2px; overflow-wrap: anywhere; }}
     .diff-list {{ margin: 6px 0 0; padding-left: 20px; }}
     .diff-list li {{ margin: 4px 0; overflow-wrap: anywhere; }}
     .digest-items {{ margin: 0; padding-left: 22px; }}
@@ -2121,11 +2178,13 @@ DASHBOARD_HTML = f"""<!doctype html>
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .detail-grid {{ grid-template-columns: 1fr; }}
+      .observability-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .timeline-item {{ grid-template-columns: 1fr; }}
       .summary-strip {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
     }}
     @media (max-width: 560px) {{
       .grid {{ grid-template-columns: 1fr; }}
+      .observability-grid {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -3223,9 +3282,31 @@ DASHBOARD_HTML = f"""<!doctype html>
         </li>
       `).join('')}}</ol>` : '<div class="empty">No digest items recorded.</div>';
     }}
+    function observabilityCards(observed) {{
+      if (!observed) return '<div class="empty">No compact observability summary recorded.</div>';
+      const delivery = observed.delivery || {{}};
+      const n8n = observed.n8n || {{}};
+      const cards = [
+        ['Items', `${{observed.item_count ?? 'n/a'}} total / ${{observed.deduplicated_count ?? 'n/a'}} deduped`],
+        ['Sources', `${{observed.successful_source_count ?? 'n/a'}} ok / ${{observed.processed_source_count ?? 'n/a'}} processed`],
+        ['Errors', `${{observed.error_count ?? 0}} item/source; ${{observed.failed_source_count ?? 0}} failed sources`],
+        ['Quality', `${{observed.quality_status || 'n/a'}}${{observed.quality_alert_needed ? ' alert' : ''}}`],
+        ['Message', `${{observed.message_char_count ?? 'n/a'}} chars; ${{observed.summary_mode || 'n/a'}}`],
+        ['Discord', `${{delivery.sent === true ? 'sent' : delivery.sent === false ? 'not sent' : 'n/a'}}; ${{delivery.decision_reason || 'n/a'}}`],
+        ['Target', `${{delivery.channel || 'n/a'}}:${{delivery.target || 'n/a'}}${{delivery.dry_run ? ' dry-run' : ''}}`],
+        ['n8n', `${{n8n.enabled ? (n8n.status || 'enabled') : 'disabled'}}${{n8n.status_code ? ` HTTP ${{n8n.status_code}}` : ''}}`],
+      ];
+      return `<div class="observability-grid">${{cards.map(([label, value]) => `
+        <div class="observability-card">
+          <div class="label">${{esc(label)}}</div>
+          <div class="value">${{esc(value)}}</div>
+        </div>
+      `).join('')}}</div>`;
+    }}
     function renderRunDetail(data) {{
       const run = data.run || {{}};
       const task = data.task || {{}};
+      const observed = data.observability || null;
       const digest = data.digest;
       const n8n = data.n8n;
       const decision = data.notification_decision || {{}};
@@ -3237,6 +3318,11 @@ DASHBOARD_HTML = f"""<!doctype html>
         <div class="meta"><code>${{esc(run.id)}}</code> for <code>${{esc(run.task_id || task.id)}}</code> - ${{statusLabel(run.status)}} - completed ${{esc(run.completed_at)}}</div>
         ${{failure ? `<div class="section bad"><strong>Failure</strong><br>${{esc(failure.error)}} ${{esc(failure.message)}}</div>` : ''}}
         <div class="detail-grid section">
+          <div class="detail-block wide">
+            <h3>Observability</h3>
+            ${{observabilityCards(observed)}}
+            ${{observed ? `<details><summary>Raw observability</summary>${{jsonBlock(observed)}}</details>` : ''}}
+          </div>
           <div class="detail-block wide">
             <h3>Digest</h3>
             ${{digest ? `

@@ -297,6 +297,95 @@ def maybe_send_digest_quality_alert(
     return {"decision": decision, "notification": alert_notification}
 
 
+def topic_digest_observability(
+    config: dict,
+    result: dict,
+    *,
+    notification: dict | None,
+    decision: dict,
+    quality_alert: dict | None,
+    dry_run: bool,
+) -> dict | None:
+    if config.get("type") != "topic_digest":
+        return None
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    errors = result.get("errors") if isinstance(result.get("errors"), list) else []
+    source_health = result.get("source_health") if isinstance(result.get("source_health"), list) else []
+    quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
+    metrics = quality.get("metrics") if isinstance(quality.get("metrics"), dict) else {}
+    n8n = result.get("n8n") if isinstance(result.get("n8n"), dict) else {}
+    output = config.get("output") if isinstance(config.get("output"), dict) else {}
+
+    def metric_int(name: str, fallback: int = 0) -> int:
+        try:
+            return int(metrics.get(name, fallback) or 0)
+        except (TypeError, ValueError):
+            return fallback
+
+    processed_sources = metric_int(
+        "processed_source_count",
+        sum(1 for health in source_health if isinstance(health, dict) and health.get("status") != "blocked"),
+    )
+    successful_sources = metric_int(
+        "successful_source_count",
+        sum(1 for health in source_health if isinstance(health, dict) and health.get("status") == "ok"),
+    )
+    failed_sources = metric_int(
+        "failed_source_count",
+        sum(1 for health in source_health if isinstance(health, dict) and health.get("status") == "error"),
+    )
+    blocked_sources = sum(1 for health in source_health if isinstance(health, dict) and health.get("status") == "blocked")
+    notification_payload = notification if isinstance(notification, dict) else {}
+    alert_notification = (
+        quality_alert.get("notification")
+        if isinstance(quality_alert, dict) and isinstance(quality_alert.get("notification"), dict)
+        else {}
+    )
+    return {
+        "task_id": config.get("id"),
+        "result_status": result.get("status"),
+        "quality_status": quality.get("status"),
+        "quality_alert_needed": quality.get("alert_needed"),
+        "summary_mode": result.get("summary_mode"),
+        "item_count": metric_int("item_count", len(items)),
+        "deduplicated_count": int(result.get("deduplicated_count") or 0),
+        "error_count": len(errors),
+        "configured_source_count": metric_int("configured_source_count", int(result.get("source_count") or 0)),
+        "approved_source_count": int(result.get("approved_source_count") or 0),
+        "processed_source_count": processed_sources,
+        "successful_source_count": successful_sources,
+        "failed_source_count": failed_sources,
+        "blocked_source_count": blocked_sources,
+        "empty_sections": metrics.get("empty_sections") if isinstance(metrics.get("empty_sections"), list) else [],
+        "message_char_count": len(str(result.get("message") or "")),
+        "delivery": {
+            "channel": output.get("channel"),
+            "target": output.get("target"),
+            "dry_run": dry_run,
+            "decision_send": bool(decision.get("send")),
+            "decision_reason": decision.get("reason"),
+            "decision_classification": decision.get("classification"),
+            "sent": notification_payload.get("sent"),
+            "transport": notification_payload.get("transport"),
+            "status_code": notification_payload.get("status_code"),
+            "error": notification_payload.get("error"),
+        },
+        "quality_alert_delivery": {
+            "sent": alert_notification.get("sent"),
+            "target": alert_notification.get("target"),
+            "error": alert_notification.get("error"),
+        }
+        if quality_alert
+        else None,
+        "n8n": {
+            "enabled": bool(config.get("n8n")),
+            "status": n8n.get("status"),
+            "status_code": n8n.get("status_code"),
+            "webhook_id": n8n.get("webhook_id"),
+        },
+    }
+
+
 def has_recent_failure(
     client: AutomationApiClient,
     task_id: str,
@@ -429,22 +518,29 @@ def execute_task(
             dry_run=dry_run,
             notification=notification,
         )
+        observability = topic_digest_observability(
+            effective_config,
+            result,
+            notification=notification,
+            decision=decision,
+            quality_alert=quality_alert,
+            dry_run=dry_run,
+        )
 
         status = "completed_dry_run" if dry_run else "completed"
         result_quality = result.get("quality") if isinstance(result.get("quality"), dict) else {}
         if not dry_run and (notification_send_error or result_quality.get("status") == "failed"):
             status = "failed"
-        completed = client.complete_run(
-            run_id,
-            status,
-            {
-                "task_id": task_id,
-                "result": result,
-                "notification": notification,
-                "notification_decision": decision,
-                "quality_alert": quality_alert,
-            },
-        )
+        run_log = {
+            "task_id": task_id,
+            "result": result,
+            "notification": notification,
+            "notification_decision": decision,
+            "quality_alert": quality_alert,
+        }
+        if observability is not None:
+            run_log["observability"] = observability
+        completed = client.complete_run(run_id, status, run_log)
         return {"task_id": task_id, "run_id": run_id, "status": completed["status"], "result": result}
     except Exception as exc:
         output = effective_config.get("output", {})
