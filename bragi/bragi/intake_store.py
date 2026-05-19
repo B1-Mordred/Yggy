@@ -101,8 +101,11 @@ def validate_intake_payload(*, user_id: str, channel: str, status: str, intent: 
     clean_status = str(status or "").strip().lower()
     if clean_status not in INTAKE_STATUSES:
         raise MemoryValidationError("intake status is not allowed")
-    if not isinstance(intent, dict) or intent.get("intent") not in {"draft_task", "propose_task_change"}:
-        raise MemoryValidationError("intake intent must be a canonical automation intent")
+    allowed_intents = {"draft_task", "propose_task_change", "automation_request_routing"}
+    if not isinstance(intent, dict) or intent.get("intent") not in allowed_intents:
+        raise MemoryValidationError("intake intent must be a canonical automation intent or routing clarification")
+    if intent.get("intent") == "automation_request_routing" and not isinstance(intent.get("goal"), dict):
+        raise MemoryValidationError("routing clarification intake requires goal metadata")
     if not intent.get("capability_id"):
         raise MemoryValidationError("intake intent requires capability_id")
     if contains_secret_like_material({"intent": intent, "summary": summary}):

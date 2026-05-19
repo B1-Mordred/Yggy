@@ -41,6 +41,11 @@ from .intake_store import (
     mark_intake_confirmed,
     update_intake,
 )
+from .goal_router import (
+    AutomationRequestClassification,
+    AutomationRequestKind,
+    classify_automation_request,
+)
 
 MODEL_ID = os.getenv("BRAGI_MODEL_ID", "bragi")
 DISPLAY_NAME = "Bragi"
@@ -61,6 +66,19 @@ CHAT_MAX_TOKENS = int(os.getenv("BRAGI_CHAT_MAX_TOKENS", "512"))
 MEMORY_FILE = os.getenv("BRAGI_MEMORY_FILE", "/app/configs/bragi/memory.yaml").strip()
 CONFIG_ROOT = os.getenv("BRAGI_CONFIG_ROOT", "/app/configs").strip()
 INTAKE_TTL_SECONDS = int(os.getenv("BRAGI_INTAKE_TTL_SECONDS", "86400"))
+GOAL_ROUTER_ENABLED = os.getenv("BRAGI_GOAL_ROUTER_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+GOAL_ROUTER_REQUIRE_CONFIRMATION = os.getenv("BRAGI_GOAL_ROUTER_REQUIRE_CONFIRMATION", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+GOAL_ROUTER_MAX_CANDIDATES = max(1, min(int(os.getenv("BRAGI_GOAL_ROUTER_MAX_CANDIDATES", "5")), 20))
+GOAL_CLARIFIER_ENABLED = os.getenv("BRAGI_GOAL_CLARIFIER_ENABLED", "false").strip().lower() not in {"0", "false", "no", "off"}
+GOAL_CLARIFIER_PROVIDER = os.getenv("BRAGI_GOAL_CLARIFIER_PROVIDER", "hermes").strip()
+GOAL_CLARIFIER_BASE_URL = os.getenv("BRAGI_GOAL_CLARIFIER_BASE_URL", "").strip()
+GOAL_CLARIFIER_MODEL = os.getenv("BRAGI_GOAL_CLARIFIER_MODEL", "hermes-clarifier").strip()
+GOAL_CLARIFIER_TIMEOUT = int(os.getenv("BRAGI_GOAL_CLARIFIER_TIMEOUT", "30"))
 CONTEXT_CATEGORIES = {
     "tasks",
     "pending_reviews",
@@ -83,7 +101,10 @@ TASK_ALIASES = {
     "local ai briefing": "daily_local_ai_security_briefing",
     "local ai security briefing": "daily_local_ai_security_briefing",
     "daily local ai security briefing": "daily_local_ai_security_briefing",
+    "security brief": "daily_local_ai_security_briefing",
+    "security briefing": "daily_local_ai_security_briefing",
     "server health": "morning_server_health_check",
+    "health check": "morning_server_health_check",
     "server health check": "morning_server_health_check",
     "morning server health": "morning_server_health_check",
     "morning server health check": "morning_server_health_check",
@@ -687,7 +708,10 @@ def context_categories_for_text(text: str, requested_category: str | None = None
         category = requested_category.strip().lower()
         return [category] if category in CONTEXT_CATEGORIES else []
     lowered = text.lower()
-    if re.match(r"^\s*(?:please\s+)?(draft|create|set up|setup|schedule|add|include|remove|exclude|stop|run|send|pause|disable|approve|reject)\b", lowered):
+    if re.match(
+        r"^\s*(?:please\s+)?(draft|create|set up|setup|schedule|add|include|remove|exclude|stop|run|send|pause|disable|approve|reject|schick|schicke|sende|pausiere|deaktiviere|starte|erstelle|richte|plane|überwache|ueberwache|nimm|nehme|füge|fuege|entferne)\b",
+        lowered,
+    ):
         return []
     categories: list[str] = []
 
@@ -1565,6 +1589,8 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
 
     mode = classify_request(user_text)
     diagnostic["mode"] = mode
+    goal_classification = classify_goal_request(user_text)
+    diagnostic["goal_classification"] = goal_classification.model_dump(mode="json")
     if source_proposal_requested(user_text):
         diagnostic.update(
             {
@@ -1597,6 +1623,8 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
         )
         return diagnostic
     operation = operation_from_text(user_text)
+    if goal_classification.operation is not None and goal_classification.operation.get("action"):
+        operation = goal_classification.operation
     if operation is not None:
         diagnostic.update(
             {
@@ -1989,13 +2017,14 @@ def is_topic_digest_subject_change_request(text: str) -> bool:
     if not any(term in lowered for term in ("brief", "briefing", "digest")):
         return False
     return bool(
-        re.search(r"\b(add|include|cover|remove|drop|exclude)\b", lowered)
+        re.search(r"\b(add|include|cover|remove|drop|exclude|nimm|nehme|füge|fuege|entferne|ändere|aendere)\b", lowered)
         or re.search(r"\bstop\s+covering\b", lowered)
+        or re.search(r"\bin\s+(?:den|die|das|dem)?\s*.*\bauf\b", lowered)
     )
 
 
 def topic_digest_subject_change_intent(user_text: str) -> dict[str, Any]:
-    remove = bool(re.search(r"\b(remove|drop|exclude)\b|\bstop\s+covering\b", user_text, re.IGNORECASE))
+    remove = bool(re.search(r"\b(remove|drop|exclude|entferne)\b|\bstop\s+covering\b", user_text, re.IGNORECASE))
     source_ids = source_ids_from_text(user_text)
     terms = brief_subject_terms_from_text(user_text)
     slots: dict[str, Any] = {
@@ -2452,7 +2481,7 @@ def source_search_terms_from_text(text: str) -> list[str]:
         subject_terms = [topic] if topic else []
     terms: list[str] = []
     for subject in subject_terms:
-        for part in re.split(r"\band\b|,|/|&|\+", subject, flags=re.IGNORECASE):
+        for part in re.split(r"\b(?:and|und)\b|,|/|&|\+", subject, flags=re.IGNORECASE):
             cleaned = re.sub(
                 r"\b(source|sources|feed|feeds|rss|news|updates|brief|briefing|digest|security|local ai)\b",
                 " ",
@@ -3123,11 +3152,24 @@ def yggdrasil_freeform_message_response(text: str) -> str | None:
 
 def schedule_cron(text: str, *, default: str) -> str:
     match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
-    if not match:
-        return default
-    hour = int(match.group(1))
-    minute = int(match.group(2))
-    weekdays = bool(re.search(r"\b(weekday|weekdays|workday|workdays|mon-fri|monday)\b", text, re.IGNORECASE))
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+    else:
+        hour_match = re.search(r"\b(?:at|um)\s+([01]?\d|2[0-3])(?:\s*(?:uhr|h|am|pm))?\b", text, re.IGNORECASE)
+        if not hour_match:
+            return default
+        hour = int(hour_match.group(1))
+        minute = 0
+        if re.search(r"\bpm\b", hour_match.group(0), re.IGNORECASE) and hour < 12:
+            hour += 12
+    weekdays = bool(
+        re.search(
+            r"\b(weekday|weekdays|workday|workdays|mon-fri|monday|werktag|werktags|arbeitstag|arbeitstage)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
     day = "1-5" if weekdays else "*"
     return f"{minute} {hour} * * {day}"
 
@@ -3227,6 +3269,8 @@ def brief_subject_terms_from_text(text: str) -> list[str]:
         r"\bdrop\s+(.+?)\s+from\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b",
         r"\bexclude\s+(.+?)\s+from\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b",
         r"\bstop\s+covering\s+(.+?)(?:\s+(?:in|from)\s+(?:the\s+)?(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b|$)",
+        r"\b(?:nimm|nehme|füge|fuege)\s+(.+?)\s+(?:in|zum|zur)\s+(?:den|die|das|dem)?\s*(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\s*(?:auf|hinzu)?\b",
+        r"\b(?:entferne|remove)\s+(.+?)\s+(?:aus|from)\s+(?:den|die|das|dem)?\s*(?:[a-z0-9_-]+\s+){0,4}(?:brief|briefing|digest)\b",
     ]
     subject = ""
     for pattern in patterns:
@@ -3237,7 +3281,7 @@ def brief_subject_terms_from_text(text: str) -> list[str]:
     if not subject:
         return []
     subject = re.sub(r"\b(discord|briefings|alerts|please|now)\b", "", subject, flags=re.IGNORECASE)
-    parts = [clean_subject_term(part) for part in re.split(r"\band\b|,|/", subject, flags=re.IGNORECASE)]
+    parts = [clean_subject_term(part) for part in re.split(r"\b(?:and|und)\b|,|/", subject, flags=re.IGNORECASE)]
     terms: list[str] = []
     for part in parts:
         if len(part) < 3:
@@ -4258,11 +4302,283 @@ def intake_detail_update_response(intake_id: str, user_text: str, *, user_id: st
     except MemoryValidationError as exc:
         return f"I cannot update that intake: {exc}."
     status = str(intake.get("status") or "")
+    intent = intake.get("intent") if isinstance(intake.get("intent"), dict) else {}
+    if status in {"collecting", "collecting_slots"} and intent.get("intent") == "automation_request_routing":
+        return update_goal_routing_intake_response(intake, user_text, user_id=user_id)
     if status == "awaiting_source_selection":
         return source_selection_intake_response(intake_id, user_text, user_id=user_id)
     if status in {"collecting", "collecting_slots"}:
         return update_collecting_intake_response(intake_id, user_text, user_id=user_id)
     return None
+
+
+def visible_tasks_for_goal_router() -> list[dict[str, Any]]:
+    try:
+        response = api_request("GET", "/tasks")
+    except Exception as exc:
+        print(f"bragi goal router task lookup failed: {exc.__class__.__name__}", file=sys.stderr)
+        return []
+    if isinstance(response, dict) and isinstance(response.get("data"), list):
+        return [task for task in response["data"] if isinstance(task, dict)]
+    if isinstance(response, list):
+        return [task for task in response if isinstance(task, dict)]
+    return []
+
+
+def classify_goal_request(user_text: str, *, visible_tasks: list[dict[str, Any]] | None = None) -> AutomationRequestClassification:
+    return classify_automation_request(
+        user_text,
+        visible_tasks=visible_tasks,
+        task_aliases=TASK_ALIASES,
+        max_candidates=GOAL_ROUTER_MAX_CANDIDATES,
+    )
+
+
+def classify_goal_request_with_context(user_text: str) -> AutomationRequestClassification:
+    classification = classify_goal_request(user_text)
+    if (
+        classification.request_kind == AutomationRequestKind.NEEDS_CLARIFICATION
+        and "target_task_id" in classification.missing_information
+    ):
+        visible_tasks = visible_tasks_for_goal_router()
+        if visible_tasks:
+            classification = classify_goal_request(user_text, visible_tasks=visible_tasks)
+    return classification
+
+
+def goal_router_intake_payload(user_text: str, classification: AutomationRequestClassification) -> dict[str, Any]:
+    return {
+        "intent": "automation_request_routing",
+        "capability_id": "goal_router.v1",
+        "user_request": redact_diagnostic_text(user_text)[:1000],
+        "goal": classification.model_dump(mode="json"),
+    }
+
+
+def create_goal_clarification_intake(
+    user_text: str,
+    classification: AutomationRequestClassification,
+    *,
+    user_id: str,
+    channel: str,
+    existing_intake_id: str | None = None,
+) -> dict[str, Any] | None:
+    summary = {
+        "kind": "automation_request_routing",
+        "request_kind": classification.request_kind.value,
+        "target_kind": classification.target_kind.value,
+        "target_task_id": classification.target_task_id,
+        "target_task_candidates": classification.target_task_candidates,
+        "missing_slots": classification.missing_information,
+        "reason": classification.reason,
+    }
+    intent = goal_router_intake_payload(user_text, classification)
+    try:
+        if existing_intake_id:
+            return update_intake(
+                intake_id=existing_intake_id,
+                user_id=user_id,
+                status="collecting_slots",
+                intent=intent,
+                summary=summary,
+                action="intake.goal_router_update",
+                detail={"missing_information": classification.missing_information},
+            )
+        return create_intake(
+            user_id=user_id,
+            channel=canonical_intake_channel(channel),
+            status="collecting_slots",
+            intent=intent,
+            summary=summary,
+            source="bragi_goal_router",
+            ttl_seconds=INTAKE_TTL_SECONDS,
+        )
+    except MemoryValidationError as exc:
+        print(f"bragi goal-router intake rejected: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"bragi goal-router intake failed: {exc.__class__.__name__}", file=sys.stderr)
+    return None
+
+
+def format_goal_clarification(
+    user_text: str,
+    classification: AutomationRequestClassification,
+    *,
+    user_id: str,
+    channel: str,
+    existing_intake_id: str | None = None,
+) -> str:
+    intake = create_goal_clarification_intake(
+        user_text,
+        classification,
+        user_id=user_id,
+        channel=channel,
+        existing_intake_id=existing_intake_id,
+    )
+    intake_id = str((intake or {}).get("id") or "")
+    lines = ["I need one more clean decision before anything goes near Yggdrasil."]
+    if classification.target_task_candidates:
+        lines.extend(["", "Possible existing automations:"])
+        for index, task_id in enumerate(classification.target_task_candidates, start=1):
+            lines.append(f"{index}. `{task_id}`")
+    missing = set(classification.missing_information)
+    if "target_task_id" in missing and not classification.target_task_candidates:
+        lines.extend(["", "- Missing automation target: name the task ID or a clear task alias."])
+    if "change_type" in missing or "subject_change" in missing:
+        lines.extend(
+            [
+                "",
+                "For an existing brief, choose the kind of change:",
+                "1. Add or remove approved sources",
+                "2. Change topics or filters",
+                "3. Change the schedule",
+                "4. Change the output target",
+                "5. Run the current brief once instead",
+            ]
+        )
+    if intake_id:
+        lines.extend(
+            [
+                "",
+                f"- Intake: `{intake_id}`",
+                f"- Complete it: reply with the missing details and include `for intake {intake_id}`.",
+                f"- Delete it: reply `delete intake {intake_id}` or `cancel intake {intake_id}`.",
+            ]
+        )
+    lines.extend(["", "I have not sent anything to Yggdrasil. The ravens remain unemployed for the moment."])
+    return "\n".join(lines)
+
+
+def format_goal_unsafe(classification: AutomationRequestClassification) -> str:
+    lines = [
+        "That is outside the allowed automation path, and it stays outside Bragi's execution path.",
+        "",
+        "Reason:",
+        *(f"- {reason}" for reason in classification.unsafe_reasons[:8]),
+        "",
+        "Safer alternative: make Yggy monitor the condition and send an alert with manual recovery steps. Less heroic, less likely to turn the server into a cautionary saga.",
+    ]
+    return "\n".join(lines)
+
+
+def intent_for_goal_create(user_text: str, classification: AutomationRequestClassification) -> dict[str, Any] | None:
+    capability_id = classification.capability_id
+    if capability_id == "server_health.v1":
+        intent = server_health_intent(user_text)
+    elif capability_id == "topic_digest.v1":
+        intent = topic_digest_intent(user_text)
+    elif capability_id == "printer_supply_status.v1":
+        intent = printer_supply_intent(user_text)
+    elif capability_id == "n8n_webhook.v1":
+        intent = n8n_intent(user_text)
+    else:
+        intent = build_candidate_intent(user_text)
+    if intent is not None:
+        intent["requires_user_confirmation"] = GOAL_ROUTER_REQUIRE_CONFIRMATION
+    return intent
+
+
+def handle_goal_router_classification(
+    user_text: str,
+    classification: AutomationRequestClassification,
+    *,
+    user_id: str,
+    channel: str,
+    existing_intake_id: str | None = None,
+) -> str | None:
+    if classification.request_kind == AutomationRequestKind.CHAT:
+        return None
+    if classification.request_kind == AutomationRequestKind.UNSAFE:
+        return format_goal_unsafe(classification)
+    if classification.request_kind == AutomationRequestKind.NEEDS_CLARIFICATION:
+        return format_goal_clarification(
+            user_text,
+            classification,
+            user_id=user_id,
+            channel=channel,
+            existing_intake_id=existing_intake_id,
+        )
+    if classification.request_kind in {
+        AutomationRequestKind.LIST_EXISTING,
+        AutomationRequestKind.INSPECT_EXISTING,
+        AutomationRequestKind.RUN_EXISTING,
+        AutomationRequestKind.PAUSE_EXISTING,
+    }:
+        if not classification.operation:
+            clarification = classification.model_copy(
+                update={
+                    "request_kind": AutomationRequestKind.NEEDS_CLARIFICATION,
+                    "missing_information": ["target_task_id"],
+                }
+            )
+            return format_goal_clarification(user_text, clarification, user_id=user_id, channel=channel)
+        yggdrasil = yggdrasil_canonical_request(classification.operation)
+        return yggdrasil.get("answer") or json.dumps(yggdrasil, indent=2)
+    if classification.request_kind == AutomationRequestKind.MODIFY_EXISTING:
+        source_selection = source_selection_intent(user_text)
+        if source_selection is not None:
+            if classification.target_task_id:
+                source_selection["task_id"] = classification.target_task_id
+            intake = create_source_selection_intake(source_selection, user_id=user_id, channel=channel)
+            return format_source_selection(source_selection, intake=intake)
+        intent = topic_digest_subject_change_intent(user_text)
+        if classification.target_task_id:
+            intent.setdefault("slots", {})["task_id"] = classification.target_task_id
+        intent["requires_user_confirmation"] = GOAL_ROUTER_REQUIRE_CONFIRMATION
+        return validate_intent_for_reply(
+            intent,
+            user_id=user_id,
+            channel=channel,
+            source="bragi_goal_router",
+            existing_intake_id=existing_intake_id,
+        )
+    if classification.request_kind == AutomationRequestKind.CREATE_NEW:
+        intent = intent_for_goal_create(user_text, classification)
+        if intent is None:
+            return draft_capability_proposal_response(
+                user_text,
+                {"message": "That sounds like automation work, but I do not have a registered capability for it yet."},
+                user_id=user_id,
+                channel=channel,
+            )
+        intent = enrich_topic_digest_intent_with_research(intent, user_text)
+        return validate_intent_for_reply(
+            intent,
+            user_id=user_id,
+            channel=channel,
+            source="bragi_goal_router",
+            existing_intake_id=existing_intake_id,
+        )
+    if classification.request_kind == AutomationRequestKind.PROPOSE_NEW_CAPABILITY:
+        return draft_capability_proposal_response(
+            user_text,
+            {"message": "That is reasonable, but it is not a registered executable Yggy capability yet."},
+            user_id=user_id,
+            channel=channel,
+        )
+    return None
+
+
+def route_automation_goal_request(messages: list[dict[str, Any]], *, user_id: str, channel: str) -> str | None:
+    if not GOAL_ROUTER_ENABLED:
+        return None
+    user_text = latest_user_request(messages)
+    classification = classify_goal_request_with_context(user_text)
+    return handle_goal_router_classification(user_text, classification, user_id=user_id, channel=channel)
+
+
+def update_goal_routing_intake_response(intake: dict[str, Any], user_text: str, *, user_id: str) -> str:
+    intent = intake.get("intent") if isinstance(intake.get("intent"), dict) else {}
+    original = str(intent.get("user_request") or "")
+    combined = f"{original}\n{user_text}".strip()
+    classification = classify_goal_request_with_context(combined)
+    return handle_goal_router_classification(
+        combined,
+        classification,
+        user_id=user_id,
+        channel=str(intake.get("channel") or "openwebui"),
+        existing_intake_id=str(intake.get("id") or ""),
+    ) or "I still cannot map that routing intake to a supported automation action. Nothing was sent to Yggdrasil."
 
 
 def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID, channel: str = "openwebui") -> str:
@@ -4380,6 +4696,10 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     if context_categories:
         context = build_context(user_text, user_id=user_id)
         return format_context_answer(context)
+
+    goal_reply = route_automation_goal_request(messages, user_id=user_id, channel=channel)
+    if goal_reply is not None:
+        return goal_reply
 
     operation = operation_from_text(user_text)
     if operation is not None:

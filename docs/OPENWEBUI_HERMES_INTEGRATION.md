@@ -89,6 +89,12 @@ forward only accepted deterministic actions to Yggdrasil. User confirmation is
 not Yggy approval. Existing-brief changes become Yggy task-change proposals;
 Bragi does not approve or apply them and does not expose approval nonces.
 
+Bragi's deterministic goal router first decides whether a request targets an
+existing task, a new task from a registered capability, a new non-executable
+capability proposal, unsafe work, missing clarification, or ordinary chat. This
+keeps natural conversation in Bragi while preserving Yggdrasil as a strict
+canonical-action endpoint.
+
 Ordinary chat, such as greetings or general questions, stays inside Bragi's
 no-tool chat fallback. Bragi should not describe normal conversation as a
 Yggdrasil routing failure. Only registered automation capabilities enter the

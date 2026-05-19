@@ -249,6 +249,10 @@ BRAGI_CONFIG_ROOT=/app/configs
 BRAGI_MEMORY_FILE=/app/configs/bragi/memory.yaml
 BRAGI_MEMORY_DATABASE_URL=mysql+pymysql://automation:...@automation-mysql:3306/automation
 BRAGI_INTAKE_TTL_SECONDS=86400
+BRAGI_GOAL_ROUTER_ENABLED=true
+BRAGI_GOAL_ROUTER_REQUIRE_CONFIRMATION=true
+BRAGI_GOAL_ROUTER_MAX_CANDIDATES=5
+BRAGI_GOAL_CLARIFIER_ENABLED=false
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 DISCORD_HOME_CHANNEL=...
 DISCORD_ALLOWED_USER_IDS=...
@@ -257,3 +261,8 @@ DISCORD_ALLOWED_USER_IDS=...
 `BRAGI_MEMORY_FILE` is read-only non-secret context. It can hold preferences,
 service aliases, and style notes, but never credentials, approval nonces, or
 execution state.
+
+The goal router is deterministic in the MVP. It separates existing-task
+operations, existing-task change proposals, new task drafts, new capability
+proposals, unsafe requests, missing clarifications, and ordinary chat before any
+canonical Yggdrasil action is prepared.

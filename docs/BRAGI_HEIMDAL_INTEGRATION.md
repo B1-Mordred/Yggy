@@ -93,6 +93,89 @@ Bragi uses an explicit request-mode split:
 - Direct list/show/run/pause requests become structured Yggdrasil canonical
   operations such as `list_tasks`, `show_task`, `run_task`, and `pause_task`.
 
+## Goal Intake Router
+
+Bragi has a deterministic goal intake router before executable routing. It is
+enabled by default with:
+
+```text
+BRAGI_GOAL_ROUTER_ENABLED=true
+BRAGI_GOAL_ROUTER_REQUIRE_CONFIRMATION=true
+BRAGI_GOAL_ROUTER_MAX_CANDIDATES=5
+```
+
+The MVP router has no Hermes or LLM dependency. It classifies each automation
+shaped request into one of these internal request kinds:
+
+```text
+list_existing
+inspect_existing
+run_existing
+pause_existing
+modify_existing
+create_new
+propose_new_capability
+unsafe
+needs_clarification
+chat
+```
+
+The router also records whether the target is an existing task, a new task, a
+new capability proposal, or still unknown. Existing task references are resolved
+only through explicit task IDs, configured `TASK_ALIASES`, and exact or
+substring-based visible task name matches. If more than one task matches, Bragi
+asks the user to choose and does not forward anything.
+
+The routing outcomes map to the existing safe paths:
+
+```text
+list_existing      -> Yggdrasil canonical action: list_tasks
+inspect_existing   -> Yggdrasil canonical action: show_task
+run_existing       -> Yggdrasil canonical action: run_task
+pause_existing     -> Yggdrasil canonical action: pause_task
+modify_existing    -> CanonicalIntent: propose_task_change
+create_new         -> CanonicalIntent: draft_task
+new capability     -> non-executable capability proposal
+unsafe             -> safe rejection or monitoring-only alternative
+needs_clarification -> Bragi intake, collecting_slots
+chat               -> ordinary Bragi conversation
+```
+
+Existing task changes never mutate task YAML directly from Bragi. They become
+`propose_task_change` canonical intents, currently limited to
+`topic_digest.modify_subjects.v1`, or a source-selection intake when natural
+source names such as CISA or NVD need to be mapped to approved source IDs.
+
+New tasks still use registered capability builders such as `topic_digest.v1`,
+`server_health.v1`, `printer_supply_status.v1`, and `n8n_webhook.v1`. They
+remain disabled/dry-run drafts, require user confirmation, pass through Heimdal
+validation, and are forwarded to Yggdrasil only as deterministic canonical
+actions.
+
+Unsupported but reasonable automation ideas become capability proposals. These
+are backlog records only: no task, approval, run, worker action, or Yggdrasil
+request is created.
+
+Unsafe requests are rejected before Heimdal/Yggdrasil. Examples include admin
+approval handling, approval nonces, admin API keys, shell commands, Docker
+socket access, Docker/service restarts, broad host filesystem changes, firewall
+changes, raw webhook URLs, automatic update installation, purchases, and
+secret-like material. Bragi may suggest a safer monitoring-plus-alert version,
+but it must not forward the unsafe request.
+
+User confirmation and Yggy approval remain separate:
+
+```text
+User confirmation
+  confirms that Bragi understood the proposed canonical intent.
+
+Yggy approval
+  authorizes task changes or enablement according to policy.
+```
+
+Bragi must never say that a task is approved merely because the user confirmed
+the intake summary.
+
 If a draft request is missing required slots, Bragi returns a partial canonical
 intent and asks for the missing details. Follow-up replies are merged into that
 same intent and revalidated before anything reaches Yggdrasil.
