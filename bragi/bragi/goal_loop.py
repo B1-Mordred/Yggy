@@ -15,6 +15,13 @@ from .hermes_client import HermesClarifierClient, HermesClarifierError
 
 
 TASK_ID_RE = re.compile(r"\b([a-z][a-z0-9_]{2,127})\b")
+NON_TASK_ID_PREFIXES = (
+    "bragi_intake_",
+    "capability_proposal_",
+    "task_change_proposal_",
+    "approval_",
+    "run_",
+)
 
 UNSAFE_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bapproval nonce\b|\bnonce\b", "approval nonces are not available to Bragi"),
@@ -351,6 +358,8 @@ def resolve_task(
     for match in TASK_ID_RE.finditer(lowered):
         token = match.group(1)
         if "_" not in token:
+            continue
+        if token.startswith(NON_TASK_ID_PREFIXES):
             continue
         if visible_by_id and token not in visible_by_id:
             continue

@@ -105,6 +105,16 @@ def test_resolve_task_reference_uses_alias_and_visible_tasks():
     assert candidates == ["morning_server_health_check"]
 
 
+def test_resolve_task_reference_ignores_intake_id_before_selected_task_id():
+    target, candidates = resolve_task_reference(
+        "Intake: bragi_intake_20260519_210303_4f697b01: twice_daily_ai_policy_security_brief",
+        task_aliases=bragi.TASK_ALIASES,
+    )
+
+    assert target == "twice_daily_ai_policy_security_brief"
+    assert candidates == ["twice_daily_ai_policy_security_brief"]
+
+
 def test_what_tasks_question_routes_to_list_existing():
     result = classify_automation_request("What automation tasks do I have?", task_aliases=bragi.TASK_ALIASES)
 
@@ -271,6 +281,25 @@ def test_run_existing_daily_brief_routes_to_yggdrasil(monkeypatch):
     answer = bragi.route_chat([{"role": "user", "content": "Schick den Daily Brief jetzt."}])
 
     assert calls == [{"action": "run_task", "task_id": "daily_local_ai_security_briefing"}]
+    assert "Run queued" in answer
+
+
+def test_run_existing_from_intake_selection_uses_selected_task_not_intake_id(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bragi, "visible_tasks_for_goal_router", lambda: [])
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: calls.append(payload) or {"answer": "Run queued."})
+
+    answer = bragi.update_goal_routing_intake_response(
+        {
+            "id": "bragi_intake_20260519_210303_4f697b01",
+            "channel": "discord",
+            "intent": {"user_request": "send brief now"},
+        },
+        "Intake: bragi_intake_20260519_210303_4f697b01: twice_daily_ai_policy_security_brief",
+        user_id="local_user",
+    )
+
+    assert calls == [{"action": "run_task", "task_id": "twice_daily_ai_policy_security_brief"}]
     assert "Run queued" in answer
 
 
