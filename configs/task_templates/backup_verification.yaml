@@ -1,0 +1,73 @@
+id: backup_verification
+name: Backup Verification
+description: Draft a read-only backup verification task for recent Yggy backup directories.
+task_type: backup_verification
+default_approval_level: L1_NOTIFY_ONLY
+allowed_output_targets:
+  - alerts
+required_fields:
+  - id
+  - name
+optional_fields:
+  - cron
+  - timezone
+  - output_target
+  - owner
+  - created_by
+safety_notes:
+  - Reads only the worker's read-only /app/backups mount.
+  - Performs direct manifest, MySQL dump, and bounded secret-marker checks without shelling out.
+  - Alerts are anomaly-only by default.
+example_prompts:
+  - Draft a daily Yggy backup verification check that alerts only on anomalies.
+  - Create a disabled backup verifier with read-only backup access.
+defaults:
+  owner: local_user
+  created_by: yggdrasil
+  trigger:
+    kind: schedule
+    cron: "15 9 * * *"
+    timezone: Europe/Berlin
+  backup:
+    backup_root: /app/backups
+    max_age_hours: 26
+    min_mysql_dump_bytes: 1024
+    secret_scan_enabled: true
+    max_scan_bytes_per_file: 2000000
+    required_files:
+      - manifest.json
+      - mysql/automation.sql
+      - api/health.json
+      - api/tasks.json
+      - api/topics.json
+      - api/openapi.json
+      - git-commit.txt
+  output:
+    channel: discord
+    target: alerts
+    format: "anomalies only"
+  policy:
+    approval_level: L1_NOTIFY_ONLY
+    require_sources: false
+    max_runs_per_hour: 2
+    max_runs_per_day: 4
+    min_seconds_between_runs: 1800
+    allow_external_side_effects: false
+    allow_shell: false
+    allow_docker_socket: false
+    allow_filesystem_write: false
+  runtime:
+    dry_run: true
+    timeout_seconds: 60
+    retry_count: 1
+  notifications:
+    on_success: false
+    on_failure: true
+    on_empty_result: false
+    quiet_hours:
+      enabled: false
+      start: "22:00"
+      end: "07:00"
+      timezone: Europe/Berlin
+    collapse_repeated_failures: true
+    failure_collapse_window_minutes: 120

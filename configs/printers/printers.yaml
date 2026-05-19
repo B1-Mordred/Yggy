@@ -1,0 +1,11 @@
+version: 1
+
+printers:
+  - id: printer_status_exporter_example
+    name: Printer Status Exporter Example
+    type: http_json
+    url: http://printer-status-exporter:8091/printers/printer_status_exporter_example/supplies
+    enabled: true
+    default_low_threshold_percent: 20
+    expected_status: 200
+    description: Example read-only printer supply exporter endpoint backed by configs/printer-status-exporter/printers.yaml. Replace with a real approved endpoint before enabling a live task.

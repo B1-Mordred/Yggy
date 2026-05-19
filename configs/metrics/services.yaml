@@ -1,0 +1,56 @@
+version: 1
+
+services:
+  - id: automation_api
+    name: Automation API
+    type: http_health
+    url: http://automation-api:8088/health
+    expected_status: 200
+    timeout_seconds: 3
+    enabled: true
+    description: Policy-enforcing automation API health endpoint.
+
+  - id: automation_worker
+    name: Automation Worker Heartbeat
+    type: worker_heartbeat
+    url: http://automation-api:8088/health
+    expected_status: 200
+    timeout_seconds: 3
+    enabled: true
+    description: Worker heartbeat as reported through the automation API.
+
+  - id: yggdrasil_action_api
+    name: Yggdrasil Action API
+    type: http_health
+    url: http://host.docker.internal:8642/health
+    expected_status: 200
+    timeout_seconds: 3
+    enabled: true
+    description: Narrow Open WebUI/Hermes action bridge health endpoint.
+
+  - id: ollama
+    name: Ollama
+    type: ollama_tags
+    url: http://host.docker.internal:11434/api/tags
+    expected_status: 200
+    timeout_seconds: 5
+    enabled: true
+    description: Local Ollama model inventory endpoint.
+
+  - id: open_webui
+    name: Open WebUI
+    type: http_health
+    url: http://open-webui:8080/health
+    expected_status: 200
+    timeout_seconds: 3
+    enabled: true
+    description: Open WebUI HTTP health endpoint when reachable on the Docker network.
+
+  - id: n8n
+    name: n8n Automation UI
+    type: http_health
+    url: http://n8n:5678/healthz
+    expected_status: 200
+    timeout_seconds: 3
+    enabled: true
+    description: n8n health endpoint on the internal automation network.

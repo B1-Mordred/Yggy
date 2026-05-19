@@ -1,0 +1,264 @@
+services:
+  automation-api:
+    build:
+      context: ./automation-api
+      network: host
+    container_name: automation-api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AUTOMATION_POLICY_FILE: /app/configs/policies.yaml
+    networks:
+      - automation_net
+      - notify_net
+    depends_on:
+      automation-mysql:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8088:8088"
+    volumes:
+      - ./configs:/app/configs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  automation-worker:
+    build:
+      context: ./automation-worker
+      network: host
+    container_name: automation-worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AUTOMATION_SOURCE_REGISTRY_FILE: /app/configs/sources/approved_sources.yaml
+      YGGY_BACKUP_VERIFY_ROOT: /app/backups
+    networks:
+      - automation_net
+      - notify_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      automation-api:
+        condition: service_healthy
+    user: "${YGGY_WORKER_UID:-1000}:${YGGY_WORKER_GID:-1000}"
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./backups:/app/backups:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  metrics-exporter:
+    build:
+      context: ./metrics-exporter
+      network: host
+    container_name: yggy-metrics-exporter
+    environment:
+      YGGY_METRICS_CONFIG: /app/configs/metrics/services.yaml
+    networks:
+      - automation_net
+      - notify_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      automation-api:
+        condition: service_healthy
+    volumes:
+      - ./configs:/app/configs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  printer-status-exporter:
+    build:
+      context: ./printer-status-exporter
+      network: host
+    container_name: printer-status-exporter
+    environment:
+      YGGY_PRINTER_EXPORTER_CONFIG: /app/configs/printer-status-exporter/printers.yaml
+    networks:
+      - automation_net
+      - notify_net
+    volumes:
+      - ./configs:/app/configs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  bragi:
+    build:
+      context: ./bragi
+      network: host
+    container_name: bragi
+    environment:
+      BRAGI_MODEL_ID: ${BRAGI_MODEL_ID:-bragi}
+      BRAGI_API_KEY: ${BRAGI_API_KEY:-}
+      BRAGI_DEFAULT_USER_ID: ${BRAGI_DEFAULT_USER_ID:-local_user}
+      BRAGI_HTTP_TIMEOUT: ${BRAGI_HTTP_TIMEOUT:-30}
+      BRAGI_GENERAL_CHAT_ENABLED: ${BRAGI_GENERAL_CHAT_ENABLED:-true}
+      BRAGI_CHAT_MODEL: ${BRAGI_CHAT_MODEL:-llama3.1:8b}
+      BRAGI_CHAT_TEMPERATURE: ${BRAGI_CHAT_TEMPERATURE:-0.55}
+      BRAGI_CHAT_TIMEOUT: ${BRAGI_CHAT_TIMEOUT:-30}
+      BRAGI_CHAT_NUM_CTX: ${BRAGI_CHAT_NUM_CTX:-4096}
+      BRAGI_CHAT_MAX_TOKENS: ${BRAGI_CHAT_MAX_TOKENS:-512}
+      BRAGI_CONFIG_ROOT: ${BRAGI_CONFIG_ROOT:-/app/configs}
+      BRAGI_MEMORY_FILE: ${BRAGI_MEMORY_FILE:-/app/configs/bragi/memory.yaml}
+      BRAGI_MEMORY_DATABASE_URL: ${BRAGI_MEMORY_DATABASE_URL:-${DATABASE_URL:-}}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      AUTOMATION_TOOL_API_KEY: ${AUTOMATION_TOOL_API_KEY:-}
+      AUTOMATION_API_BASE_URL: http://automation-api:8088
+      YGGDRASIL_BASE_URL: http://host.docker.internal:8642
+      BRAGI_YGGDRASIL_API_KEY: ${BRAGI_YGGDRASIL_API_KEY:-}
+      DISCORD_HOME_CHANNEL: ${DISCORD_HOME_CHANNEL:-}
+      DISCORD_ALLOWED_USER_IDS: ${DISCORD_ALLOWED_USER_IDS:-}
+    networks:
+      - automation_net
+      - notify_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      automation-api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${BRAGI_PORT:-8650}:8650"
+    volumes:
+      - ./configs:/app/configs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8650/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  channel-bridge:
+    build:
+      context: ./channel-bridge
+      network: host
+    container_name: yggy-channel-bridge
+    environment:
+      CHANNEL_BRIDGE_CONFIG_ROOT: /app/configs
+      CHANNEL_BRIDGE_BRAGI_BASE_URL: http://bragi:8650
+      CHANNEL_BRIDGE_BRAGI_API_KEY: ${BRAGI_API_KEY:-}
+      CHANNEL_BRIDGE_AUTOMATION_API_BASE_URL: http://automation-api:8088
+      CHANNEL_BRIDGE_AUTOMATION_API_KEY: ${AUTOMATION_CHANNEL_BRIDGE_API_KEY:-}
+      CHANNEL_BRIDGE_DISCORD_ENABLED: ${CHANNEL_BRIDGE_DISCORD_ENABLED:-true}
+      CHANNEL_BRIDGE_DISCORD_HISTORY_LIMIT: ${CHANNEL_BRIDGE_DISCORD_HISTORY_LIMIT:-8}
+      CHANNEL_BRIDGE_DISCORD_REPLY_LIMIT: ${CHANNEL_BRIDGE_DISCORD_REPLY_LIMIT:-1900}
+      CHANNEL_BRIDGE_DISCORD_NICKNAME: ${CHANNEL_BRIDGE_DISCORD_NICKNAME:-Bragi}
+      CHANNEL_BRIDGE_FOLLOWUPS_ENABLED: ${CHANNEL_BRIDGE_FOLLOWUPS_ENABLED:-true}
+      CHANNEL_BRIDGE_FOLLOWUP_POLL_SECONDS: ${CHANNEL_BRIDGE_FOLLOWUP_POLL_SECONDS:-300}
+      CHANNEL_BRIDGE_FOLLOWUP_LIMIT: ${CHANNEL_BRIDGE_FOLLOWUP_LIMIT:-5}
+      CHANNEL_BRIDGE_HTTP_TIMEOUT: ${CHANNEL_BRIDGE_HTTP_TIMEOUT:-30}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_HOME_CHANNEL: ${DISCORD_HOME_CHANNEL:-}
+      DISCORD_ALLOWED_USER_IDS: ${DISCORD_ALLOWED_USER_IDS:-}
+    networks:
+      - automation_net
+      - notify_net
+    depends_on:
+      bragi:
+        condition: service_healthy
+    volumes:
+      - ./configs:/app/configs:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  automation-mysql:
+    image: mysql:8.4
+    container_name: automation-mysql
+    env_file:
+      - path: .env
+        required: false
+    networks:
+      - automation_net
+    volumes:
+      - automation_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n-automation
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODES_EXCLUDE: '["n8n-nodes-base.executeCommand", "n8n-nodes-base.readWriteFile"]'
+      N8N_SSRF_PROTECTION_ENABLED: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_HIRING_BANNER_ENABLED: "false"
+    networks:
+      - automation_net
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+networks:
+  automation_net:
+    internal: true
+  notify_net:
+    internal: false
+
+volumes:
+  automation_mysql_data:
+  n8n_data:

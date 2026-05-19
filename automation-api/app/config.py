@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Settings:
+    api_host: str = "0.0.0.0"
+    api_port: int = 8088
+    tool_api_key: str = ""
+    admin_api_key: str = ""
+    worker_api_key: str = ""
+    channel_bridge_api_key: str = ""
+    database_url: str = "sqlite+pysqlite:///:memory:"
+    policy_file: str = "configs/policies.yaml"
+    discord_dry_run: bool = True
+    discord_webhook_briefings: str = ""
+    discord_webhook_alerts: str = ""
+    discord_webhook_approvals: str = ""
+    discord_bot_token: str = ""
+    discord_home_channel: str = ""
+    discord_channel_briefings: str = ""
+    discord_channel_alerts: str = ""
+    discord_channel_approvals: str = ""
+    run_dedupe_seconds: int = 300
+    run_lease_seconds: int = 1800
+    run_retention_days: int = 30
+    audit_retention_days: int = 90
+    temp_task_retention_hours: int = 24
+    ops_dashboard_enabled: bool = True
+    ops_dashboard_user: str = "admin"
+    ops_dashboard_password: str = ""
+    version: str = "0.1.0"
+
+
+def env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def get_settings() -> Settings:
+    return Settings(
+        api_host=os.getenv("AUTOMATION_API_HOST", "0.0.0.0"),
+        api_port=int(os.getenv("AUTOMATION_API_PORT", "8088")),
+        tool_api_key=os.getenv("AUTOMATION_TOOL_API_KEY", ""),
+        admin_api_key=os.getenv("AUTOMATION_ADMIN_API_KEY", ""),
+        worker_api_key=os.getenv("AUTOMATION_WORKER_API_KEY", ""),
+        channel_bridge_api_key=os.getenv("AUTOMATION_CHANNEL_BRIDGE_API_KEY", ""),
+        database_url=os.getenv("DATABASE_URL", "sqlite+pysqlite:///:memory:"),
+        policy_file=os.getenv("AUTOMATION_POLICY_FILE", "configs/policies.yaml"),
+        discord_dry_run=env_bool("DISCORD_DRY_RUN", True),
+        discord_webhook_briefings=os.getenv("DISCORD_WEBHOOK_BRIEFINGS", ""),
+        discord_webhook_alerts=os.getenv("DISCORD_WEBHOOK_ALERTS", ""),
+        discord_webhook_approvals=os.getenv("DISCORD_WEBHOOK_APPROVALS", ""),
+        discord_bot_token=os.getenv("DISCORD_BOT_TOKEN", ""),
+        discord_home_channel=os.getenv("DISCORD_HOME_CHANNEL", ""),
+        discord_channel_briefings=os.getenv("DISCORD_CHANNEL_BRIEFINGS", ""),
+        discord_channel_alerts=os.getenv("DISCORD_CHANNEL_ALERTS", ""),
+        discord_channel_approvals=os.getenv("DISCORD_CHANNEL_APPROVALS", ""),
+        run_dedupe_seconds=int(os.getenv("AUTOMATION_RUN_DEDUPE_SECONDS", "300")),
+        run_lease_seconds=int(os.getenv("AUTOMATION_RUN_LEASE_SECONDS", "1800")),
+        run_retention_days=int(os.getenv("AUTOMATION_RUN_RETENTION_DAYS", "30")),
+        audit_retention_days=int(os.getenv("AUTOMATION_AUDIT_RETENTION_DAYS", "90")),
+        temp_task_retention_hours=int(os.getenv("AUTOMATION_TEMP_TASK_RETENTION_HOURS", "24")),
+        ops_dashboard_enabled=env_bool("AUTOMATION_OPS_DASHBOARD_ENABLED", True),
+        ops_dashboard_user=os.getenv("AUTOMATION_OPS_DASHBOARD_USER", "admin"),
+        ops_dashboard_password=os.getenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", ""),
+    )

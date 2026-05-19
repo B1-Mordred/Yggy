@@ -1,0 +1,58 @@
+version: 1
+
+defaults:
+  timezone: Europe/Berlin
+  max_items: 10
+  require_sources: true
+  dry_run_new_tasks: true
+
+allowed_discord_targets:
+  - briefings
+  - alerts
+  - approvals
+
+blocked_task_capabilities:
+  - arbitrary_shell
+  - docker_socket
+  - host_filesystem_mount
+  - privileged_container
+  - public_posting_without_approval
+  - financial_transaction
+  - credential_rotation_without_manual_steps
+
+approval_thresholds:
+  auto_allow:
+    - L0_READ_ONLY
+  initial_approval_required:
+    - L1_NOTIFY_ONLY
+  admin_required:
+    - L2_LOCAL_WRITE
+    - L3_EXTERNAL_SIDE_EFFECT
+  manual_only:
+    - L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE
+
+network_policy:
+  block_private_ranges_for_fetchers: true
+  allowed_internal_hosts:
+    - automation-api
+    - n8n
+    - ollama
+
+source_policy:
+  approved_sources_file: sources/approved_sources.yaml
+  require_approved_sources_for_task_types:
+    - topic_digest
+  require_source_ids: true
+  allow_web_query_sources: false
+
+n8n_policy:
+  approved_webhooks_file: n8n/webhooks.yaml
+  require_approved_webhooks_for_task_types:
+    - n8n_webhook
+  require_webhook_ids: true
+
+printer_policy:
+  approved_printers_file: printers/printers.yaml
+  require_approved_printers_for_task_types:
+    - printer_supply_status
+  require_printer_ids: true

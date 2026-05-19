@@ -1,0 +1,34 @@
+version: 1
+
+users:
+  - id: local_user
+    display_name: Local User
+    default_timezone: Europe/Berlin
+    channels:
+      - type: openwebui
+        subject_ref: OPENWEBUI_LOCAL_USER_ID
+      - type: discord
+        subject_ref: DISCORD_OWNER_USER_ID
+
+rules:
+  memory:
+    explicit_write_required: true
+    confirmation_required: true
+    allowed_categories:
+      - preference
+      - alias
+      - routine
+      - service_alias
+      - notification_style
+      - project_interest
+      - default
+      - note
+    forbidden_material:
+      - api_keys
+      - passwords
+      - tokens
+      - webhook_urls
+      - approval_nonces
+      - cookies
+      - private_keys
+      - credentials

@@ -1,0 +1,57 @@
+version: 1
+
+channels:
+  - id: openwebui_primary
+    type: openwebui
+    enabled: true
+    audience: local_user
+    allowed_capabilities:
+      - chat
+      - context
+      - memory
+      - source_proposal
+      - draft_task
+      - task_read
+      - run_l1
+      - pause_l1
+    allow_approvals: false
+    max_message_chars: 12000
+
+  - id: discord_home
+    type: discord
+    enabled: true
+    audience: local_user
+    channel_id_ref: DISCORD_HOME_CHANNEL
+    allowed_user_ids_ref: DISCORD_ALLOWED_USER_IDS
+    allowed_capabilities:
+      - chat
+      - context
+      - memory
+      - source_proposal
+      - draft_task
+      - task_read
+      - run_l1
+      - pause_l1
+    allow_approvals: false
+    max_message_chars: 3000
+    strip_mentions: true
+    reject_attachments: true
+
+  - id: discord_dm_primary
+    type: discord_dm
+    enabled: true
+    audience: local_user
+    allowed_user_ids_ref: DISCORD_ALLOWED_USER_IDS
+    allowed_capabilities:
+      - chat
+      - context
+      - memory
+      - source_proposal
+      - draft_task
+      - task_read
+      - run_l1
+      - pause_l1
+    allow_approvals: false
+    max_message_chars: 3000
+    strip_mentions: true
+    reject_attachments: true

@@ -1,0 +1,15 @@
+version: 1
+
+printers:
+  - id: printer_status_exporter_example
+    name: Printer Status Exporter Example
+    type: static_json
+    enabled: true
+    supplies:
+      - name: Black toner
+        level_percent: 75
+        status: ok
+      - name: Cyan toner
+        level_percent: 64
+        status: ok
+    description: Static dry-run sample for the internal printer-status-exporter service. Replace with an operator-configured http_json source for a real printer.

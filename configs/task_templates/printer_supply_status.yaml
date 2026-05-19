@@ -1,0 +1,68 @@
+id: printer_supply_status
+name: Printer Supply Status
+description: Draft a read-only printer supply task that checks approved HTTP JSON supply endpoints and alerts only when supplies are low or unavailable.
+task_type: printer_supply_status
+default_approval_level: L1_NOTIFY_ONLY
+allowed_output_targets:
+  - alerts
+required_fields:
+  - id
+  - name
+optional_fields:
+  - cron
+  - timezone
+  - output_target
+  - printer_ids
+  - low_threshold_percent
+  - owner
+  - created_by
+safety_notes:
+  - Printer endpoints must come from the approved printer registry.
+  - The task reads supply status only; it must not administer printers or scan the LAN.
+  - Alerts are anomaly-only by default to avoid routine notification noise.
+example_prompts:
+  - Draft a daily printer toner check for approved printer IDs.
+  - Monitor printer supplies and alert me when toner or ink is low.
+defaults:
+  owner: local_user
+  created_by: yggdrasil
+  trigger:
+    kind: schedule
+    cron: "0 8 * * *"
+    timezone: Europe/Berlin
+  printer_supplies:
+    - printer_id: printer_status_exporter_example
+      name: Printer Status Exporter Example
+      type: http_json
+      url: http://printer-status-exporter:8091/printers/printer_status_exporter_example/supplies
+      low_threshold_percent: 20
+      expected_status: 200
+  output:
+    channel: discord
+    target: alerts
+    format: "anomalies only"
+  policy:
+    approval_level: L1_NOTIFY_ONLY
+    require_sources: false
+    max_runs_per_hour: 4
+    max_runs_per_day: 12
+    min_seconds_between_runs: 300
+    allow_external_side_effects: false
+    allow_shell: false
+    allow_docker_socket: false
+    allow_filesystem_write: false
+  runtime:
+    dry_run: true
+    timeout_seconds: 60
+    retry_count: 1
+  notifications:
+    on_success: false
+    on_failure: true
+    on_empty_result: false
+    quiet_hours:
+      enabled: false
+      start: "22:00"
+      end: "07:00"
+      timezone: Europe/Berlin
+    collapse_repeated_failures: true
+    failure_collapse_window_minutes: 120

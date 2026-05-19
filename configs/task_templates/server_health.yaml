@@ -1,0 +1,80 @@
+id: server_health
+name: Server Health Check
+description: Draft a read-only service health task that checks approved local HTTP endpoints and alerts only on anomalies.
+task_type: server_health
+default_approval_level: L1_NOTIFY_ONLY
+allowed_output_targets:
+  - alerts
+required_fields:
+  - id
+  - name
+optional_fields:
+  - cron
+  - timezone
+  - output_target
+  - check_ids
+  - owner
+  - created_by
+safety_notes:
+  - Checks use static HTTP endpoints only; the task does not mount the Docker socket.
+  - The metrics exporter is a narrow read-only inventory endpoint, not a shell or Docker API.
+  - Alerts are anomaly-only by default to avoid routine notification noise.
+example_prompts:
+  - Draft a morning server health check that alerts only on anomalies.
+  - Create a disabled health check for Yggy, Open WebUI, Ollama, and metrics exporter.
+defaults:
+  owner: local_user
+  created_by: yggdrasil
+  trigger:
+    kind: schedule
+    cron: "30 8 * * *"
+    timezone: Europe/Berlin
+  checks:
+    - type: http_health
+      name: automation_api
+      url: http://automation-api:8088/health
+    - type: worker_heartbeat
+      name: automation_worker
+      url: http://automation-api:8088/health
+      max_age_seconds: 180
+    - type: http_health
+      name: yggdrasil_action_api
+      url: http://host.docker.internal:8642/health
+    - type: http_health
+      name: open_webui
+      url: http://open-webui:8080/health
+    - type: ollama_tags
+      name: ollama
+      url: http://host.docker.internal:11434/api/tags
+    - type: service_metrics
+      name: yggy_metrics_exporter
+      url: http://metrics-exporter:8090/metrics/services
+  output:
+    channel: discord
+    target: alerts
+    format: "anomalies only"
+  policy:
+    approval_level: L1_NOTIFY_ONLY
+    require_sources: false
+    max_runs_per_hour: 4
+    max_runs_per_day: 12
+    min_seconds_between_runs: 300
+    allow_external_side_effects: false
+    allow_shell: false
+    allow_docker_socket: false
+    allow_filesystem_write: false
+  runtime:
+    dry_run: true
+    timeout_seconds: 60
+    retry_count: 1
+  notifications:
+    on_success: false
+    on_failure: true
+    on_empty_result: false
+    quiet_hours:
+      enabled: false
+      start: "22:00"
+      end: "07:00"
+      timezone: Europe/Berlin
+    collapse_repeated_failures: true
+    failure_collapse_window_minutes: 120

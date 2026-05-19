@@ -1,0 +1,54 @@
+{
+  "id": "yggyDailyBriefingStub01",
+  "name": "Daily Briefing Payload Normalizer",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "yggy-daily-briefing",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "yggyWebhookHeaderAuth01",
+          "name": "Yggy Webhook Header Auth"
+        }
+      },
+      "id": "stub-webhook",
+      "name": "Yggy Daily Briefing Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "yggy-daily-briefing",
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, received: true, action: \"normalize_digest_payload\", task_id: $json.body.task_id, task_name: $json.body.task_name, run_id: $json.body.run_id, webhook_id: $json.body.webhook_id, dry_run: $json.body.dry_run, payload_keys: Object.keys($json.body.payload || {}).sort(), delivery_target: $json.body.payload?.delivery_target || null, purpose: $json.body.payload?.purpose || null, normalized: { title: $json.body.payload?.title || \"Daily briefing payload\", summary: $json.body.payload?.summary || \"\", item_count: Array.isArray($json.body.payload?.items) ? $json.body.payload.items.length : 0, source_count: Array.isArray($json.body.payload?.sources) ? $json.body.payload.sources.length : 0, items: Array.isArray($json.body.payload?.items) ? $json.body.payload.items.slice(0, 10) : [] } } }}"
+      },
+      "id": "stub-response",
+      "name": "Normalize Digest Payload",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [560, 300]
+    }
+  ],
+  "connections": {
+    "Yggy Daily Briefing Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Digest Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

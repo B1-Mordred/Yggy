@@ -1,0 +1,26 @@
+id: local_ai_security
+name: Local AI Security
+enabled: false
+owner: local_user
+created_by: yggdrasil
+description: Watch local AI, Open WebUI, Ollama, Hermes, Docker, and n8n security topics.
+keywords:
+  - Open WebUI
+  - Ollama
+  - Hermes
+  - Docker
+  - n8n
+  - local AI security
+sources:
+  - source_id: open_webui_releases
+    type: rss
+    url: https://github.com/open-webui/open-webui/releases.atom
+  - source_id: ollama_releases
+    type: rss
+    url: https://github.com/ollama/ollama/releases.atom
+  - source_id: n8n_releases
+    type: rss
+    url: https://github.com/n8n-io/n8n/releases.atom
+  - source_id: docker_blog
+    type: rss
+    url: https://www.docker.com/blog/feed/

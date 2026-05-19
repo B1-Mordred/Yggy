@@ -1,0 +1,78 @@
+id: daily_local_ai_security_briefing
+name: Daily Local AI Security Briefing
+type: topic_digest
+enabled: true
+owner: local_user
+created_by: yggdrasil
+
+trigger:
+  kind: schedule
+  cron: "0 8 * * 1-5"
+  timezone: Europe/Berlin
+
+sources:
+  - source_id: open_webui_releases
+    type: rss
+    url: https://github.com/open-webui/open-webui/releases.atom
+  - source_id: ollama_releases
+    type: rss
+    url: https://github.com/ollama/ollama/releases.atom
+  - source_id: n8n_releases
+    type: rss
+    url: https://github.com/n8n-io/n8n/releases.atom
+  - source_id: docker_blog
+    type: rss
+    url: https://www.docker.com/blog/feed/
+
+filters:
+  include:
+    - Open WebUI
+    - Ollama
+    - Hermes
+    - Docker
+    - n8n
+  exclude:
+    - sponsored
+    - rumor
+
+output:
+  channel: discord
+  target: briefings
+  format: "5 bullets, impact, source links, recommended action"
+
+policy:
+  approval_level: L1_NOTIFY_ONLY
+  max_items: 10
+  require_sources: true
+  max_runs_per_hour: 3
+  max_runs_per_day: 10
+  min_seconds_between_runs: 300
+  allow_external_side_effects: false
+  allow_shell: false
+  allow_docker_socket: false
+  allow_filesystem_write: false
+
+runtime:
+  dry_run: false
+  timeout_seconds: 120
+  retry_count: 1
+
+notifications:
+  on_success: true
+  on_failure: true
+  on_empty_result: false
+  quiet_hours:
+    enabled: true
+    start: "22:00"
+    end: "07:00"
+    timezone: Europe/Berlin
+  collapse_repeated_failures: true
+  failure_collapse_window_minutes: 360
+
+n8n:
+  webhook_id: daily_briefing_stub
+  path: /webhook/yggy-daily-briefing
+  method: POST
+  payload:
+    purpose: daily_briefing_payload_normalizer
+    delivery_target: briefings
