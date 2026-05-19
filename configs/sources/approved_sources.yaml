@@ -195,6 +195,27 @@ sources:
     ai_safe_fit: A - high-fit/open
     ingestion_mode: feed_metadata
 
+  - id: cisa_known_exploited_vulnerabilities_json
+    name: CISA Known Exploited Vulnerabilities JSON
+    type: http
+    url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+    categories:
+      - security_news
+      - vulnerability_advisories
+      - official_government_feed
+    trust_level: official_government_feed
+    enabled: true
+    max_items: 1
+    description: Official machine-readable CISA Known Exploited Vulnerabilities catalog.
+    region: United States/Global
+    languages:
+      - en
+    source_type_label: Security data feed
+    update_cadence: Continuous
+    ingestion_notes: U.S. government vulnerability data; use as factual input only.
+    ai_safe_fit: A - high-fit/open
+    ingestion_mode: http_summary
+
   - id: ubuntu_security_notices_rss
     name: Ubuntu Security Notices RSS
     type: rss

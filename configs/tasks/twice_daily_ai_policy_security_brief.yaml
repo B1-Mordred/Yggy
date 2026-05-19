@@ -65,9 +65,9 @@ sources:
   - source_id: netzpolitik_org_rss
     type: rss
     url: https://netzpolitik.org/feed/
-  - source_id: cisa_known_exploited_vulnerabilities_catalog
+  - source_id: cisa_known_exploited_vulnerabilities_json
     type: http
-    url: https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+    url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
   - source_id: der_spiegel_rss
     type: rss
     url: https://www.spiegel.de/index.rss
