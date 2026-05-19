@@ -44,6 +44,7 @@ from .intake_store import (
 from .goal_router import (
     AutomationRequestClassification,
     AutomationRequestKind,
+    AutomationTargetKind,
     classify_automation_request,
 )
 from .goal_models import GOAL_CAPABILITY_IDS
@@ -177,6 +178,8 @@ Voice and personality:
 - Keep the humor pointed at entropy, broken software, overconfident automation, and fate; never at the user's expense.
 
 You have no tools in this general-chat fallback. Do not claim that you executed work, changed configurations, approved anything, contacted Yggdrasil, sent Discord messages, accessed files, or talked to external services. If the user asks for an automation, approval, or execution, explain the concept conversationally; the outer Bragi gateway will handle registered automation capabilities separately.
+
+Do not ask the user to "confirm", "go ahead", "proceed", or "implement" an automation from this general-chat fallback unless your answer also contains a canonical intent, source-selection intake, or Bragi intake ID that the outer gateway can confirm later. If you are only discussing an automation idea, ask the user to make the next step explicit, such as "draft this as a capability proposal" or "create a task draft"; do not imply that ordinary chat consent can execute or forward work.
 
 System context for conversational help: the old Hermes brief-management route is retired. Briefs and digests now belong to Yggy `topic_digest` automations. If the user asks how to add or change a subject/topic, tell them conversationally to describe the desired topic, sources, filters, schedule, and Discord target; if they ask for an actual change, the outer gateway can route a supported request for confirmation and Yggy approval. Do not invent UI buttons, menus, or a "Briefs section" unless the user provided that context.
 
@@ -1812,6 +1815,66 @@ def pending_source_selection_from_prior(text: str) -> dict[str, Any] | None:
         if isinstance(payload, dict) and payload.get("source_selection_action") == "confirm_topic_digest_sources":
             return payload
     return None
+
+
+def recent_prior_context(messages: list[dict[str, Any]], *, limit: int = 6) -> str:
+    recent = messages[max(0, len(messages) - limit - 1) : -1]
+    return "\n".join(extract_text(message.get("content")) for message in recent).strip()
+
+
+def prior_looks_like_automation_sketch(text: str) -> bool:
+    lowered = text.lower()
+    has_sketch_language = bool(
+        re.search(
+            r"\b(action|automation|automate|task|proposal|implement|proceed|refine|condition|trigger|schedule|grace period|motion detection)\b",
+            lowered,
+        )
+    )
+    if not has_sketch_language:
+        return False
+    if is_smart_home_lighting_request(text):
+        return True
+    return bool(re.search(r"\b(brief|briefing|digest|newsletter|monitor|watch|notify|alert|webhook|n8n|printer|toner|ups)\b", lowered))
+
+
+def classify_prior_automation_sketch(text: str) -> AutomationRequestClassification:
+    classification = classify_goal_request(text, use_hermes=False)
+    if classification.request_kind in {
+        AutomationRequestKind.CHAT,
+        AutomationRequestKind.HELP,
+        AutomationRequestKind.NEEDS_CLARIFICATION,
+    } and prior_looks_like_automation_sketch(text):
+        return AutomationRequestClassification(
+            request_kind=AutomationRequestKind.PROPOSE_NEW_CAPABILITY,
+            target_kind=AutomationTargetKind.NEW_CAPABILITY,
+            confidence=max(classification.confidence, 0.62),
+            reason="prior conversational automation sketch needs a new non-executable capability proposal",
+        )
+    return classification
+
+
+def confirmation_without_pending_response(
+    messages: list[dict[str, Any]],
+    *,
+    user_id: str,
+    channel: str,
+) -> str:
+    context = recent_prior_context(messages)
+    if context and prior_looks_like_automation_sketch(context):
+        classification = classify_prior_automation_sketch(context)
+        routed = handle_goal_router_classification(context, classification, user_id=user_id, channel=channel)
+        if routed:
+            return "\n".join(
+                [
+                    "I did not find a pending canonical intent from the last turn. Treating your confirmation as agreement to capture the prior automation idea for review, not as approval to execute it.",
+                    "",
+                    routed,
+                ]
+            )
+    return (
+        "I do not have a pending canonical intent or Bragi intake to confirm. "
+        "If this is ordinary chat, we can keep talking. If this is automation work, ask me to draft a task or capability proposal with the concrete details."
+    )
 
 
 def slug(value: str, fallback: str = "automation_task") -> str:
@@ -3519,6 +3582,16 @@ def capability_proposal_candidate(text: str) -> bool:
     return bool(any(term in lowered for term in ("printer", "toner", "cartridge", "ink level")))
 
 
+def is_smart_home_lighting_request(text: str) -> bool:
+    lowered = text.lower()
+    return bool(
+        re.search(
+            r"\b(sonoff|minir4m|lights?|lamps?|motion|presence|absence|wifi|wi-fi|smart home|home assistant|matter|zigbee|turn off|turn on|switch off|switch on)\b",
+            lowered,
+        )
+    )
+
+
 def capability_proposal_payload(
     user_text: str,
     result: dict[str, Any] | None = None,
@@ -3556,6 +3629,41 @@ def capability_proposal_payload(
                 "no Docker socket access",
                 "no broad filesystem access",
                 "no printer administration changes",
+            ],
+            "review_notes": str((result or {}).get("message") or "Bragi classified this as useful but unsupported."),
+        }
+    if is_smart_home_lighting_request(user_text):
+        return {
+            "title": "Smart Home Lighting Absence Automation",
+            "requested_by": user_id or "bragi",
+            "source_channel": canonical_intake_channel(channel),
+            "original_request_preview": redact_diagnostic_text(user_text)[:1000],
+            "purpose": "Review a local smart-home capability for controlling approved lighting devices from approved motion or presence state.",
+            "suggested_capability_id": "smart_home_lighting_absence.v1",
+            "suggested_task_type": "smart_home_lighting",
+            "likely_approval_level": "L3_EXTERNAL_SIDE_EFFECT",
+            "required_inputs": [
+                "approved device ID or controller entity ID, not a raw IP address or URL",
+                "approved controller integration such as Home Assistant, Matter bridge, or another bounded local adapter",
+                "approved motion or presence source ID",
+                "absence threshold or required consecutive no-motion periods",
+                "grace period before actuation",
+                "allowed action list, initially turn_off only",
+                "dry-run behavior and whitelisted notification target",
+            ],
+            "safety_rules": [
+                "must start disabled and dry-run",
+                "must use approved device and sensor IDs only",
+                "must not scan the LAN or accept arbitrary device URLs from chat",
+                "must not expose smart-home credentials to Bragi, Hermes, prompts, memory, YAML, or logs",
+                "must require explicit operator approval before live physical actuation",
+                "must keep all execution behind Yggy policy and worker boundaries",
+            ],
+            "non_goals": [
+                "no arbitrary shell execution",
+                "no Docker socket access",
+                "no broad smart-home administration",
+                "no direct device control from Bragi or Hermes",
             ],
             "review_notes": str((result or {}).get("message") or "Bragi classified this as useful but unsupported."),
         }
@@ -4857,7 +4965,7 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
             conversational_intent = conversational_topic_digest_intent(messages)
             if conversational_intent is not None:
                 return validate_intent_for_reply(conversational_intent, user_id=user_id, channel=channel, source="bragi_conversational_intake")
-            return "I do not have a pending canonical intent to confirm."
+            return confirmation_without_pending_response(messages, user_id=user_id, channel=channel)
         pending["user_confirmation_obtained"] = True
         result = api_request("POST", "/capabilities/prepare-yggdrasil-request", pending)
         if result.get("outcome") != "ACCEPT":

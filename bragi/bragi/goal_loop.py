@@ -22,7 +22,10 @@ UNSAFE_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bapprove\b|\breject\b|\bgenehmig|\bablehnen\b", "approval decisions must stay in the local admin path"),
     (r"\bdocker socket\b|\bdocker exec\b|\b/var/run/docker\.sock\b", "Docker socket and Docker exec access are forbidden"),
     (r"\brestart docker\b|\bstart docker\b|\brestart.*services?\b|\bstarte .*dienste neu\b|\bdienste neu\b", "restart docker or service restarts are host administration"),
-    (r"\bshell\b|\bcommand\b|\bterminal\b|\bbash\b|\bpowershell\b", "shell execution is forbidden"),
+    (
+        r"\bshell\b|\bterminal\b|\bcommand line\b|\brun(?:ning)?\s+(?:a\s+)?command\b|\bexecute(?:\s+a|\s+the)?\s+command\b|\bbash\b|\bpowershell\b",
+        "shell execution is forbidden",
+    ),
     (r"\bfirewall\b|\biptables\b|\bufw\b|\brouter\b", "firewall or router changes are security-sensitive"),
     (r"\bdelete files?\b|\breorganize files?\b|\blösche\b|\bloesche\b|\bdateien.*(löschen|loeschen|umorganisieren)\b", "broad filesystem mutation is forbidden"),
     (r"\binstall(?:iere)? .*updates?\b|\bautomatic(?:ally)? updates?\b|\bauto(?:matically)? update\b", "automatic updates are not a model-facing action"),
@@ -140,6 +143,8 @@ def classify_deterministic_automation_request(
         and not candidates
         and re.search(r"\b(track|monitor|watch|alert|notify|remind)\b", lowered)
     ):
+        existing_kind = None
+    if existing_kind == AutomationRequestKind.RUN_EXISTING and not target_task_id and not candidates and looks_like_useful_unsupported_automation(lowered):
         existing_kind = None
     if existing_kind in {
         AutomationRequestKind.INSPECT_EXISTING,
@@ -553,5 +558,10 @@ def looks_like_useful_unsupported_automation(lowered: str) -> bool:
     if re.search(r"\b(automate|automation|monitor|watch|check|remind|notify|track|alert|überwache|ueberwache|beobachte|prüfe|pruefe)\b", lowered):
         return True
     if re.search(r"\b(calendar|email|github|issue|ticket|snmp|ups|home assistant|node-red)\b", lowered):
+        return True
+    if re.search(
+        r"\b(sonoff|minir4m|lights?|lamps?|motion|presence|absence|wifi|wi-fi|smart home|matter|zigbee|turn off|turn on|switch off|switch on)\b",
+        lowered,
+    ):
         return True
     return False

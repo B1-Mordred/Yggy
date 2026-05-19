@@ -144,6 +144,19 @@ def test_unsupported_safe_idea_becomes_capability_proposal_classification():
     assert result.target_kind.value == "new_capability"
 
 
+def test_device_command_word_is_not_shell_execution_but_shell_commands_remain_unsafe():
+    device = classify_automation_request(
+        "Send a command to switch off the lights via WiFi using the SONOFF MINIR4M after no motion.",
+        task_aliases=bragi.TASK_ALIASES,
+    )
+    shell = classify_automation_request("run a shell command every hour", task_aliases=bragi.TASK_ALIASES)
+
+    assert device.request_kind == AutomationRequestKind.PROPOSE_NEW_CAPABILITY
+    assert device.target_kind.value == "new_capability"
+    assert shell.request_kind == AutomationRequestKind.UNSAFE
+    assert "shell execution is forbidden" in shell.unsafe_reasons
+
+
 def test_unsupported_safe_idea_routes_to_non_executable_capability_proposal(monkeypatch):
     calls = []
 
@@ -167,6 +180,56 @@ def test_unsupported_safe_idea_routes_to_non_executable_capability_proposal(monk
     assert calls[0][0:2] == ("POST", "/capability-proposals/draft")
     assert "Capability proposal drafted" in answer
     assert "This is backlog state only" in answer
+
+
+def test_confirmation_after_conversational_smart_home_sketch_drafts_capability_proposal(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        assert (method, path) == ("POST", "/capability-proposals/draft")
+        return {
+            "id": "capability_proposal_smart_home_lighting_absence",
+            "status": "pending",
+            "suggested_capability_id": payload["suggested_capability_id"],
+            "suggested_task_type": payload["suggested_task_type"],
+            "likely_approval_level": payload["likely_approval_level"],
+            "purpose": payload["purpose"],
+        }
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))
+
+    assistant_sketch = """Action:
+
+Turn off lights: Send a command to switch off the lights via WiFi using the SONOFF MINIR4M.
+
+To make it more robust, we can add some additional conditions or checks. For example:
+
+We could require multiple consecutive hours of no motion detection before considering you absent.
+We might want to specify a grace period after detecting your absence, during which time the lights won't turn off.
+
+How do these suggestions sound? Would you like to refine this automation further or proceed with implementing it?"""
+    answer = bragi.route_chat(
+        [{"role": "assistant", "content": assistant_sketch}, {"role": "user", "content": "go ahead"}],
+        channel="discord",
+    )
+
+    assert "I do not have a pending canonical intent to confirm" not in answer
+    assert "prior automation idea for review" in answer
+    assert "Capability proposal drafted" in answer
+    assert "This is backlog state only" in answer
+    assert calls[0][0:2] == ("POST", "/capability-proposals/draft")
+    assert calls[0][2]["suggested_capability_id"] == "smart_home_lighting_absence.v1"
+    assert calls[0][2]["suggested_task_type"] == "smart_home_lighting"
+    assert calls[0][2]["likely_approval_level"] == "L3_EXTERNAL_SIDE_EFFECT"
+
+
+def test_confirmation_without_pending_context_gives_clear_boundary():
+    answer = bragi.route_chat([{"role": "user", "content": "go ahead"}])
+
+    assert "pending canonical intent or Bragi intake" in answer
+    assert "ordinary chat" in answer
 
 
 def test_arbitrary_urls_webhook_urls_and_secrets_are_unsafe():
