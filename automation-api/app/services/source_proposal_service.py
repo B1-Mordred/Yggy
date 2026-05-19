@@ -101,13 +101,23 @@ def validate_public_https_source_url(url: str) -> list[str]:
     return errors
 
 
+def _mark_source_proposal_approved(proposal: SourceProposalModel) -> None:
+    proposal.status = "approved"
+    proposal.decided_at = utcnow()
+
+
 def approve_source_proposal(proposal: SourceProposalModel, nonce: str) -> None:
     if proposal.status != "pending":
         raise SourceProposalError("source proposal is not pending")
     if not secrets.compare_digest(proposal.nonce_hash, hash_nonce(nonce)):
         raise PermissionError("invalid nonce")
-    proposal.status = "approved"
-    proposal.decided_at = utcnow()
+    _mark_source_proposal_approved(proposal)
+
+
+def approve_source_proposal_from_ops(proposal: SourceProposalModel) -> None:
+    if proposal.status != "pending":
+        raise SourceProposalError("source proposal is not pending")
+    _mark_source_proposal_approved(proposal)
 
 
 def reject_source_proposal(proposal: SourceProposalModel) -> None:

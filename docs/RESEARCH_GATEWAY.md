@@ -151,10 +151,14 @@ POST /sources/propose
 GET /source-proposals
 POST /source-proposals/{proposal_id}/approve
 POST /source-proposals/{proposal_id}/apply
+GET /ops/source-proposals
+POST /ops/source-proposals/{proposal_id}/{approve|reject|apply}
 ```
 
-Tool-role callers may propose sources but cannot approve them. Admin approval
-requires the nonce shown once by the API. Applying a source proposal does not
-let the API mutate the checked-in registry from inside the container; it returns
-the reviewed YAML entry and operator instructions so the source can be added
-through normal repository review and deployment.
+Tool-role callers may propose sources but cannot approve them and do not receive
+the one-time approval nonce. Admin API callers can still approve with a nonce.
+Operators can review tool-created proposals through `/ops/source-proposals`
+using local ops authentication and the source-proposal action header. Applying a
+source proposal does not let the API mutate the checked-in registry from inside
+the container; it returns the reviewed YAML entry and operator instructions so
+the source can be added through normal repository review and deployment.

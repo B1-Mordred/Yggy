@@ -32,18 +32,19 @@ def test_tool_can_propose_source_but_cannot_approve(client):
     body = response.json()
     assert body["status"] == "pending"
     assert body["source_id"] == "example_public_feed"
-    assert body["nonce"]
+    assert "nonce" not in body
 
     approve = client.post(
         f"/source-proposals/{body['id']}/approve",
         headers=TOOL_HEADERS,
-        json={"nonce": body["nonce"]},
+        json={"nonce": "tool-must-not-have-nonce"},
     )
     assert approve.status_code == 403
 
 
 def test_admin_can_approve_and_apply_source_proposal_with_valid_nonce(client):
-    created = client.post("/sources/propose", headers=TOOL_HEADERS, json=source_payload()).json()
+    created = client.post("/sources/propose", headers=ADMIN_HEADERS, json=source_payload()).json()
+    assert created["nonce"]
     bad = client.post(
         f"/source-proposals/{created['id']}/approve",
         headers=ADMIN_HEADERS,

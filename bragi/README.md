@@ -74,6 +74,19 @@ does not fetch arbitrary URLs or forward source-search questions to Yggdrasil.
 To change a digest, the user must still name approved source IDs or complete an
 `awaiting_source_selection` intake, then confirm the resulting canonical intent.
 
+If the user explicitly asks to propose or register a public RSS/feed or website
+URL, Bragi may create a pending source proposal:
+
+```text
+propose https://example.org/security/feed.xml as an approved RSS source
+register https://example.org/news as a source for operator review
+```
+
+That calls only `POST /sources/propose` with the model-facing tool key. It does
+not approve the source, add it to the registry, attach it to a digest, expose an
+approval nonce, or contact Yggdrasil. Operators review source proposals from
+`/ops/source-proposals` or the admin API.
+
 Bragi also has controlled, user-scoped memory. Persistent memory is explicit,
 non-secret, inspectable, and forgettable. Bragi does not silently store chat
 history. A memory write starts as a pending proposal and is saved only after the

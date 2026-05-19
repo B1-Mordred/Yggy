@@ -22,6 +22,7 @@ from app.models import (
     CapabilityProposalModel,
     HeartbeatModel,
     RunModel,
+    SourceProposalModel,
     TaskChangeProposalModel,
     TaskModel,
     utcnow,
@@ -54,6 +55,13 @@ from app.services.capability_proposal_service import (
     implementation_plan_for_proposal,
     mark_implementation_plan_status,
 )
+from app.services.source_proposal_service import (
+    SourceProposalError,
+    apply_source_proposal,
+    approve_source_proposal_from_ops,
+    reject_source_proposal,
+    source_proposal_to_dict,
+)
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(tags=["ops"])
@@ -64,6 +72,7 @@ OPS_TASK_STATE_ACTION_HEADER = "task-state"
 OPS_VERSION_REVERT_ACTION_HEADER = "version-revert"
 OPS_TASK_CHANGE_ACTION_HEADER = "task-change-proposal"
 OPS_CAPABILITY_PROPOSAL_ACTION_HEADER = "capability-proposal"
+OPS_SOURCE_PROPOSAL_ACTION_HEADER = "source-proposal"
 MAX_RUN_DETAIL_ITEMS = 10
 MAX_RUN_DETAIL_ERRORS = 10
 MAX_RUN_DETAIL_TEXT = 6000
@@ -109,6 +118,10 @@ class OpsTaskVersionRevertRequest(BaseModel):
 
 
 class OpsCapabilityProposalDecision(BaseModel):
+    reason: str = Field(default="", max_length=1000)
+
+
+class OpsSourceProposalDecision(BaseModel):
     reason: str = Field(default="", max_length=1000)
 
 
@@ -183,6 +196,13 @@ def require_ops_capability_proposal_action_header(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops capability proposal action header")
 
 
+def require_ops_source_proposal_action_header(
+    x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
+) -> None:
+    if x_yggy_ops_action != OPS_SOURCE_PROPOSAL_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops source proposal action header")
+
+
 @router.get("/ops", response_class=HTMLResponse, include_in_schema=False)
 def ops_dashboard(_: None = Depends(require_ops_access)) -> HTMLResponse:
     return HTMLResponse(DASHBOARD_HTML)
@@ -228,6 +248,13 @@ def ops_status(
         .limit(20)
         .all()
     )
+    open_source_proposals = (
+        session.query(SourceProposalModel)
+        .filter(SourceProposalModel.status.in_(["pending", "approved"]))
+        .order_by(SourceProposalModel.created_at.desc())
+        .limit(20)
+        .all()
+    )
     active_runs = [run for run in recent_runs if run.status in {"queued", "queued_dry_run", "running", "running_dry_run"}]
     latest_retention = (
         session.query(AuditEventModel)
@@ -257,6 +284,16 @@ def ops_status(
         for proposal in open_task_change_proposals
         if proposal.status == "approved"
     ]
+    pending_source_proposals = [
+        _source_proposal_summary(proposal)
+        for proposal in open_source_proposals
+        if proposal.status == "pending"
+    ]
+    approved_source_proposals = [
+        _source_proposal_summary(proposal)
+        for proposal in open_source_proposals
+        if proposal.status == "approved"
+    ]
 
     return {
         "generated_at": now,
@@ -275,7 +312,16 @@ def ops_status(
             "approved_task_change_proposals": len(approved_task_changes),
             "open_task_change_proposals": len(pending_task_changes) + len(approved_task_changes),
             "pending_capability_proposals": len(pending_capability_proposals),
-            "pending_reviews": len(pending_approvals) + len(pending_task_changes) + len(pending_capability_proposals),
+            "pending_source_proposals": len(pending_source_proposals),
+            "approved_source_proposals": len(approved_source_proposals),
+            "open_source_proposals": len(pending_source_proposals) + len(approved_source_proposals),
+            "pending_reviews": (
+                len(pending_approvals)
+                + len(pending_task_changes)
+                + len(pending_capability_proposals)
+                + len(pending_source_proposals)
+                + len(approved_source_proposals)
+            ),
             "active_runs": len(active_runs),
         },
         "tasks": [_task_summary(task, latest_by_task.get(task.id)) for task in tasks],
@@ -289,6 +335,9 @@ def ops_status(
         "pending_capability_proposals": [
             _capability_proposal_summary(session, proposal) for proposal in pending_capability_proposals
         ],
+        "pending_source_proposals": pending_source_proposals,
+        "approved_source_proposals": approved_source_proposals,
+        "open_source_proposals": pending_source_proposals + approved_source_proposals,
         "retention": {
             "policy": {
                 "run_retention_days": get_settings().run_retention_days,
@@ -679,6 +728,114 @@ def ops_decide_capability_proposal(
     )
     session.commit()
     return _capability_proposal_summary(session, proposal)
+
+
+@router.get("/ops/source-proposals", include_in_schema=False)
+def ops_source_proposals(
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=DEFAULT_OPS_PAGE_SIZE, ge=MIN_OPS_PAGE_SIZE, le=MAX_OPS_PAGE_SIZE),
+    q: str | None = Query(default=None, min_length=1, max_length=128),
+    source_id: str | None = Query(default=None, min_length=1, max_length=128),
+    status_filter: str | None = Query(default=None, alias="status", min_length=1, max_length=32),
+    requested_by: str | None = Query(default=None, min_length=1, max_length=128),
+) -> dict:
+    query = session.query(SourceProposalModel)
+    if status_filter:
+        query = query.filter(SourceProposalModel.status == status_filter)
+    if source_id:
+        query = query.filter(SourceProposalModel.source_id.ilike(f"%{source_id}%"))
+    if requested_by:
+        query = query.filter(SourceProposalModel.requested_by.ilike(f"%{requested_by}%"))
+    if q:
+        query = query.filter(
+            or_(
+                SourceProposalModel.id.ilike(f"%{q}%"),
+                SourceProposalModel.source_id.ilike(f"%{q}%"),
+                SourceProposalModel.requested_by.ilike(f"%{q}%"),
+                SourceProposalModel.summary.ilike(f"%{q}%"),
+            )
+        )
+
+    total = query.count()
+    proposals = (
+        query.order_by(SourceProposalModel.created_at.desc(), SourceProposalModel.id.asc())
+        .offset(_pagination_offset(page, page_size))
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "generated_at": utcnow(),
+        "page": page,
+        "page_size": page_size,
+        "limit": page_size,
+        "filters": {
+            "q": q,
+            "source_id": source_id,
+            "status": status_filter,
+            "requested_by": requested_by,
+        },
+        "counts": {"matched": total, "returned": len(proposals)},
+        "pagination": _pagination(page, page_size, total, len(proposals)),
+        "proposals": [_source_proposal_summary(proposal) for proposal in proposals],
+    }
+
+
+@router.get("/ops/source-proposals/{proposal_id}", include_in_schema=False)
+def ops_source_proposal_detail(
+    proposal_id: str,
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(SourceProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="source proposal not found")
+    return _source_proposal_summary(proposal)
+
+
+@router.post("/ops/source-proposals/{proposal_id}/{decision}", include_in_schema=False)
+def ops_decide_source_proposal(
+    proposal_id: str,
+    decision: Literal["approve", "reject", "apply"],
+    payload: OpsSourceProposalDecision | None = None,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_source_proposal_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(SourceProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="source proposal not found")
+    reason = payload.reason if payload else ""
+    try:
+        if decision == "approve":
+            approve_source_proposal_from_ops(proposal)
+            action = "source.approve"
+            response: dict[str, Any] = _source_proposal_summary(proposal)
+        elif decision == "reject":
+            reject_source_proposal(proposal)
+            action = "source.reject"
+            response = _source_proposal_summary(proposal)
+        else:
+            apply_result = apply_source_proposal(proposal)
+            action = "source.apply"
+            response = {
+                "proposal": _source_proposal_summary(proposal),
+                "apply": _bounded_value(redact_secrets(apply_result)),
+            }
+    except SourceProposalError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    audit_event(
+        session,
+        "ops_dashboard",
+        action,
+        "source_proposal",
+        proposal.id,
+        {"source_id": proposal.source_id, "surface": "ops_ui", "reason": reason},
+    )
+    session.commit()
+    return response
 
 
 @router.get("/ops/task-change-proposals", include_in_schema=False)
@@ -1185,6 +1342,23 @@ def _capability_proposal_summary(session: Session, proposal: CapabilityProposalM
         proposal,
         implementation_plan=implementation_plan_for_proposal(session, proposal.id),
     )
+    return _bounded_value(
+        redact_secrets(payload),
+        max_depth=MAX_AUDIT_DETAIL_DEPTH,
+        max_keys=MAX_AUDIT_DETAIL_KEYS,
+        text_limit=MAX_AUDIT_DETAIL_TEXT,
+        field_text_limit=MAX_AUDIT_DETAIL_TEXT,
+    )
+
+
+def _source_proposal_summary(proposal: SourceProposalModel) -> dict:
+    payload = source_proposal_to_dict(proposal)
+    payload["execution"] = {
+        "creates_task": False,
+        "creates_approval": False,
+        "can_be_applied": proposal.status == "approved",
+        "registry_mutation": "operator_review_only",
+    }
     return _bounded_value(
         redact_secrets(payload),
         max_depth=MAX_AUDIT_DETAIL_DEPTH,

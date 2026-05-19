@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import yaml
@@ -498,6 +499,8 @@ def channel_required_capability(diagnostic: dict[str, Any]) -> str:
         return "draft_task"
     if route in {"general_chat_with_context", "bragi_source_catalog_search"}:
         return "context"
+    if route == "bragi_source_proposal":
+        return "source_proposal"
     if route in {"heimdal_validate_intent", "heimdal_prepare_yggdrasil_request"}:
         return "draft_task"
     if route == "yggdrasil_canonical_action":
@@ -1562,6 +1565,17 @@ def diagnose_route(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USE
 
     mode = classify_request(user_text)
     diagnostic["mode"] = mode
+    if source_proposal_requested(user_text):
+        diagnostic.update(
+            {
+                "mode": "source_proposal",
+                "route": "bragi_source_proposal",
+                "reason": "User asked to propose a public source URL; Bragi can create review backlog but cannot approve or add it.",
+                "source_proposal": diagnostic_source_proposal(user_text, user_id=user_id, channel=channel),
+                "calls_external_services": True,
+            }
+        )
+        return diagnostic
     if source_catalog_search_requested(user_text):
         diagnostic.update(
             {
@@ -2109,6 +2123,211 @@ def source_catalog_search_requested(text: str) -> bool:
         return False
     return bool(
         re.search(r"\b(show|list|find|search|what|which|available|approved|preapproved|catalog|do you have|can i use)\b", lowered)
+    )
+
+
+def urls_from_text(text: str) -> list[str]:
+    candidates = re.findall(r"https?://[^\s<>)\"']+", text)
+    return [candidate.rstrip(".,;:!?") for candidate in candidates]
+
+
+def source_proposal_requested(text: str) -> bool:
+    if not urls_from_text(text):
+        return False
+    lowered = text.lower()
+    if "discord.com/api/webhooks" in lowered or "discordapp.com/api/webhooks" in lowered:
+        return False
+    if re.search(r"\b(webhook|callback|token|password|secret|api key|apikey|nonce)\b", lowered):
+        return False
+    if re.search(r"\b(propose|register|add|submit|review|approve|preapprove|allowlist|whitelist)\b", lowered) and re.search(
+        r"\b(source|sources|feed|feeds|rss|atom|catalog|registry|news site|website)\b",
+        lowered,
+    ):
+        return True
+    return bool(re.match(r"^\s*(?:please\s+)?propose\s+https?://", text, flags=re.IGNORECASE))
+
+
+def source_proposal_unsafe_reason(text: str) -> str | None:
+    lowered = text.lower()
+    if "discord.com/api/webhooks" in lowered or "discordapp.com/api/webhooks" in lowered:
+        return "Discord webhook URLs are credentials, not source registry entries."
+    if re.search(r"\b(token|password|secret|api key|apikey|nonce|private key|cookie)\b", lowered):
+        return "The request contains secret-like material. I will not store or forward it."
+    urls = urls_from_text(text)
+    if not urls:
+        return "I need exactly one public HTTPS URL to propose as a source."
+    if len(urls) > 1:
+        return "Please propose one source URL at a time so the operator review stays precise."
+    parsed = urlparse(urls[0])
+    if parsed.scheme != "https":
+        return "Yggy source proposals require public HTTPS URLs."
+    if parsed.username or parsed.password:
+        return "Source proposal URLs must not contain credentials."
+    host = (parsed.hostname or "").strip().lower()
+    if not host or host in {"localhost", "local"} or host.endswith(".local") or "." not in host:
+        return "Source proposal URLs must use a public hostname."
+    return None
+
+
+def proposed_source_name(text: str, url: str) -> str:
+    quoted = re.search(r"(?:called|named)\s+[\"']([^\"']{3,80})[\"']", text, flags=re.IGNORECASE)
+    if quoted:
+        return quoted.group(1).strip()
+    as_match = re.search(
+        r"\bas\s+(?:an?\s+)?(?:approved\s+)?(?:rss\s+|atom\s+)?(?:source\s+|feed\s+|website\s+)?([A-Za-z0-9][A-Za-z0-9 ._/-]{2,80})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if as_match:
+        candidate = re.sub(r"\b(for|about|with|to)\b.*$", "", as_match.group(1).strip(), flags=re.IGNORECASE).strip()
+        generic_candidate = normalize_match_text(candidate)
+        if candidate and "http" not in candidate.lower() and generic_candidate not in {
+            "source",
+            "feed",
+            "rss",
+            "rss source",
+            "rss feed",
+            "atom",
+            "atom source",
+            "website",
+            "news site",
+        }:
+            return candidate[:80]
+    parsed = urlparse(url)
+    host = (parsed.hostname or "public_source").lower()
+    host = re.sub(r"^www\.", "", host).split(":")[0]
+    base = host.split(".")[0] if host else "public_source"
+    path = parsed.path.strip("/")
+    if path:
+        tail = path.split("/")[-1]
+        tail = re.sub(r"\.(xml|rss|atom|json|html?)$", "", tail, flags=re.IGNORECASE)
+        if tail and tail.lower() not in {"feed", "rss", "atom", "index"}:
+            base = f"{base} {tail}"
+        elif tail:
+            base = f"{base} {tail}"
+    return slug(base, "public_source").replace("_", " ").title()
+
+
+def source_proposal_type(text: str, url: str) -> str:
+    lowered = text.lower()
+    path = urlparse(url).path.lower()
+    if re.search(r"\b(rss|atom|feed)\b", lowered) or path.endswith((".xml", ".rss", ".atom")) or "feed" in path:
+        return "rss"
+    return "http"
+
+
+def source_proposal_categories(text: str) -> list[str]:
+    lowered = text.lower()
+    categories = ["operator_proposed"]
+    if re.search(r"\b(cyber|security|vulnerability|cve|nvd|patch|threat)\b", lowered):
+        categories.append("security_news")
+    if re.search(r"\b(ai|llm|local ai|ollama|open webui|hermes)\b", lowered):
+        categories.append("local_ai")
+    if re.search(r"\b(news|politic|policy|government|eu|german|germany)\b", lowered):
+        categories.append("daily_news")
+    if re.search(r"\b(research|science|paper|journal)\b", lowered):
+        categories.append("research")
+    if re.search(r"\b(official|vendor|government|federal|agency|ministry)\b", lowered):
+        categories.append("official")
+    return list(dict.fromkeys(categories))
+
+
+def source_proposal_languages(text: str) -> list[str]:
+    lowered = text.lower()
+    languages: list[str] = []
+    if re.search(r"\b(deutsch|german|de)\b", lowered):
+        languages.append("de")
+    if re.search(r"\b(english|en)\b", lowered):
+        languages.append("en")
+    return languages
+
+
+def source_proposal_payload(
+    text: str,
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    channel: str = "openwebui",
+) -> tuple[dict[str, Any] | None, str | None]:
+    unsafe_reason = source_proposal_unsafe_reason(text)
+    if unsafe_reason:
+        return None, unsafe_reason
+    url = urls_from_text(text)[0]
+    source_type = source_proposal_type(text, url)
+    name = proposed_source_name(text, url)
+    source_id = slug(name, "public_source")
+    ingestion_mode = "feed_metadata" if source_type == "rss" else "metadata_only"
+    source = {
+        "id": source_id,
+        "name": name,
+        "type": source_type,
+        "url": url,
+        "categories": source_proposal_categories(text),
+        "trust_level": "operator_review",
+        "enabled": True,
+        "max_items": 5,
+        "description": "Operator-proposed public source from Bragi conversation.",
+        "region": "",
+        "languages": source_proposal_languages(text),
+        "source_type_label": "News feed" if source_type == "rss" else "Website",
+        "update_cadence": "Operator review required",
+        "ingestion_notes": "Proposed by Bragi. External content remains untrusted data; review source terms before approval.",
+        "ai_safe_fit": "B - terms-check/variable",
+        "ingestion_mode": ingestion_mode,
+    }
+    return {
+        "source": source,
+        "summary": f"Bragi source proposal from {canonical_intake_channel(channel)}: {redact_diagnostic_text(text)[:900]}",
+        "requested_by": user_id or "bragi",
+    }, None
+
+
+def diagnostic_source_proposal(text: str, *, user_id: str, channel: str) -> dict[str, Any]:
+    payload, error = source_proposal_payload(text, user_id=user_id, channel=channel)
+    if error:
+        return {"error": error}
+    return context_redact(payload or {})
+
+
+def draft_source_proposal_response(text: str, *, user_id: str = DEFAULT_USER_ID, channel: str = "openwebui") -> str:
+    payload, error = source_proposal_payload(text, user_id=user_id, channel=channel)
+    if error:
+        return "\n".join(
+            [
+                f"I cannot propose that as a Yggy source: {error}",
+                "",
+                "A safe source proposal needs one public HTTPS RSS/feed or website URL, no credentials, and no secret-like material.",
+                "Nothing was sent to Yggdrasil and no source was added.",
+            ]
+        )
+    assert payload is not None
+    result = api_request("POST", "/sources/propose", payload)
+    result.pop("nonce", None)
+    if result.get("id"):
+        source = result.get("source") if isinstance(result.get("source"), dict) else payload["source"]
+        source.pop("nonce", None)
+        lines = [
+            "I drafted a Yggy source proposal for operator review.",
+            "",
+            f"- Proposal: `{result.get('id')}`",
+            f"- Status: `{result.get('status')}`",
+            f"- Source ID: `{result.get('source_id') or source.get('id')}`",
+            f"- Type: `{source.get('type')}`",
+            f"- Ingestion mode: `{source.get('ingestion_mode')}`",
+            f"- AI-safe fit: `{source.get('ai_safe_fit')}`",
+            "",
+            "This did not approve the source, add it to the registry, attach it to a digest, or contact Yggdrasil.",
+            "Review it through the local `/ops` source-proposal queue or the admin API. The source remains external, untrusted data even after approval.",
+        ]
+        return "\n".join(lines)
+    message = str(result.get("message") or result.get("detail") or "Yggy did not accept the source proposal.")
+    return "\n".join(
+        [
+            "I could not store that source proposal in Yggy.",
+            "",
+            f"- Reason: {message[:1000]}",
+            "",
+            "Nothing was sent to Yggdrasil and no source was added.",
+        ]
     )
 
 
@@ -4150,6 +4369,9 @@ def route_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID
     conversational_intent = conversational_topic_digest_intent(messages)
     if conversational_intent is not None:
         return validate_intent_for_reply(conversational_intent, user_id=user_id, channel=channel, source="bragi_conversational_intake")
+
+    if source_proposal_requested(user_text):
+        return draft_source_proposal_response(user_text, user_id=user_id, channel=channel)
 
     if source_catalog_search_requested(user_text):
         return format_source_catalog_search(user_text)

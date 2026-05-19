@@ -41,6 +41,29 @@ def capability_proposal_payload(**overrides) -> dict:
     return payload
 
 
+def source_proposal_payload(**overrides) -> dict:
+    source = {
+        "id": "ops_public_security_feed",
+        "name": "Ops Public Security Feed",
+        "type": "rss",
+        "url": "https://example.com/security-feed.xml",
+        "categories": ["operator_proposed", "security_news"],
+        "trust_level": "operator_review",
+        "enabled": True,
+        "max_items": 5,
+        "description": "Operator-reviewed source proposal from Bragi.",
+        "region": "Global",
+        "languages": ["en"],
+        "source_type_label": "News feed",
+        "update_cadence": "Regular",
+        "ingestion_notes": "Use feed metadata/snippets unless terms allow more.",
+        "ai_safe_fit": "B - terms-check/variable",
+        "ingestion_mode": "feed_metadata",
+    }
+    source.update(overrides)
+    return {"source": source, "summary": "Please review this public source.", "requested_by": "bragi"}
+
+
 def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
@@ -336,6 +359,62 @@ def test_ops_can_accept_reject_and_close_capability_proposals_with_action_header
             "capability.rejected",
             "capability.closed",
         ]
+
+
+def test_ops_can_approve_and_apply_tool_created_source_proposal_without_nonce(client):
+    created = client.post("/sources/propose", headers=TOOL_HEADERS, json=source_proposal_payload()).json()
+    assert "nonce" not in created
+
+    status_response = client.get("/ops/status", headers=ADMIN_HEADERS)
+    list_response = client.get("/ops/source-proposals?status=pending&page_size=5", headers=ADMIN_HEADERS)
+    detail_response = client.get(f"/ops/source-proposals/{created['id']}", headers=ADMIN_HEADERS)
+    missing_header = client.post(
+        f"/ops/source-proposals/{created['id']}/approve",
+        headers=ADMIN_HEADERS,
+        json={"reason": "Looks safe."},
+    )
+    approve_response = client.post(
+        f"/ops/source-proposals/{created['id']}/approve",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "source-proposal"},
+        json={"reason": "Looks safe."},
+    )
+    apply_response = client.post(
+        f"/ops/source-proposals/{created['id']}/apply",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "source-proposal"},
+        json={"reason": "Generate reviewed YAML."},
+    )
+
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["counts"]["pending_source_proposals"] == 1
+    assert status_body["counts"]["pending_reviews"] == 1
+    assert status_body["pending_source_proposals"][0]["source_id"] == "ops_public_security_feed"
+    assert "nonce" not in status_response.text.lower()
+    assert list_response.status_code == 200
+    assert list_response.json()["proposals"][0]["source_id"] == "ops_public_security_feed"
+    assert list_response.json()["pagination"]["min_page_size"] == 5
+    assert detail_response.status_code == 200
+    assert detail_response.json()["source"]["url"] == "https://example.com/security-feed.xml"
+    assert missing_header.status_code == 403
+    assert approve_response.status_code == 200
+    assert approve_response.json()["status"] == "approved"
+    assert approve_response.json()["execution"]["can_be_applied"] is True
+    assert apply_response.status_code == 200
+    applied = apply_response.json()
+    assert applied["proposal"]["status"] == "applied"
+    assert applied["apply"]["source_entry"]["id"] == "ops_public_security_feed"
+    assert "configs/sources/approved_sources.yaml" in applied["apply"]["registry_file"]
+    assert "nonce" not in apply_response.text.lower()
+
+    with Session(get_engine()) as session:
+        audits = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.resource_type == "source_proposal")
+            .filter(AuditEventModel.action.in_(["source.approve", "source.apply"]))
+            .order_by(AuditEventModel.created_at)
+            .all()
+        )
+        assert [audit.action for audit in audits] == ["source.approve", "source.apply"]
 
 
 def test_ops_can_plan_and_supersede_accepted_capability_proposal(client):

@@ -462,7 +462,7 @@ http://127.0.0.1:8088/ops
 It is split into views for overview, tasks, runs, task-change proposals,
 capability proposals, approvals, audit, and retention so routine checks do not
 require scanning every table. It shows task state, latest runs, pending reviews,
-worker heartbeat, and retention status.
+worker heartbeat, pending source proposals, and retention status.
 The task view includes browser-side filters for quick narrowing by text, state,
 and type. Runs, proposals, approvals, and audit use hidden server-side endpoints
 for filtering and pagination so larger queues can be narrowed without exposing
@@ -543,6 +543,24 @@ non-executable. It does not create or modify a task and does not tell
 Yggdrasil to do anything. A planned capability can be marked `superseded`, or
 marked `implemented` only after the capability is actually present in the
 registered capability catalog.
+
+Bragi can also create approved-source proposals through `POST /sources/propose`
+when the user explicitly asks to register one public RSS/feed or website URL.
+Tool-created source proposals do not return the approval nonce. Operators can
+inspect them with hidden local-only endpoints:
+
+```text
+GET /ops/source-proposals
+GET /ops/source-proposals/{proposal_id}
+POST /ops/source-proposals/{proposal_id}/approve
+POST /ops/source-proposals/{proposal_id}/reject
+POST /ops/source-proposals/{proposal_id}/apply
+```
+
+These routes require dashboard/admin access plus
+`X-Yggy-Ops-Action: source-proposal` for state-changing calls. Applying a source
+proposal only returns the reviewed YAML entry and operator instructions; the API
+does not write the checked-in source registry from inside the container.
 
 Prior config versions can be reverted from the task-detail panel. A revert does
 not immediately enable or run the task. It creates a new disabled

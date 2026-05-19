@@ -15,6 +15,7 @@ SAFE_CHANNEL_CAPABILITIES = {
     "chat",
     "context",
     "memory",
+    "source_proposal",
     "draft_task",
     "task_read",
     "run_l1",

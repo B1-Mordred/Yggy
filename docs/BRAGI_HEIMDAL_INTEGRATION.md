@@ -205,6 +205,21 @@ available, and a metadata/link-only note for sources that must not be treated as
 full-text fetch targets. This route is context only. It does not forward
 anything to Yggdrasil and does not add arbitrary URLs to task YAML.
 
+Bragi may also create a pending approved-source proposal when the user
+explicitly asks to propose or register one public RSS/feed or website URL:
+
+```text
+propose https://example.org/security/feed.xml as an approved RSS source
+register https://example.org/news as a source for operator review
+```
+
+This calls only `POST /sources/propose` with the tool key. The proposal is
+review backlog, not an approved source. Bragi must not expose approval nonces,
+must not apply the registry change, and must not attach the proposed URL to a
+task. Operators review source proposals through `/ops/source-proposals` or the
+admin API. Source proposals require public HTTPS URLs, no URL credentials, no
+secret-like material, and no broad `web_query` source.
+
 Confirmation phrases that close this conversational intake do not authorize
 execution. They only trigger the first canonical intent display and an intake ID.
 The normal `confirm intake <id>` response, or `confirm` while that intake remains
@@ -615,6 +630,7 @@ Initial capabilities are:
 chat
 context
 memory
+source_proposal
 draft_task
 task_read
 run_l1

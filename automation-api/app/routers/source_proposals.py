@@ -32,7 +32,7 @@ def propose_source(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit_event(session, role, "source.propose", "source_proposal", proposal.id, {"source_id": proposal.source_id})
     session.commit()
-    return source_proposal_to_dict(proposal, nonce=nonce)
+    return source_proposal_to_dict(proposal, nonce=nonce if role == ApiRole.ADMIN else None)
 
 
 @router.get("/source-proposals")

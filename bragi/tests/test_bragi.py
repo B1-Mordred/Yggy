@@ -439,6 +439,60 @@ def test_source_catalog_search_marks_metadata_only_sources(monkeypatch):
     assert "Metadata/link-only source" in answer
 
 
+def test_source_proposal_request_creates_pending_review_without_nonce(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {
+            "id": "source-proposal-1",
+            "source_id": payload["source"]["id"],
+            "status": "pending",
+            "source": {**payload["source"]},
+            "nonce": "must-not-be-shown",
+        }
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))
+
+    answer = bragi.route_chat(
+        [{"role": "user", "content": "propose https://example.org/security/feed.xml as an approved RSS source for security news"}]
+    )
+
+    assert calls[0][0:2] == ("POST", "/sources/propose")
+    payload = calls[0][2]
+    assert payload["source"]["id"] == "example_feed"
+    assert payload["source"]["name"] == "Example Feed"
+    assert payload["source"]["type"] == "rss"
+    assert payload["source"]["url"] == "https://example.org/security/feed.xml"
+    assert payload["source"]["ingestion_mode"] == "feed_metadata"
+    assert "security_news" in payload["source"]["categories"]
+    assert "source-proposal-1" in answer
+    assert "not approve" in answer
+    assert "not approved" in answer.lower() or "did not approve" in answer.lower()
+    assert "Yggdrasil" in answer
+    assert "must-not-be-shown" not in answer
+    assert "nonce" not in answer.lower()
+
+
+def test_source_proposal_rejects_non_https_without_api_call(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        raise AssertionError("unsafe source proposal should not call API")
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat(
+        [{"role": "user", "content": "register http://example.org/feed.xml as an approved RSS source"}]
+    )
+
+    assert calls == []
+    assert "public HTTPS" in answer
+    assert "no source was added" in answer
+
+
 def test_catalog_source_names_are_resolved_before_canonical_intent(monkeypatch):
     calls = []
 
@@ -1386,6 +1440,19 @@ def test_route_diagnostic_for_source_catalog_search_is_read_only():
     assert diagnostic["route"] == "bragi_source_catalog_search"
     assert diagnostic["context_categories"] == ["sources"]
     assert diagnostic["calls_external_services"] is False
+
+
+def test_route_diagnostic_for_source_proposal_uses_source_proposal_route():
+    diagnostic = bragi.diagnose_route(
+        [{"role": "user", "content": "propose https://example.org/security/feed.xml as an approved RSS source"}]
+    )
+
+    assert diagnostic["mode"] == "source_proposal"
+    assert diagnostic["route"] == "bragi_source_proposal"
+    assert diagnostic["calls_external_services"] is True
+    assert diagnostic["source_proposal"]["source"]["id"] == "example_feed"
+    assert diagnostic["source_proposal"]["source"]["url"] == "[omitted]"
+    assert diagnostic["source_proposal"]["source"]["type"] == "rss"
 
 
 def test_route_diagnostic_for_intake_detail_update_stays_intake_management():

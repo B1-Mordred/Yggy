@@ -9,6 +9,7 @@ channels:
       - chat
       - context
       - memory
+      - source_proposal
       - draft_task
       - task_read
       - run_l1
@@ -26,6 +27,7 @@ channels:
       - chat
       - context
       - memory
+      - source_proposal
       - draft_task
       - task_read
       - run_l1
@@ -44,6 +46,7 @@ channels:
       - chat
       - context
       - memory
+      - source_proposal
       - draft_task
       - task_read
       - run_l1
