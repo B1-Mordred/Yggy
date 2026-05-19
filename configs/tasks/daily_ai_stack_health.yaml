@@ -1,0 +1,83 @@
+id: daily_ai_stack_health
+name: AI Stack Health Monitor
+type: server_health
+enabled: true
+owner: local_user
+created_by: local_admin
+
+trigger:
+  kind: schedule
+  cron: "*/15 * * * *"
+  timezone: Europe/Berlin
+
+checks:
+  - type: http_health
+    name: automation_api
+    url: http://automation-api:8088/health
+    expected_status: 200
+  - type: worker_heartbeat
+    name: automation_worker
+    url: http://automation-api:8088/health
+    expected_status: 200
+    max_age_seconds: 180
+  - type: http_health
+    name: yggdrasil_action_api
+    url: http://host.docker.internal:8642/health
+    expected_status: 200
+  - type: http_health
+    name: bragi
+    url: http://bragi:8650/health
+    expected_status: 200
+  - type: http_health
+    name: open_webui
+    url: http://open-webui:8080/health
+    expected_status: 200
+  - type: ollama_tags
+    name: ollama
+    url: http://host.docker.internal:11434/api/tags
+    expected_status: 200
+  - type: http_health
+    name: n8n
+    url: http://n8n:5678/healthz
+    expected_status: 200
+  - type: service_metrics
+    name: yggy_metrics_exporter
+    url: http://metrics-exporter:8090/metrics/services
+    expected_status: 200
+  - type: http_health
+    name: printer_status_exporter
+    url: http://printer-status-exporter:8091/health
+    expected_status: 200
+
+output:
+  channel: discord
+  target: alerts
+  format: "anomalies only"
+
+policy:
+  approval_level: L1_NOTIFY_ONLY
+  require_sources: false
+  max_runs_per_hour: 4
+  max_runs_per_day: 120
+  min_seconds_between_runs: 300
+  allow_external_side_effects: false
+  allow_shell: false
+  allow_docker_socket: false
+  allow_filesystem_write: false
+
+runtime:
+  dry_run: false
+  timeout_seconds: 60
+  retry_count: 1
+
+notifications:
+  on_success: false
+  on_failure: true
+  on_empty_result: false
+  quiet_hours:
+    enabled: false
+    start: "22:00"
+    end: "07:00"
+    timezone: Europe/Berlin
+  collapse_repeated_failures: true
+  failure_collapse_window_minutes: 120
