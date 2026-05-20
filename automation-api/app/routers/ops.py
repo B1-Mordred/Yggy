@@ -69,6 +69,7 @@ basic_security = HTTPBasic(auto_error=False)
 OPS_ACTION_HEADER = "approval-decision"
 OPS_RUN_ACTION_HEADER = "manual-run"
 OPS_TASK_STATE_ACTION_HEADER = "task-state"
+OPS_TASK_ARCHIVE_ACTION_HEADER = "task-archive"
 OPS_VERSION_REVERT_ACTION_HEADER = "version-revert"
 OPS_TASK_CHANGE_ACTION_HEADER = "task-change-proposal"
 OPS_CAPABILITY_PROPOSAL_ACTION_HEADER = "capability-proposal"
@@ -175,6 +176,13 @@ def require_ops_task_state_action_header(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops task state action header")
 
 
+def require_ops_task_archive_action_header(
+    x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
+) -> None:
+    if x_yggy_ops_action != OPS_TASK_ARCHIVE_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops task archive action header")
+
+
 def require_ops_version_revert_action_header(
     x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
 ) -> None:
@@ -221,7 +229,7 @@ def ops_status(
     except Exception as exc:  # pragma: no cover - exercised only with unavailable DB
         database["error"] = exc.__class__.__name__
 
-    tasks = session.query(TaskModel).order_by(TaskModel.id).all()
+    tasks = session.query(TaskModel).filter(TaskModel.status != "archived").order_by(TaskModel.id).all()
     recent_runs = session.query(RunModel).order_by(RunModel.created_at.desc()).limit(20).all()
     latest_by_task: dict[str, RunModel] = {}
     for run in recent_runs:
@@ -1090,6 +1098,54 @@ def ops_resume_task(
     return _task_summary(task, None)
 
 
+@router.post("/ops/tasks/{task_id}/archive", include_in_schema=False)
+def ops_archive_task(
+    task_id: str,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_task_archive_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    task = session.get(TaskModel, task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    if task.enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="enabled tasks must be paused before delete/archive")
+    if task.status == "archived":
+        return _task_summary(task, None)
+    if task.status not in {"draft", "pending_approval", "rejected", "paused"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"task status {task.status} cannot be deleted/archived")
+
+    pending_approvals = (
+        session.query(ApprovalModel)
+        .filter(ApprovalModel.task_id == task.id)
+        .filter(ApprovalModel.status == "pending")
+        .all()
+    )
+    for approval in pending_approvals:
+        reject_request(approval)
+
+    task.enabled = False
+    task.status = "archived"
+    task.config = {**task.config, "enabled": False}
+    record_task_config_version(
+        session,
+        task,
+        actor_role="ops_dashboard",
+        change_type="archive",
+        summary="Disabled task archived from ops dashboard; audit history and run history retained.",
+    )
+    audit_event(
+        session,
+        "ops_dashboard",
+        "task.archive",
+        "task",
+        task.id,
+        {"surface": "ops_ui", "rejected_pending_approvals": [approval.id for approval in pending_approvals]},
+    )
+    session.commit()
+    return {**_task_summary(task, None), "message": "task archived; audit history and run history retained"}
+
+
 @router.post("/ops/tasks/{task_id}/versions/{version}/revert", include_in_schema=False)
 def ops_revert_task_config_version(
     task_id: str,
@@ -1403,7 +1459,16 @@ def _task_action_eligibility(session: Session, task: TaskModel) -> dict:
     else:
         resume = _allowed_action(True, "available")
 
-    return {"dry_run": dry_run, "live_run": live_run, "pause": pause, "resume": resume}
+    if task.enabled:
+        archive = _allowed_action(False, "enabled tasks must be paused before delete/archive")
+    elif task.status == "archived":
+        archive = _allowed_action(False, "task is already archived")
+    elif task.status not in {"draft", "pending_approval", "rejected", "paused"}:
+        archive = _allowed_action(False, f"task status {task.status} cannot be deleted/archived")
+    else:
+        archive = _allowed_action(True, "archives disabled task; audit and run history retained")
+
+    return {"dry_run": dry_run, "live_run": live_run, "pause": pause, "resume": resume, "archive": archive}
 
 
 def _validated_revert_task_config(config: dict) -> TaskConfig:
@@ -2865,6 +2930,14 @@ DASHBOARD_HTML = f"""<!doctype html>
         : 'Resume task';
       return `<div class="state-actions"><button type="button" data-task-state="true" data-task-id="${{esc(task.id)}}" data-state-action="resume" title="${{esc(title)}}"${{resumeBlocked ? ' disabled' : ''}}>Resume</button></div>`;
     }}
+    function taskArchiveButton(task) {{
+      const archiveAllowed = !task.enabled && ['draft', 'pending_approval', 'rejected', 'paused'].includes(task.status);
+      const title = task.enabled ? 'Pause task before deleting'
+        : task.status === 'archived' ? 'Task is already archived'
+        : archiveAllowed ? 'Delete from active task list by archiving; audit and run history are retained'
+        : `Task status ${{task.status}} cannot be deleted`;
+      return `<div class="state-actions"><button type="button" class="danger" data-task-archive="true" data-task-id="${{esc(task.id)}}" title="${{esc(title)}}"${{archiveAllowed ? '' : ' disabled'}}>Delete</button></div>`;
+    }}
     function wireTaskRunButtons() {{
       document.querySelectorAll('[data-task-run]').forEach(button => {{
         button.addEventListener('click', () => runTask(button));
@@ -2873,6 +2946,11 @@ DASHBOARD_HTML = f"""<!doctype html>
     function wireTaskStateButtons() {{
       document.querySelectorAll('[data-task-state]').forEach(button => {{
         button.addEventListener('click', () => setTaskState(button));
+      }});
+    }}
+    function wireTaskArchiveButtons() {{
+      document.querySelectorAll('[data-task-archive]').forEach(button => {{
+        button.addEventListener('click', () => archiveTask(button));
       }});
     }}
     function wireTaskVersionRevertButtons() {{
@@ -2951,6 +3029,37 @@ DASHBOARD_HTML = f"""<!doctype html>
         button.disabled = false;
       }}
     }}
+    async function archiveTask(button) {{
+      const taskId = button.dataset.taskId;
+      const status = document.getElementById('task-action-status');
+      if (!window.confirm(`Delete ${{taskId}} from the active task list? This archives the disabled task and keeps audit/run history.`)) return;
+      button.disabled = true;
+      status.textContent = `delete/archive request pending for ${{taskId}}...`;
+      status.className = 'meta';
+      try {{
+        const response = await fetch(`/ops/tasks/${{encodeURIComponent(taskId)}}/archive`, {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'X-Yggy-Ops-Action': 'task-archive'}},
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const body = await response.json();
+        status.textContent = `Deleted ${{body.id || taskId}} from active tasks. Audit and run history retained.`;
+        if (selectedTaskId === taskId) {{
+          selectedTaskId = null;
+          byId('task-detail').innerHTML = '<h2>Task Detail</h2><div class="empty">Task archived. Select another task to inspect.</div>';
+        }}
+        await refresh();
+      }} catch (error) {{
+        status.textContent = error.message;
+        status.className = 'meta bad';
+      }} finally {{
+        button.disabled = false;
+      }}
+    }}
     async function revertTaskVersion(button) {{
       const taskId = button.dataset.taskId;
       const version = button.dataset.version;
@@ -3019,7 +3128,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         `<code>${{esc(task.trigger.cron)}}</code><br><span class="meta">${{esc(task.trigger.timezone)}}</span>`,
         `${{esc(task.output.channel)}}<br><span class="meta">${{esc(task.output.target)}}</span>`,
         task.latest_run ? `${{runButton(task.latest_run)}} ${{statusLabel(task.latest_run.status)}}<br><span class="meta">${{esc(task.latest_run.completed_at)}}</span>` : '<span class="meta">no runs</span>',
-        `${{taskRunButtons(task)}}${{taskStateButtons(task)}}`,
+        `${{taskRunButtons(task)}}${{taskStateButtons(task)}}${{taskArchiveButton(task)}}`,
       ]), 'No tasks match the current filters.');
       renderPager('task-pagination', 'tasks', filtered.length, pageRows.length, renderTasks);
       wireSortHeaders('tasks', 'tasks', renderTasks);
@@ -3027,6 +3136,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       wireRunLinks();
       wireTaskRunButtons();
       wireTaskStateButtons();
+      wireTaskArchiveButtons();
     }}
     function actionLine(label, action) {{
       const item = action || {{}};
@@ -3102,6 +3212,7 @@ DASHBOARD_HTML = f"""<!doctype html>
               ${{actionLine('live run', actions.live_run)}}
               ${{actionLine('pause', actions.pause)}}
               ${{actionLine('resume', actions.resume)}}
+              ${{actionLine('delete', actions.archive)}}
             </div>
           </div>
           <div class="detail-block">
@@ -3112,6 +3223,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <div class="meta">output ${{esc(task.output?.channel)}} / ${{esc(task.output?.target)}}</div>
             <div class="state-actions">
               <button type="button" data-task-timeline-id="${{esc(task.id)}}" title="Show filtered run timeline for this task">Timeline</button>
+              <button type="button" class="danger" data-task-archive="true" data-task-id="${{esc(task.id)}}" title="${{esc(actions.archive?.reason || 'Delete from active task list by archiving')}}"${{actions.archive?.allowed ? '' : ' disabled'}}>Delete</button>
             </div>
           </div>
           <div class="detail-block">
@@ -3135,6 +3247,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       wireRunLinks();
       wireTaskVersionRevertButtons();
       wireTaskTimelineButtons();
+      wireTaskArchiveButtons();
     }}
     async function loadTaskDetail(taskId) {{
       selectedTaskId = taskId;

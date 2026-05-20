@@ -98,6 +98,7 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "approval-filter-q" in allowed.text
     assert "task-detail" in allowed.text
     assert "data-task-detail-id" in allowed.text
+    assert "data-task-archive" in allowed.text
     assert "data-task-version-revert" in allowed.text
     assert "task-filter-text" in allowed.text
     assert "task-page-size" in allowed.text
@@ -1536,6 +1537,102 @@ def test_ops_task_resume_allows_l0_without_approval(client, monkeypatch):
     assert response.json()["enabled"] is True
 
 
+def test_ops_task_archive_requires_action_header(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    create_response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=sample_task("ops_archive_header"))
+    assert create_response.status_code == 201
+
+    response = client.post("/ops/tasks/ops_archive_header/archive", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 403
+    assert "missing ops task archive action header" in response.text
+
+
+def test_ops_task_archive_hides_disabled_task_and_rejects_pending_approval(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task_id = "ops_archive_pending_task"
+    create_response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=sample_task(task_id))
+    assert create_response.status_code == 201
+    approval_id = create_response.json()["approval"]["id"]
+
+    response = client.post(
+        f"/ops/tasks/{task_id}/archive",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-archive"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["enabled"] is False
+    assert body["status"] == "archived"
+    assert "audit history and run history retained" in body["message"]
+
+    status_response = client.get("/ops/status", auth=("operator", "test-dashboard-password"))
+    assert status_response.status_code == 200
+    assert task_id not in {task["id"] for task in status_response.json()["tasks"]}
+
+    with Session(get_engine()) as session:
+        approval = session.get(ApprovalModel, approval_id)
+        task = session.get(TaskModel, task_id)
+        version = (
+            session.query(TaskConfigVersionModel)
+            .filter(TaskConfigVersionModel.task_id == task_id)
+            .order_by(TaskConfigVersionModel.version.desc())
+            .first()
+        )
+        audit = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.action == "task.archive")
+            .filter(AuditEventModel.resource_id == task_id)
+            .first()
+        )
+        assert approval is not None
+        assert approval.status == "rejected"
+        assert task is not None
+        assert task.enabled is False
+        assert task.status == "archived"
+        assert task.config["enabled"] is False
+        assert version is not None
+        assert version.change_type == "archive"
+        assert version.actor_role == "ops_dashboard"
+        assert audit is not None
+        assert audit.actor_role == "ops_dashboard"
+        assert audit.detail["surface"] == "ops_ui"
+        assert audit.detail["rejected_pending_approvals"] == [approval_id]
+
+
+def test_ops_task_archive_rejects_enabled_task(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    task = sample_task("ops_archive_enabled", enabled=True)
+    with Session(get_engine()) as session:
+        session.add(
+            TaskModel(
+                id=task["id"],
+                name=task["name"],
+                type=task["type"],
+                enabled=True,
+                owner=task["owner"],
+                created_by=task["created_by"],
+                approval_level=task["policy"]["approval_level"],
+                status="enabled",
+                config=task,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/ops/tasks/ops_archive_enabled/archive",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "task-archive"},
+    )
+
+    assert response.status_code == 409
+    assert "paused before delete/archive" in response.text
+
+
 def test_ops_approval_requires_action_header(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
@@ -1783,6 +1880,7 @@ def test_ops_routes_are_not_in_openapi(client):
     assert "/ops/tasks/{task_id}/run" not in paths
     assert "/ops/tasks/{task_id}/pause" not in paths
     assert "/ops/tasks/{task_id}/resume" not in paths
+    assert "/ops/tasks/{task_id}/archive" not in paths
     assert "/ops/tasks/{task_id}/versions/{version}/revert" not in paths
     assert "/ops/approvals/{approval_id}/approve" not in paths
     assert "/ops/approvals/{approval_id}/reject" not in paths
