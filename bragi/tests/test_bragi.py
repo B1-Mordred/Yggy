@@ -354,6 +354,62 @@ def source_catalog_fixture(method, path, payload=None):
                     "source_type_label": "News site",
                 },
                 {
+                    "id": "science_media_center_germany",
+                    "name": "Science Media Center Germany",
+                    "type": "http",
+                    "enabled": True,
+                    "categories": ["preapproved", "daily_news_current_affairs", "germany_science_news", "research_science", "language_de", "region_germany"],
+                    "trust_level": "ai_safe_b_terms_check",
+                    "ai_safe_fit": "B - terms-check/variable",
+                    "ingestion_mode": "metadata_only",
+                    "description": "German expert briefings and evidence-oriented science journalism resources for current news.",
+                    "region": "Germany",
+                    "languages": ["de"],
+                    "source_type_label": "Science news / expert briefings",
+                },
+                {
+                    "id": "nasa_news",
+                    "name": "NASA News",
+                    "type": "http",
+                    "enabled": True,
+                    "categories": ["preapproved", "official_news", "science_space", "language_en", "region_united_states_global"],
+                    "trust_level": "ai_safe_a_open",
+                    "ai_safe_fit": "A - high-fit/open",
+                    "ingestion_mode": "http_summary",
+                    "description": "Official NASA mission, science, aeronautics and spaceflight news.",
+                    "region": "United States/Global",
+                    "languages": ["en"],
+                    "source_type_label": "Official news",
+                },
+                {
+                    "id": "nasa_ads",
+                    "name": "NASA ADS",
+                    "type": "http",
+                    "enabled": True,
+                    "categories": ["preapproved", "research_science", "space_astronomy_literature", "language_en"],
+                    "trust_level": "ai_safe_b_terms_check",
+                    "ai_safe_fit": "B - terms-check/variable",
+                    "ingestion_mode": "metadata_only",
+                    "description": "Astrophysics Data System for astronomy and physics literature discovery.",
+                    "region": "Global",
+                    "languages": ["en"],
+                    "source_type_label": "Research index",
+                },
+                {
+                    "id": "arxiv",
+                    "name": "arXiv",
+                    "type": "http",
+                    "enabled": True,
+                    "categories": ["preapproved", "research_science", "preprints", "physics", "computer_science", "language_en"],
+                    "trust_level": "ai_safe_b_terms_check",
+                    "ai_safe_fit": "B - terms-check/variable",
+                    "ingestion_mode": "metadata_only",
+                    "description": "Preprint repository for physics, mathematics, computer science and related fields.",
+                    "region": "Global",
+                    "languages": ["en"],
+                    "source_type_label": "Preprint repository",
+                },
+                {
                     "id": "ollama_releases",
                     "name": "Ollama releases",
                     "type": "rss",
@@ -1222,6 +1278,84 @@ def test_missing_slot_followup_can_update_stored_intake(monkeypatch):
     assert f"confirm intake {intake_id}" in followup
     stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
     assert stored["status"] == "awaiting_confirmation"
+
+
+def test_missing_source_slot_uses_registry_search_for_vague_source_request(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat(
+        [
+            {
+                "role": "user",
+                "content": "create a new daily brief to be sent 7.30 am: top astronomy and astrophysics news. 12 items",
+            }
+        ]
+    )
+    intake_id = bragi.intake_id_from_text(answer)
+    first_intent = calls[0][2]
+
+    assert intake_id is not None
+    assert first_intent["slots"]["cron"] == "30 7 * * *"
+    assert first_intent["slots"]["max_items"] == 12
+    assert first_intent["slots"]["task_id"] == "astronomy_and_astrophysics"
+    assert first_intent["slots"]["include"] == ["astronomy", "astrophysics"]
+    assert "`source_ids`" in answer
+
+    followup = bragi.route_chat(
+        [{"role": "user", "content": f"use all sources about science for intake {intake_id}"}]
+    )
+
+    assert calls[-1][0:2] == ("GET", "/sources")
+    assert "I found approved sources" in followup
+    assert "awaiting_source_selection" in followup
+    assert "`nasa_news`" in followup
+    assert "`nasa_ads`" in followup
+    assert "Canonical intent awaiting details" not in followup
+    stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
+    assert stored["status"] == "awaiting_source_selection"
+
+    confirmed = bragi.route_chat([{"role": "user", "content": f"confirm sources for intake {intake_id}"}])
+
+    assert calls[-1][0:2] == ("POST", "/capabilities/validate-intent")
+    final_intent = calls[-1][2]
+    assert final_intent["intent"] == "draft_task"
+    assert final_intent["capability_id"] == "topic_digest.v1"
+    assert final_intent["slots"]["cron"] == "30 7 * * *"
+    assert final_intent["slots"]["max_items"] == 12
+    assert final_intent["slots"]["task_id"] == "astronomy_and_astrophysics"
+    assert "nasa_ads" in final_intent["slots"]["source_ids"]
+    assert "nasa_news" in final_intent["slots"]["source_ids"]
+    assert "Canonical intent pending confirmation" in confirmed
+
+
+def test_missing_source_slot_uses_registry_metadata_for_renowned_german_sources(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "draft a weekday 08:00 topic digest about German politics"}])
+    intake_id = bragi.intake_id_from_text(answer)
+
+    followup = bragi.route_chat(
+        [{"role": "user", "content": f"use all renowned German sources for intake {intake_id}"}]
+    )
+
+    assert intake_id is not None
+    assert calls[-1][0:2] == ("GET", "/sources")
+    assert "`handelsblatt`" in followup
+    assert "`science_media_center_germany`" in followup
+    assert "awaiting_source_selection" in followup
+    assert "`source_ids`: approved source IDs" not in followup
 
 
 def test_complete_request_with_details_updates_incomplete_intake(monkeypatch):

@@ -2131,7 +2131,7 @@ def topic_digest_intent(user_text: str) -> dict[str, Any]:
             "include": include,
             "exclude": ["sponsored", "rumor"],
             "output_target": "briefings",
-            "max_items": 10,
+            "max_items": max_items_from_text(user_text, default=10),
         },
     }
 
@@ -2233,33 +2233,53 @@ def normalize_match_text(value: str) -> str:
 
 
 SOURCE_CATALOG_STOPWORDS = {
+    "about",
+    "all",
     "approved",
     "available",
+    "be",
+    "bragi",
+    "brief",
+    "briefing",
     "catalog",
     "can",
     "could",
+    "create",
+    "daily",
+    "digest",
     "do",
     "feed",
     "feeds",
     "for",
     "from",
     "have",
+    "intake",
+    "items",
     "list",
     "me",
     "my",
+    "new",
     "news",
     "preapproved",
+    "renowned",
+    "reputable",
     "registered",
     "rss",
     "search",
+    "sent",
+    "send",
     "show",
     "source",
     "sources",
     "the",
     "there",
+    "top",
+    "trusted",
     "use",
+    "using",
     "what",
     "which",
+    "well",
     "with",
     "you",
 }
@@ -2485,7 +2505,7 @@ def draft_source_proposal_response(text: str, *, user_id: str = DEFAULT_USER_ID,
 
 
 def source_catalog_terms_from_text(text: str) -> list[str]:
-    normalized = normalize_match_text(text.replace("_", " "))
+    normalized = normalize_match_text(strip_intake_reference(text).replace("_", " "))
     words = [
         word
         for word in normalized.split()
@@ -2500,6 +2520,17 @@ def source_catalog_terms_from_text(text: str) -> list[str]:
         if word not in terms:
             terms.append(word)
     return terms[:10]
+
+
+def strip_intake_reference(text: str) -> str:
+    cleaned = re.sub(
+        r"\b(?:for\s+)?intake\s+bragi_intake_[a-z0-9_]{8,64}\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\bbragi_intake_[a-z0-9_]{8,64}\b", " ", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def source_catalog_matches(text: str, sources: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
@@ -2950,6 +2981,109 @@ def source_selection_to_intent(selection: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def collecting_source_selection_requested(text: str) -> bool:
+    cleaned = strip_intake_reference(text).lower()
+    if not cleaned:
+        return False
+    # This is deliberately about request shape, not topic/domain knowledge.
+    # Source identity resolution comes from the approved source registry metadata.
+    return bool(
+        re.search(
+            r"\b(sources?|feeds?|rss|registry|catalog|official|renowned|reputable|trusted|approved|preapproved)\b",
+            cleaned,
+        )
+    )
+
+
+def collecting_source_selection_query(intake: dict[str, Any], user_text: str, intent: dict[str, Any]) -> str:
+    original = str(intent.get("user_request") or "")
+    slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
+    include = slots.get("include") if isinstance(slots.get("include"), list) else []
+    parts = [
+        strip_intake_reference(user_text),
+        original,
+        " ".join(str(item) for item in include if str(item).strip()),
+        str(slots.get("name") or ""),
+    ]
+    summary = intake.get("summary") if isinstance(intake.get("summary"), dict) else {}
+    terms = summary.get("terms") if isinstance(summary.get("terms"), list) else []
+    if terms:
+        parts.append(" ".join(str(item) for item in terms if str(item).strip()))
+    return " ".join(part for part in parts if part).strip()
+
+
+def normalize_collecting_topic_digest_slots(intent: dict[str, Any], user_text: str) -> dict[str, Any]:
+    normalized = json.loads(json.dumps(intent))
+    slots = normalized.setdefault("slots", {})
+    original = str(normalized.get("user_request") or "")
+    combined = f"{original}\n{user_text}".strip()
+    topic = topic_from_text(combined)
+    if topic:
+        existing_task_id = str(slots.get("task_id") or "")
+        if not existing_task_id or existing_task_id.startswith("create_a_new_") or len(existing_task_id) > 64:
+            slots["task_id"] = slug(topic, "topic_digest")
+        existing_name = str(slots.get("name") or "")
+        if not existing_name or existing_name == "Topic Digest":
+            slots["name"] = title_from_topic(topic)
+        if not slots.get("include"):
+            slots["include"] = include_terms_from_text(combined)
+    max_items = max_items_from_text(combined)
+    if max_items is not None:
+        slots["max_items"] = max_items
+    if not slots.get("cron"):
+        slots["cron"] = schedule_cron(combined, default="0 8 * * *")
+    elif re.search(r"\b\d{1,2}[:.]\d{2}\b|\b\d{1,2}\s*(?:am|pm)\b", combined, re.IGNORECASE):
+        slots["cron"] = schedule_cron(combined, default=str(slots.get("cron") or "0 8 * * *"))
+    return normalized
+
+
+def source_selection_from_collecting_intake(intake: dict[str, Any], user_text: str, intent: dict[str, Any]) -> dict[str, Any] | None:
+    if intent.get("capability_id") != "topic_digest.v1":
+        return None
+    slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
+    if slots.get("source_ids") or not collecting_source_selection_requested(user_text):
+        return None
+    query = collecting_source_selection_query(intake, user_text, intent)
+    if not source_catalog_terms_from_text(query):
+        return None
+    sources = approved_sources_from_api()
+    try:
+        limit = max(5, min(int(slots.get("max_items") or 10), 12))
+    except (TypeError, ValueError):
+        limit = 10
+    selected_sources = source_catalog_matches(query, sources, limit=limit)
+    selected_ids = [str(source.get("id")) for source in selected_sources if source.get("id")]
+    if not selected_ids:
+        return {
+            "status": "no_match",
+            "intent_kind": "draft_topic_digest",
+            "terms": source_catalog_terms_from_text(query),
+            "matches": [],
+            "task_id": slots.get("task_id") or "topic_digest",
+            "base_slots": slots,
+            "original_request": str(intent.get("user_request") or user_text),
+        }
+    terms = source_catalog_terms_from_text(query)
+    match_term = ", ".join(terms[:4]) if terms else "source request"
+    return {
+        "status": "matched",
+        "intent_kind": "draft_topic_digest",
+        "terms": terms,
+        "matches": [
+            {
+                "term": match_term,
+                "selected": selected_sources[0],
+                "alternatives": selected_sources[1:],
+            }
+        ],
+        "selected_source_ids": selected_ids,
+        "include_terms": slots.get("include") if isinstance(slots.get("include"), list) else include_terms_from_text(str(intent.get("user_request") or "")),
+        "task_id": slots.get("task_id") or "topic_digest",
+        "base_slots": slots,
+        "original_request": str(intent.get("user_request") or user_text),
+    }
+
+
 def joined_message_text(messages: list[dict[str, Any]], *, roles: set[str] | None = None, limit: int = 14) -> str:
     parts: list[str] = []
     for message in messages[-limit:]:
@@ -3098,7 +3232,7 @@ def conversational_source_selection_intent(messages: list[dict[str, Any]]) -> di
             "include": base_slots.get("include") or conversational_topic_digest_include_terms(messages),
             "exclude": base_slots.get("exclude") or conversational_topic_digest_exclude_terms(messages),
             "output_target": base_slots.get("output_target") or "briefings",
-            "max_items": base_slots.get("max_items") or 10,
+            "max_items": base_slots.get("max_items") or max_items_from_text(joined_message_text(messages, roles={"user"}), default=10),
         },
         "original_request": latest_user_request(messages),
     }
@@ -3257,7 +3391,7 @@ def conversational_topic_digest_intent(messages: list[dict[str, Any]], *, resolv
             "include": include,
             "exclude": conversational_topic_digest_exclude_terms(messages),
             "output_target": "briefings",
-            "max_items": 10,
+            "max_items": max_items_from_text(joined_message_text(messages, roles={"user"}), default=10),
         },
     }
 
@@ -3275,10 +3409,15 @@ def yggdrasil_freeform_message_response(text: str) -> str | None:
 
 
 def schedule_cron(text: str, *, default: str) -> str:
-    match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+    match = re.search(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\s*(am|pm)?\b", text, flags=re.IGNORECASE)
     if match:
         hour = int(match.group(1))
         minute = int(match.group(2))
+        meridiem = (match.group(3) or "").lower()
+        if meridiem == "pm" and hour < 12:
+            hour += 12
+        if meridiem == "am" and hour == 12:
+            hour = 0
     else:
         hour_match = re.search(r"\b(?:at|um)\s+([01]?\d|2[0-3])(?:\s*(?:uhr|h|am|pm))?\b", text, re.IGNORECASE)
         if not hour_match:
@@ -3296,6 +3435,20 @@ def schedule_cron(text: str, *, default: str) -> str:
     )
     day = "1-5" if weekdays else "*"
     return f"{minute} {hour} * * {day}"
+
+
+def max_items_from_text(text: str, default: int | None = None) -> int | None:
+    patterns = [
+        r"\btop\s+(\d{1,2})\b",
+        r"\b(\d{1,2})\s*(?:items?|headlines?|stories?|articles?|entries?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        value = int(match.group(1))
+        return max(1, min(value, 50))
+    return default
 
 
 def source_ids_from_text(text: str) -> list[str]:
@@ -3351,20 +3504,35 @@ def low_threshold_from_text(text: str) -> int | None:
 
 
 def topic_from_text(text: str) -> str:
+    colon_match = re.search(r":\s*(.+)$", text, flags=re.DOTALL)
+    if colon_match:
+        topic = clean_topic_candidate(colon_match.group(1))
+        if topic:
+            return topic[:120]
     patterns = [
         r"\babout\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",
         r"\bon\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",
         r"\bfollow(?:ing)?\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",
+        r"\btop\s+\d{1,2}\s+(.+?)(?:\s+news\b|,|\.|$)",
         r"\badd\s+(.+?)\s+(?:to|into)\s+(?:the\s+)?(?:brief|briefing|digest)\b",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
-            topic = re.sub(r"\b(weekday|daily|weekly|brief|briefing|digest|summary)\b", "", match.group(1), flags=re.IGNORECASE)
-            topic = re.sub(r"\s+", " ", topic).strip(" .,-")
+            topic = clean_topic_candidate(match.group(1))
             if topic:
                 return topic[:120]
     return ""
+
+
+def clean_topic_candidate(value: str) -> str:
+    value = re.sub(r"\s+", " ", value)
+    topic = re.sub(r"\b\d{1,2}\s*(?:items?|headlines?|stories?|articles?|entries?)\b.*$", "", value, flags=re.IGNORECASE | re.DOTALL)
+    topic = re.sub(r"^\s*top\s+(?:\d{1,2}\s+)?", "", topic, flags=re.IGNORECASE)
+    topic = re.sub(r"\b(weekday|daily|weekly|brief|briefing|digest|summary)\b", "", topic, flags=re.IGNORECASE)
+    topic = re.sub(r"\bnews\b[\s.,-]*$", "", topic, flags=re.IGNORECASE)
+    topic = re.sub(r"\s+", " ", topic).strip(" .,-")
+    return topic
 
 
 def title_from_topic(topic: str) -> str:
@@ -3445,6 +3613,9 @@ def merge_intent_slots(intent: dict[str, Any], user_text: str) -> dict[str, Any]
             slots["task_id"] = slug(topic, "topic_digest")
         if not slots.get("include"):
             slots["include"] = include_terms_from_text(user_text)
+        parsed_max_items = max_items_from_text(user_text)
+        if parsed_max_items is not None:
+            slots["max_items"] = parsed_max_items
     if merged.get("capability_id") == "server_health.v1" and not slots.get("check_ids"):
         slots["check_ids"] = check_ids_from_text(user_text)
     if merged.get("capability_id") == "printer_supply_status.v1":
@@ -4453,10 +4624,36 @@ def update_collecting_intake_response(intake_id: str, user_text: str, *, user_id
     if intake.get("status") not in {"collecting", "collecting_slots"}:
         return f"I cannot collect more details for intake `{intake_id}` because it is `{intake.get('status')}`."
     intent = merge_intent_slots(json.loads(json.dumps(intake.get("intent") or {})), user_text)
+    if intent.get("capability_id") == "topic_digest.v1":
+        intent = normalize_collecting_topic_digest_slots(intent, user_text)
     slots = intent.setdefault("slots", {})
     if intent.get("capability_id") == "topic_digest.v1" and not slots.get("source_ids"):
         source_ids = source_ids_from_text(user_text) + explicit_source_ids_from_text(user_text)
         slots["source_ids"] = [source_id for index, source_id in enumerate(source_ids) if source_id not in source_ids[:index]]
+        if not slots.get("source_ids"):
+            if source_selection_contains_arbitrary_url(user_text):
+                return (
+                    f"I will not add arbitrary URLs to intake `{intake_id}`. "
+                    "Use approved source IDs from the registry, ask me to search approved sources, or propose the URL as a new approved source first."
+                )
+            selection = source_selection_from_collecting_intake(intake, user_text, intent)
+            if selection is not None:
+                if selection.get("status") != "matched":
+                    return format_source_selection(selection, intake=intake)
+                source_intent = source_selection_to_intent(selection)
+                try:
+                    updated = update_intake(
+                        intake_id=intake_id,
+                        user_id=user_id,
+                        status="awaiting_source_selection",
+                        intent=source_intent,
+                        summary=source_selection_summary(selection),
+                        action="intake.source_selection",
+                        detail={"source": "collecting_slot_fill"},
+                    )
+                except MemoryValidationError as exc:
+                    return f"I found source matches, but I could not update intake `{intake_id}`: {exc}."
+                return format_source_selection(selection, intake=updated)
     if intent.get("capability_id") == "topic_digest.modify_subjects.v1":
         source_ids = source_ids_from_text(user_text) + explicit_source_ids_from_text(user_text)
         source_ids = [source_id for index, source_id in enumerate(source_ids) if source_id not in source_ids[:index]]
