@@ -3193,6 +3193,28 @@ DASHBOARD_HTML = f"""<!doctype html>
         ${{current === 'pending_approval' ? '<div class="meta">Pending approval tasks must be approved before they can be enabled.</div>' : ''}}
       </div>`;
     }}
+    function taskApprovalControl(approvals) {{
+      const pending = (approvals || []).filter(approval => approval.status === 'pending');
+      if (!pending.length) return '<div class="empty">No pending approvals for this task.</div>';
+      return `<div class="meta">Approving requires the one-time approval nonce from the original approval request. The nonce is never shown here or stored in the UI.</div>`
+        + pending.map(approval => `<div class="approval">
+          <div class="approval-head">
+            <div>
+              <code>${{esc(approval.id)}}</code>
+              <span class="pill">${{esc(approval.approval_level)}}</span>
+              <span class="pill">${{esc(approval.status)}}</span>
+            </div>
+            <span class="meta">requested by ${{esc(approval.requested_by)}} at ${{esc(approval.created_at)}}</span>
+          </div>
+          <div>${{esc(approval.summary)}}</div>
+          <div class="approval-actions">
+            <input type="password" autocomplete="off" placeholder="Approval nonce" aria-label="Approval nonce for ${{esc(approval.id)}}">
+            <button type="button" data-approval-action="approve" data-approval-id="${{esc(approval.id)}}">Approve</button>
+            <button type="button" class="danger" data-approval-action="reject" data-approval-id="${{esc(approval.id)}}">Reject</button>
+            <span class="meta approval-message"></span>
+          </div>
+        </div>`).join('<hr>');
+    }}
     function approvalHistory(approvals) {{
       return approvals && approvals.length ? approvals.map(approval => `
         <div>
@@ -3271,6 +3293,10 @@ DASHBOARD_HTML = f"""<!doctype html>
             ${{taskStatusControl(task, actions)}}
           </div>
           <div class="detail-block">
+            <h3>Approval Control</h3>
+            ${{taskApprovalControl(approvals)}}
+          </div>
+          <div class="detail-block">
             <h3>Task Summary</h3>
             <div><strong>${{esc(task.name)}}</strong></div>
             <div class="meta">type ${{esc(task.type)}}; dry run ${{esc(task.dry_run)}}</div>
@@ -3304,6 +3330,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       wireTaskTimelineButtons();
       wireTaskArchiveButtons();
       wireTaskStatusControls();
+      wireApprovalButtons(byId('task-detail'));
     }}
     async function loadTaskDetail(taskId) {{
       selectedTaskId = taskId;

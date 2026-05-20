@@ -101,6 +101,7 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "Status Control" in allowed.text
     assert "data-task-status-select" in allowed.text
     assert "data-task-status-apply" in allowed.text
+    assert "Approval Control" in allowed.text
     assert "data-task-archive" in allowed.text
     assert "data-task-version-revert" in allowed.text
     assert "task-filter-text" in allowed.text
@@ -794,6 +795,23 @@ def test_ops_task_detail_redacts_config_and_lists_history_runs_and_actions(clien
     assert body["allowed_actions"]["resume"]["allowed"] is False
     assert "hidden-secret" not in response.text
     assert "nonce-hash-secret" not in response.text
+
+
+def test_ops_task_detail_exposes_pending_approval_for_local_control(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+    create_response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=sample_task("ops_pending_approval_detail"))
+    assert create_response.status_code == 201
+    approval = create_response.json()["approval"]
+
+    response = client.get("/ops/tasks/ops_pending_approval_detail", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task"]["status"] == "pending_approval"
+    assert body["approvals"][0]["id"] == approval["id"]
+    assert body["approvals"][0]["status"] == "pending"
+    assert "nonce" not in response.text.lower()
 
 
 def test_ops_task_detail_reports_l2_actions_blocked(client, monkeypatch):
