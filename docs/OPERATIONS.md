@@ -301,9 +301,11 @@ https://yggy.b1.germering:8443/ops
 ```
 
 The UI uses the dashboard username/password, shows pending approval details,
-and asks for the approval nonce. It does not expose the admin API key to the
-browser. Mutating approval actions are hidden from OpenAPI and require the
-dashboard credentials plus a same-origin action header.
+and lets an authenticated local operator approve L1 requests without a nonce.
+L2 and L3 approvals still require the one-time approval nonce; L4 remains
+manual only. It does not expose the admin API key to the browser. Mutating
+approval actions are hidden from OpenAPI and require the dashboard credentials
+plus a same-origin action header.
 
 CLI approval is still available for local shell use:
 
@@ -479,8 +481,9 @@ the relevant filters, sort order, and dashboard tab without adding any
 model-facing capability.
 Pending approvals include actions, worst-case failure mode, and the redacted task
 config. The dashboard can approve or reject pending approvals when the operator
-enters the approval nonce. It does not expose secrets, does not expose nonce
-hashes, and is not included in the OpenAPI tool schema.
+is authenticated locally. L1 approvals do not require a nonce in the dashboard;
+L2 and L3 approvals require the approval nonce. It does not expose secrets, does
+not expose nonce hashes, and is not included in the OpenAPI tool schema.
 
 Task ids in the dashboard are clickable. The task-detail panel is backed by the
 hidden `/ops/tasks/{task_id}` endpoint and shows a bounded, redacted projection
@@ -492,9 +495,8 @@ Approval history in this panel excludes nonce hashes and any operator secrets.
 
 Pending approvals include the config version linked to that approval request
 when one exists. The dashboard displays the structured diff for that approval so
-the operator can review the proposed config change before entering the approval
-nonce. Config snapshots are stored redacted and are not exposed in the OpenAPI
-tool schema.
+the operator can review the proposed config change before approval. Config
+snapshots are stored redacted and are not exposed in the OpenAPI tool schema.
 
 Disabled draft, rejected, pending-approval, or paused tasks can be archived
 through the admin-only API:

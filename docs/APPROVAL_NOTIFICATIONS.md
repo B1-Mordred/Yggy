@@ -67,7 +67,9 @@ or direct Discord webhooks outside the automation API.
    ```
 
 2. Review the task, actions, failure mode, and config diff.
-3. Enter the approval or proposal nonce only in the local UI or local CLI.
+3. For L1 approvals, approve or reject directly in the authenticated local ops
+   UI. For L2/L3 approvals and task-change proposals, enter the approval or
+   proposal nonce only in the local UI or local CLI.
 4. Reject approvals that are unexpected, stale, unclear, or riskier than their
    approval level suggests.
 

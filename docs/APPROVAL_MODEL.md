@@ -14,14 +14,18 @@
 - Worker key can perform internal execution reporting and notification calls.
 - Admin key can approve and reject. It must never be exposed to the model.
 - The local approval UI can approve and reject through hidden `/ops` endpoints
-  after dashboard authentication and nonce verification. The browser never
-  receives `AUTOMATION_ADMIN_API_KEY`.
+  after dashboard authentication. L1 approvals can be accepted by an
+  authenticated local ops operator without a nonce; L2 and L3 approvals require
+  the one-time approval nonce; L4 is manual only. The browser never receives
+  `AUTOMATION_ADMIN_API_KEY`.
 - L4 is manual only. The system may generate instructions, but it must not execute autonomously.
 
 ## Nonce
 
 Approval requests include a nonce. The API stores only a hash of that nonce. The local admin CLI submits the nonce with the admin key.
 
-The local approval UI also requires the nonce for approval. Rejection does not
-require the nonce, but it still requires dashboard authentication and the
-same-origin ops action header.
+The local approval UI does not require the nonce for L1 approvals because the
+authenticated local ops session itself is the explicit operator approval. L2 and
+L3 approvals still require the nonce. Rejection does not require the nonce, but
+it still requires dashboard authentication and the same-origin ops action
+header.

@@ -103,7 +103,7 @@ MAX_OPS_PAGE_SIZE = 100
 
 
 class OpsApprovalDecision(BaseModel):
-    nonce: str = Field(min_length=8, max_length=256)
+    nonce: str | None = Field(default=None, min_length=8, max_length=256)
 
 
 class OpsApprovalRejection(BaseModel):
@@ -930,6 +930,8 @@ def ops_approve_task_change_proposal(
     proposal = session.get(TaskChangeProposalModel, proposal_id)
     if not proposal:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task change proposal not found")
+    if not payload.nonce:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="proposal nonce is required")
     try:
         approve_task_change_proposal(proposal, payload.nonce)
     except PermissionError as exc:
@@ -1241,10 +1243,15 @@ def ops_approve_approval(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="approval not found")
     if approval.status != "pending":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="approval is not pending")
-    if not verify_nonce(approval, payload.nonce):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid nonce")
-    if ApprovalLevel(approval.approval_level) == ApprovalLevel.L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE:
+    approval_level = ApprovalLevel(approval.approval_level)
+    if approval_level == ApprovalLevel.L4_DESTRUCTIVE_OR_SECURITY_SENSITIVE:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="L4 approvals are manual only")
+    nonce = payload.nonce if payload else None
+    nonce_required = approval_at_least(approval_level, ApprovalLevel.L2_LOCAL_WRITE)
+    if nonce_required and not nonce:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="approval nonce required for L2+ approvals")
+    if nonce and not verify_nonce(approval, nonce):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid nonce")
 
     approve_request(approval)
     task = session.get(TaskModel, approval.task_id)
@@ -3193,11 +3200,16 @@ DASHBOARD_HTML = f"""<!doctype html>
         ${{current === 'pending_approval' ? '<div class="meta">Pending approval tasks must be approved before they can be enabled.</div>' : ''}}
       </div>`;
     }}
+    function approvalLevelRequiresNonce(level) {{
+      return l2Plus.has(level);
+    }}
     function taskApprovalControl(approvals) {{
       const pending = (approvals || []).filter(approval => approval.status === 'pending');
       if (!pending.length) return '<div class="empty">No pending approvals for this task.</div>';
-      return `<div class="meta">Approving requires the one-time approval nonce from the original approval request. The nonce is never shown here or stored in the UI.</div>`
-        + pending.map(approval => `<div class="approval">
+      return `<div class="meta">L1 approvals can be accepted by an authenticated local ops operator. L2+ approvals still require the one-time approval nonce from the original approval request.</div>`
+        + pending.map(approval => {{
+          const nonceRequired = approvalLevelRequiresNonce(approval.approval_level);
+          return `<div class="approval">
           <div class="approval-head">
             <div>
               <code>${{esc(approval.id)}}</code>
@@ -3208,12 +3220,13 @@ DASHBOARD_HTML = f"""<!doctype html>
           </div>
           <div>${{esc(approval.summary)}}</div>
           <div class="approval-actions">
-            <input type="password" autocomplete="off" placeholder="Approval nonce" aria-label="Approval nonce for ${{esc(approval.id)}}">
-            <button type="button" data-approval-action="approve" data-approval-id="${{esc(approval.id)}}">Approve</button>
+            <input type="password" autocomplete="off" placeholder="${{nonceRequired ? 'Approval nonce required' : 'Approval nonce optional for L1'}}" aria-label="Approval nonce for ${{esc(approval.id)}}">
+            <button type="button" data-approval-action="approve" data-approval-id="${{esc(approval.id)}}" data-approval-level="${{esc(approval.approval_level)}}">Approve</button>
             <button type="button" class="danger" data-approval-action="reject" data-approval-id="${{esc(approval.id)}}">Reject</button>
             <span class="meta approval-message"></span>
           </div>
-        </div>`).join('<hr>');
+        </div>`;
+        }}).join('<hr>');
     }}
     function approvalHistory(approvals) {{
       return approvals && approvals.length ? approvals.map(approval => `
@@ -3574,6 +3587,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         const review = item.review || {{}};
         const task = item.task || {{}};
         const actions = review.actions || [];
+        const nonceRequired = approvalLevelRequiresNonce(item.approval_level);
         return `<div class="approval">
           <div class="approval-head">
             <div>
@@ -3598,8 +3612,8 @@ DASHBOARD_HTML = f"""<!doctype html>
             ${{jsonBlock(task.config)}}
           </details>
           <div class="approval-actions">
-            <input type="password" autocomplete="off" placeholder="Approval nonce" aria-label="Approval nonce">
-            <button type="button" data-approval-action="approve" data-approval-id="${{esc(item.id)}}">Approve</button>
+            <input type="password" autocomplete="off" placeholder="${{nonceRequired ? 'Approval nonce required' : 'Approval nonce optional for L1'}}" aria-label="Approval nonce">
+            <button type="button" data-approval-action="approve" data-approval-id="${{esc(item.id)}}" data-approval-level="${{esc(item.approval_level)}}">Approve</button>
             <button type="button" class="danger" data-approval-action="reject" data-approval-id="${{esc(item.id)}}">Reject</button>
             <span class="meta approval-message"></span>
           </div>
@@ -3956,12 +3970,15 @@ DASHBOARD_HTML = f"""<!doctype html>
     async function decideApproval(button) {{
       const approvalId = button.dataset.approvalId;
       const action = button.dataset.approvalAction;
+      const approvalLevel = button.dataset.approvalLevel || '';
+      const nonceRequired = approvalLevelRequiresNonce(approvalLevel);
       const panel = button.closest('.approval');
       const message = panel.querySelector('.approval-message');
       const input = panel.querySelector('input');
-      const body = action === 'approve' ? {{nonce: input.value}} : {{reason: 'Rejected from ops dashboard'}};
-      if (action === 'approve' && !input.value) {{
-        message.textContent = 'Approval nonce is required.';
+      const nonce = input?.value || '';
+      const body = action === 'approve' ? (nonce ? {{nonce}} : {{}}) : {{reason: 'Rejected from ops dashboard'}};
+      if (action === 'approve' && nonceRequired && !nonce) {{
+        message.textContent = 'Approval nonce is required for L2+ approvals.';
         message.className = 'meta approval-message bad';
         return;
       }}

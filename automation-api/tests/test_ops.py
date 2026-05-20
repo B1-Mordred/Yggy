@@ -1703,6 +1703,59 @@ def test_ops_approval_ui_can_approve_with_nonce(client, monkeypatch):
         assert audit.action == "approval.approve"
 
 
+def test_ops_approval_ui_can_approve_l1_without_nonce(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+
+    create_response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=sample_task("ops_approve_l1_no_nonce"))
+    approval = create_response.json()["approval"]
+
+    response = client.post(
+        f"/ops/approvals/{approval['id']}/approve",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "approval-decision"},
+        json={},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "approved"
+    with Session(get_engine()) as session:
+        task = session.get(TaskModel, "ops_approve_l1_no_nonce")
+        assert task is not None
+        assert task.enabled is True
+        assert task.status == "enabled"
+
+
+def test_ops_approval_ui_requires_nonce_for_l2(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+
+    create_response = client.post(
+        "/tasks/draft",
+        headers=TOOL_HEADERS,
+        json=sample_task("ops_approve_l2_requires_nonce", "L2_LOCAL_WRITE"),
+    )
+    approval = create_response.json()["approval"]
+
+    missing_nonce = client.post(
+        f"/ops/approvals/{approval['id']}/approve",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "approval-decision"},
+        json={},
+    )
+    approved = client.post(
+        f"/ops/approvals/{approval['id']}/approve",
+        auth=("operator", "test-dashboard-password"),
+        headers={"X-Yggy-Ops-Action": "approval-decision"},
+        json={"nonce": approval["nonce"]},
+    )
+
+    assert missing_nonce.status_code == 403
+    assert "nonce required" in missing_nonce.text
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved"
+
+
 def test_ops_approval_ui_rejects_without_admin_key(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
