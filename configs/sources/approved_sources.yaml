@@ -297,3 +297,93 @@ sources:
     ingestion_notes: Official EU material; verify reuse terms and media exceptions.
     ai_safe_fit: B - terms-check/variable
     ingestion_mode: feed_metadata
+
+  - id: nasa_news_rss
+    name: NASA News RSS
+    type: rss
+    url: https://www.nasa.gov/feed/
+    categories:
+      - astronomy_news
+      - astrophysics
+      - space_science
+      - official_space_agency
+      - official_government_feed
+    trust_level: official_government_feed
+    enabled: true
+    max_items: 5
+    description: Official NASA RSS feed for mission, science, aeronautics, astronomy, and spaceflight updates.
+    region: United States/Global
+    languages:
+      - en
+    source_type_label: RSS feed
+    update_cadence: Daily/regular
+    ingestion_notes: Use RSS metadata and linked official posts; NASA media can include third-party exceptions.
+    ai_safe_fit: A - high-fit/open
+    ingestion_mode: feed_metadata
+
+  - id: esa_space_science_rss
+    name: ESA Space Science RSS
+    type: rss
+    url: https://www.esa.int/rssfeed/Science_Exploration/Space_Science
+    categories:
+      - astronomy_news
+      - astrophysics
+      - space_science
+      - official_space_agency
+    trust_level: official_space_agency_feed
+    enabled: true
+    max_items: 5
+    description: European Space Agency RSS feed for space science and exploration updates.
+    region: Europe/Global
+    languages:
+      - en
+    source_type_label: RSS feed
+    update_cadence: Regular
+    ingestion_notes: Use RSS metadata and linked official posts; verify ESA reuse terms for full text and media.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: arxiv_astro_ph_rss
+    name: arXiv astro-ph RSS
+    type: rss
+    url: https://export.arxiv.org/rss/astro-ph
+    categories:
+      - astronomy_news
+      - astrophysics
+      - space_science
+      - preprints
+      - research_science
+    trust_level: research_preprint_feed
+    enabled: true
+    max_items: 5
+    description: arXiv astro-ph feed for astronomy and astrophysics preprints; items are not peer reviewed.
+    region: Global
+    languages:
+      - en
+    source_type_label: RSS feed
+    update_cadence: Continuous
+    ingestion_notes: Preprints are unreviewed research outputs; use metadata and source links, and verify article licenses.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata
+
+  - id: phys_org_astronomy_rss
+    name: Phys.org Astronomy News RSS
+    type: rss
+    url: https://phys.org/rss-feed/space-news/astronomy/
+    categories:
+      - astronomy_news
+      - astrophysics
+      - space_science
+      - science_news
+    trust_level: science_news_feed
+    enabled: true
+    max_items: 5
+    description: Phys.org astronomy news feed for space science, astrophysics, and astronomy reporting.
+    region: Global
+    languages:
+      - en
+    source_type_label: RSS feed
+    update_cadence: Continuous
+    ingestion_notes: Use RSS metadata and links only unless publisher terms permit broader reuse.
+    ai_safe_fit: B - terms-check/variable
+    ingestion_mode: feed_metadata

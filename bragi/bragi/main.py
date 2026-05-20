@@ -2235,6 +2235,8 @@ def normalize_match_text(value: str) -> str:
 SOURCE_CATALOG_STOPWORDS = {
     "about",
     "all",
+    "am",
+    "and",
     "approved",
     "available",
     "be",
@@ -2248,6 +2250,7 @@ SOURCE_CATALOG_STOPWORDS = {
     "daily",
     "digest",
     "do",
+    "draft",
     "feed",
     "feeds",
     "for",
@@ -2274,14 +2277,36 @@ SOURCE_CATALOG_STOPWORDS = {
     "the",
     "there",
     "top",
+    "topic",
+    "topics",
     "trusted",
+    "weekday",
+    "weekdays",
     "use",
     "using",
     "what",
     "which",
     "well",
     "with",
+    "und",
     "you",
+}
+
+SOURCE_CATALOG_BROAD_TERMS = {
+    "current",
+    "daily",
+    "data",
+    "global",
+    "international",
+    "latest",
+    "metadata",
+    "news",
+    "official",
+    "public",
+    "research",
+    "science",
+    "sources",
+    "updates",
 }
 
 
@@ -2522,6 +2547,26 @@ def source_catalog_terms_from_text(text: str) -> list[str]:
     return terms[:10]
 
 
+def source_catalog_specific_terms(terms: list[str]) -> list[str]:
+    specific: list[str] = []
+    for term in terms:
+        normalized = normalize_match_text(term)
+        if not normalized:
+            continue
+        words = [word for word in normalized.split() if len(word) >= 3]
+        if not words:
+            continue
+        if len(words) == 1 and words[0] in SOURCE_CATALOG_BROAD_TERMS:
+            continue
+        if all(word in SOURCE_CATALOG_BROAD_TERMS for word in words):
+            continue
+        if len(words) > 4:
+            continue
+        if normalized not in specific:
+            specific.append(normalized)
+    return specific[:6]
+
+
 def strip_intake_reference(text: str) -> str:
     cleaned = re.sub(
         r"\b(?:for\s+)?intake\s+bragi_intake_[a-z0-9_]{8,64}\b",
@@ -2535,10 +2580,12 @@ def strip_intake_reference(text: str) -> str:
 
 def source_catalog_matches(text: str, sources: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
     terms = source_catalog_terms_from_text(text)
+    specific_terms = source_catalog_specific_terms(terms)
     lowered = text.lower()
     scored: list[dict[str, Any]] = []
     for source in sources:
         score = 0
+        specific_score = 0
         rich_haystack = normalize_match_text(
             " ".join(
                 str(source.get(key) or "")
@@ -2560,12 +2607,20 @@ def source_catalog_matches(text: str, sources: list[dict[str, Any]], *, limit: i
                 score += 120
             if normalized_term and normalized_term in category_haystack:
                 score += 40
+        for term in specific_terms:
+            specific_score = max(specific_score, score_source_match(term, source))
+        if specific_terms and specific_score < 80:
+            continue
+        if specific_score >= 80:
+            score += specific_score * 2
         if "official" in lowered and source_is_official(source):
             score += 120
         if re.search(r"\b(metadata|licensed|snippet|link)\b", lowered) and source_is_metadata_only(source):
             score += 120
         if re.search(r"\b(open|high[- ]fit|public[- ]domain)\b", lowered) and source_fit_value(source).lower().startswith("a"):
             score += 120
+        if source.get("type") == "rss":
+            score += 35
         if terms and score < 80:
             continue
         scored.append({"score": score, "source": source})
@@ -3545,7 +3600,7 @@ def title_from_topic(topic: str) -> str:
 
 
 def include_terms_from_text(text: str) -> list[str]:
-    topic = topic_from_text(text)
+    topic = topic_from_text(strip_intake_reference(text))
     if not topic:
         return []
     words = [word.strip(" .,-") for word in re.split(r"\band\b|,|/", topic, flags=re.IGNORECASE)]
@@ -3593,27 +3648,28 @@ def clean_subject_term(value: str) -> str:
 def merge_intent_slots(intent: dict[str, Any], user_text: str) -> dict[str, Any]:
     merged = json.loads(json.dumps(intent))
     slots = merged.setdefault("slots", {})
+    slot_text = strip_intake_reference(user_text)
     if not slots.get("cron"):
-        slots["cron"] = schedule_cron(user_text, default="")
-    if not slots.get("timezone") and "berlin" in user_text.lower():
+        slots["cron"] = schedule_cron(slot_text, default="")
+    if not slots.get("timezone") and "berlin" in slot_text.lower():
         slots["timezone"] = "Europe/Berlin"
     if not slots.get("output_target"):
-        lowered = user_text.lower()
+        lowered = slot_text.lower()
         if "alerts" in lowered:
             slots["output_target"] = "alerts"
         elif "briefings" in lowered or "discord" in lowered:
             slots["output_target"] = "briefings"
     if merged.get("capability_id") == "topic_digest.v1":
         if not slots.get("source_ids"):
-            slots["source_ids"] = source_ids_from_text(user_text)
-        topic = topic_from_text(user_text) or user_text.strip()
+            slots["source_ids"] = source_ids_from_text(slot_text)
+        topic = topic_from_text(slot_text) or slot_text.strip()
         if not slots.get("name"):
             slots["name"] = title_from_topic(topic)
         if not slots.get("task_id"):
             slots["task_id"] = slug(topic, "topic_digest")
-        if not slots.get("include"):
-            slots["include"] = include_terms_from_text(user_text)
-        parsed_max_items = max_items_from_text(user_text)
+        if not slots.get("include") and not collecting_source_selection_requested(user_text):
+            slots["include"] = include_terms_from_text(slot_text)
+        parsed_max_items = max_items_from_text(slot_text)
         if parsed_max_items is not None:
             slots["max_items"] = parsed_max_items
     if merged.get("capability_id") == "server_health.v1" and not slots.get("check_ids"):

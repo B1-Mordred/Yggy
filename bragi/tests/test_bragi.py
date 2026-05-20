@@ -382,6 +382,48 @@ def source_catalog_fixture(method, path, payload=None):
                     "source_type_label": "Official news",
                 },
                 {
+                    "id": "nasa_news_rss",
+                    "name": "NASA News RSS",
+                    "type": "rss",
+                    "enabled": True,
+                    "categories": ["preapproved", "astronomy_news", "astrophysics", "space_science", "official_space_agency"],
+                    "trust_level": "official_government_feed",
+                    "ai_safe_fit": "A - high-fit/open",
+                    "ingestion_mode": "feed_metadata",
+                    "description": "Official NASA RSS feed for astronomy and spaceflight updates.",
+                    "region": "United States/Global",
+                    "languages": ["en"],
+                    "source_type_label": "RSS feed",
+                },
+                {
+                    "id": "esa_space_science_rss",
+                    "name": "ESA Space Science RSS",
+                    "type": "rss",
+                    "enabled": True,
+                    "categories": ["preapproved", "astronomy_news", "astrophysics", "space_science", "official_space_agency"],
+                    "trust_level": "official_space_agency_feed",
+                    "ai_safe_fit": "B - terms-check/variable",
+                    "ingestion_mode": "feed_metadata",
+                    "description": "European Space Agency feed for space science and exploration.",
+                    "region": "Europe/Global",
+                    "languages": ["en"],
+                    "source_type_label": "RSS feed",
+                },
+                {
+                    "id": "arxiv_astro_ph_rss",
+                    "name": "arXiv astro-ph RSS",
+                    "type": "rss",
+                    "enabled": True,
+                    "categories": ["preapproved", "research_science", "preprints", "astronomy_news", "astrophysics"],
+                    "trust_level": "research_preprint_feed",
+                    "ai_safe_fit": "B - terms-check/variable",
+                    "ingestion_mode": "feed_metadata",
+                    "description": "arXiv astronomy and astrophysics preprint feed.",
+                    "region": "Global",
+                    "languages": ["en"],
+                    "source_type_label": "RSS feed",
+                },
+                {
                     "id": "nasa_ads",
                     "name": "NASA ADS",
                     "type": "http",
@@ -495,6 +537,25 @@ def test_source_catalog_search_marks_metadata_only_sources(monkeypatch):
     assert "Metadata/link-only source" in answer
 
 
+def test_source_catalog_prefers_specific_astronomy_sources(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat([{"role": "user", "content": "show sources for astronomy and astrophysics science"}])
+
+    assert calls == [("GET", "/sources", None)]
+    assert "`nasa_news_rss`" in answer
+    assert "`esa_space_science_rss`" in answer
+    assert "`arxiv_astro_ph_rss`" in answer
+    assert "`handelsblatt`" not in answer
+    assert "`science_media_center_germany`" not in answer
+
+
 def test_source_proposal_request_creates_pending_review_without_nonce(monkeypatch):
     calls = []
 
@@ -597,6 +658,37 @@ def test_source_selection_intake_can_be_updated_by_number(monkeypatch):
     assert f"confirm intake {intake_id}" in updated
     stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
     assert stored["status"] == "awaiting_confirmation"
+
+
+def test_collecting_topic_digest_source_selection_uses_original_topic(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return source_catalog_fixture(method, path, payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat(
+        [{"role": "user", "content": "create a new daily brief to be sent 7.30 am: top astronomy and astrophysics news. 12 items"}]
+    )
+    intake_id = bragi.intake_id_from_text(answer)
+
+    assert intake_id is not None
+
+    updated = bragi.route_chat(
+        [{"role": "user", "content": f"use all sources about science for intake {intake_id}"}]
+    )
+
+    assert "`nasa_news_rss`" in updated
+    assert "`esa_space_science_rss`" in updated
+    assert "`arxiv_astro_ph_rss`" in updated
+    assert "`handelsblatt`" not in updated
+    stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
+    assert stored["status"] == "awaiting_source_selection"
+    slots = stored["intent"]["slots"]
+    assert "source_ids" in slots
+    assert slots["include"] == ["astronomy", "astrophysics"]
 
 
 def test_source_selection_rejects_out_of_range_numbers(monkeypatch):
@@ -1314,7 +1406,7 @@ def test_missing_source_slot_uses_registry_search_for_vague_source_request(monke
     assert calls[-1][0:2] == ("GET", "/sources")
     assert "I found approved sources" in followup
     assert "awaiting_source_selection" in followup
-    assert "`nasa_news`" in followup
+    assert "`nasa_news_rss`" in followup
     assert "`nasa_ads`" in followup
     assert "Canonical intent awaiting details" not in followup
     stored = intake_store.get_intake(intake_id=intake_id, user_id="local_user")
@@ -1330,7 +1422,7 @@ def test_missing_source_slot_uses_registry_search_for_vague_source_request(monke
     assert final_intent["slots"]["max_items"] == 12
     assert final_intent["slots"]["task_id"] == "astronomy_and_astrophysics"
     assert "nasa_ads" in final_intent["slots"]["source_ids"]
-    assert "nasa_news" in final_intent["slots"]["source_ids"]
+    assert "nasa_news_rss" in final_intent["slots"]["source_ids"]
     assert "Canonical intent pending confirmation" in confirmed
 
 

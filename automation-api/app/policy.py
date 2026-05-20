@@ -4,6 +4,7 @@ import csv
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -236,8 +237,21 @@ def source_rows_from_tsv(path: Path) -> list[dict[str, Any]]:
 
 
 def source_config_type(source_type_label: str, url: str) -> str:
-    haystack = f"{source_type_label} {url}".lower()
-    if "rss" in haystack or "feed" in haystack or url.endswith((".rss", ".rdf", ".xml")):
+    label = source_type_label.lower()
+    parsed = urlparse(url.strip())
+    path = parsed.path.lower()
+    host = parsed.netloc.lower()
+    if "directory" in label or "angebot" in label or "guide" in label:
+        return "http"
+    if re.search(r"\b(rss|atom)\b", label):
+        return "rss"
+    if re.search(r"\bfeed\b", label):
+        return "rss"
+    if path.endswith((".rss", ".rdf", ".xml", ".atom")):
+        return "rss"
+    if re.search(r"/(?:feed|feeds|rss|rdf|atom)(?:/|$|-)", path):
+        return "rss"
+    if host.startswith("rss.") or ".rss." in host:
         return "rss"
     return "http"
 

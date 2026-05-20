@@ -229,3 +229,12 @@ def test_topic_digest_optional_n8n_webhook_rejects_unapproved_path(client):
     response = client.post("/tasks/draft", headers=TOOL_HEADERS, json=task)
     assert response.status_code == 422
     assert "does not match the configured webhook path" in response.text
+
+
+def test_preapproved_source_type_detection_avoids_feed_substrings():
+    from app.policy import source_config_type
+
+    assert source_config_type("Fact-checking", "https://sciencefeedback.co/") == "http"
+    assert source_config_type("News feed directory", "https://www.deutschlandfunk.de/rss-angebot-102.html") == "http"
+    assert source_config_type("RSS feed", "https://www.nasa.gov/feed/") == "rss"
+    assert source_config_type("News feed", "https://rss.dw.com/rdf/rss-en-all") == "rss"

@@ -1,0 +1,89 @@
+id: astronomy_and_astrophysics
+name: Astronomy And Astrophysics Digest
+type: topic_digest
+enabled: true
+owner: local_user
+created_by: bragi
+
+trigger:
+  kind: schedule
+  cron: "30 7 * * *"
+  timezone: Europe/Berlin
+
+sources:
+  - source_id: nasa_news_rss
+    type: rss
+    url: https://www.nasa.gov/feed/
+  - source_id: esa_space_science_rss
+    type: rss
+    url: https://www.esa.int/rssfeed/Science_Exploration/Space_Science
+  - source_id: phys_org_astronomy_rss
+    type: rss
+    url: https://phys.org/rss-feed/space-news/astronomy/
+  - source_id: arxiv_astro_ph_rss
+    type: rss
+    url: https://export.arxiv.org/rss/astro-ph
+  - source_id: nasa_ads
+    type: http
+    url: https://ui.adsabs.harvard.edu/
+
+filters:
+  include:
+    - astronomy
+    - astrophysics
+    - space science
+    - cosmology
+    - exoplanet
+    - telescope
+    - galaxy
+    - black hole
+    - NASA
+    - ESA
+    - arXiv
+  exclude:
+    - sponsored
+    - rumor
+
+output:
+  channel: discord
+  target: briefings
+  format: "top astronomy and astrophysics news, 12 items, concise summary, source links"
+
+policy:
+  approval_level: L1_NOTIFY_ONLY
+  max_items: 12
+  require_sources: true
+  max_runs_per_hour: 3
+  max_runs_per_day: 10
+  min_seconds_between_runs: 300
+  allow_external_side_effects: false
+  allow_shell: false
+  allow_docker_socket: false
+  allow_filesystem_write: false
+
+runtime:
+  dry_run: false
+  timeout_seconds: 120
+  retry_count: 1
+  llm_summary_enabled: false
+
+quality:
+  enabled: true
+  min_items: 1
+  min_successful_sources: 3
+  alert_on_source_errors: true
+  alert_on_empty_sections: false
+  alert_on_delivery_failure: true
+  alert_target: alerts
+
+notifications:
+  on_success: true
+  on_failure: true
+  on_empty_result: false
+  quiet_hours:
+    enabled: true
+    start: "22:00"
+    end: "07:00"
+    timezone: Europe/Berlin
+  collapse_repeated_failures: true
+  failure_collapse_window_minutes: 360

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from worker.handlers.topic_digest import run_topic_digest
-from worker.source_registry import ApprovedSource, SourceRegistry
+from worker.source_registry import ApprovedSource, SourceRegistry, source_config_type
 
 
 class FakeSummarizer:
@@ -19,6 +19,13 @@ class FakeSummarizer:
 
 def registry(*sources: ApprovedSource) -> SourceRegistry:
     return SourceRegistry(list(sources))
+
+
+def test_preapproved_source_type_detection_avoids_feed_substrings():
+    assert source_config_type("Fact-checking", "https://sciencefeedback.co/") == "http"
+    assert source_config_type("News feed directory", "https://www.deutschlandfunk.de/rss-angebot-102.html") == "http"
+    assert source_config_type("RSS feed", "https://www.nasa.gov/feed/") == "rss"
+    assert source_config_type("News feed", "https://rss.dw.com/rdf/rss-en-all") == "rss"
 
 
 def rss_source(**overrides) -> ApprovedSource:
