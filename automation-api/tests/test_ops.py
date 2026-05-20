@@ -98,6 +98,9 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "approval-filter-q" in allowed.text
     assert "task-detail" in allowed.text
     assert "data-task-detail-id" in allowed.text
+    assert "Status Control" in allowed.text
+    assert "data-task-status-select" in allowed.text
+    assert "data-task-status-apply" in allowed.text
     assert "data-task-archive" in allowed.text
     assert "data-task-version-revert" in allowed.text
     assert "task-filter-text" in allowed.text

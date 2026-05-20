@@ -2206,6 +2206,11 @@ DASHBOARD_HTML = f"""<!doctype html>
     .state-actions {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }}
     .state-actions button {{ padding: 6px 9px; }}
     .state-actions button:disabled {{ cursor: not-allowed; opacity: 0.55; }}
+    .status-control {{ display: grid; gap: 8px; }}
+    .status-control-row {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
+    .status-control-row select {{ min-width: 190px; }}
+    .status-control-row button {{ padding: 7px 10px; }}
+    .status-control-row button:disabled {{ cursor: not-allowed; opacity: 0.55; }}
     .version-actions {{ margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }}
     .version-actions button {{ padding: 6px 9px; }}
     .version-actions button:disabled {{ cursor: not-allowed; opacity: 0.55; }}
@@ -2948,6 +2953,21 @@ DASHBOARD_HTML = f"""<!doctype html>
         button.addEventListener('click', () => setTaskState(button));
       }});
     }}
+    function wireTaskStatusControls() {{
+      document.querySelectorAll('[data-task-status-apply]').forEach(button => {{
+        button.addEventListener('click', () => setTaskStatusFromControl(button));
+      }});
+      document.querySelectorAll('[data-task-status-select]').forEach(select => {{
+        const button = document.querySelector(`[data-task-status-apply][data-task-id="${{CSS.escape(select.dataset.taskId)}}"]`);
+        const update = () => {{
+          if (!button) return;
+          const selected = select.options[select.selectedIndex];
+          button.disabled = !select.value || Boolean(selected?.disabled);
+        }};
+        select.addEventListener('change', update);
+        update();
+      }});
+    }}
     function wireTaskArchiveButtons() {{
       document.querySelectorAll('[data-task-archive]').forEach(button => {{
         button.addEventListener('click', () => archiveTask(button));
@@ -3028,6 +3048,15 @@ DASHBOARD_HTML = f"""<!doctype html>
       }} finally {{
         button.disabled = false;
       }}
+    }}
+    async function setTaskStatusFromControl(button) {{
+      const taskId = button.dataset.taskId;
+      const select = document.querySelector(`[data-task-status-select][data-task-id="${{CSS.escape(taskId)}}"]`);
+      if (!select || !select.value) return;
+      const selected = select.options[select.selectedIndex];
+      if (selected?.disabled) return;
+      button.dataset.stateAction = select.value;
+      await setTaskState(button);
     }}
     async function archiveTask(button) {{
       const taskId = button.dataset.taskId;
@@ -3142,6 +3171,28 @@ DASHBOARD_HTML = f"""<!doctype html>
       const item = action || {{}};
       return `<div>${{statusLabel(item.allowed === true, label)}}<br><span class="meta">${{esc(item.reason || 'n/a')}}</span></div>`;
     }}
+    function taskStatusControl(task, actions) {{
+      const pause = actions.pause || {{}};
+      const resume = actions.resume || {{}};
+      const current = task.enabled ? 'enabled' : (task.status || 'disabled');
+      const selectedPause = !task.enabled && task.status === 'paused' ? ' selected' : '';
+      const selectedResume = task.enabled ? ' selected' : '';
+      return `<div class="status-control">
+        <div>${{statusLabel(task.enabled, task.enabled ? 'enabled' : 'disabled')}} <span class="meta">stored status ${{esc(task.status)}}</span></div>
+        <div class="status-control-row">
+          <label for="task-status-${{esc(task.id)}}">Change status</label>
+          <select id="task-status-${{esc(task.id)}}" data-task-status-select="true" data-task-id="${{esc(task.id)}}" aria-label="Change status for ${{esc(task.id)}}">
+            <option value="">Choose action</option>
+            <option value="resume"${{selectedResume}}${{resume.allowed ? '' : ' disabled'}}>Enable / resume</option>
+            <option value="pause"${{selectedPause}}${{pause.allowed ? '' : ' disabled'}}>Pause / disable</option>
+          </select>
+          <button type="button" data-task-status-apply="true" data-task-id="${{esc(task.id)}}" disabled>Apply</button>
+        </div>
+        <div class="meta">Enable/resume: ${{esc(resume.reason || 'n/a')}}</div>
+        <div class="meta">Pause/disable: ${{esc(pause.reason || 'n/a')}}</div>
+        ${{current === 'pending_approval' ? '<div class="meta">Pending approval tasks must be approved before they can be enabled.</div>' : ''}}
+      </div>`;
+    }}
     function approvalHistory(approvals) {{
       return approvals && approvals.length ? approvals.map(approval => `
         <div>
@@ -3216,6 +3267,10 @@ DASHBOARD_HTML = f"""<!doctype html>
             </div>
           </div>
           <div class="detail-block">
+            <h3>Status Control</h3>
+            ${{taskStatusControl(task, actions)}}
+          </div>
+          <div class="detail-block">
             <h3>Task Summary</h3>
             <div><strong>${{esc(task.name)}}</strong></div>
             <div class="meta">type ${{esc(task.type)}}; dry run ${{esc(task.dry_run)}}</div>
@@ -3248,6 +3303,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       wireTaskVersionRevertButtons();
       wireTaskTimelineButtons();
       wireTaskArchiveButtons();
+      wireTaskStatusControls();
     }}
     async function loadTaskDetail(taskId) {{
       selectedTaskId = taskId;
