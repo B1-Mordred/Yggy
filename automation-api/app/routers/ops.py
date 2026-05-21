@@ -55,6 +55,12 @@ from app.services.capability_proposal_service import (
     implementation_plan_for_proposal,
     mark_implementation_plan_status,
 )
+from app.services.capability_implementation_service import (
+    CapabilityImplementationError,
+    create_implementation_run,
+    implementation_run_to_dict,
+    list_implementation_runs,
+)
 from app.services.source_proposal_service import (
     SourceProposalError,
     apply_source_proposal,
@@ -73,6 +79,7 @@ OPS_TASK_ARCHIVE_ACTION_HEADER = "task-archive"
 OPS_VERSION_REVERT_ACTION_HEADER = "version-revert"
 OPS_TASK_CHANGE_ACTION_HEADER = "task-change-proposal"
 OPS_CAPABILITY_PROPOSAL_ACTION_HEADER = "capability-proposal"
+OPS_CAPABILITY_IMPLEMENTATION_ACTION_HEADER = "capability-implementation"
 OPS_SOURCE_PROPOSAL_ACTION_HEADER = "source-proposal"
 MAX_RUN_DETAIL_ITEMS = 10
 MAX_RUN_DETAIL_ERRORS = 10
@@ -119,6 +126,10 @@ class OpsTaskVersionRevertRequest(BaseModel):
 
 
 class OpsCapabilityProposalDecision(BaseModel):
+    reason: str = Field(default="", max_length=1000)
+
+
+class OpsCapabilityImplementationRequest(BaseModel):
     reason: str = Field(default="", max_length=1000)
 
 
@@ -202,6 +213,13 @@ def require_ops_capability_proposal_action_header(
 ) -> None:
     if x_yggy_ops_action != OPS_CAPABILITY_PROPOSAL_ACTION_HEADER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops capability proposal action header")
+
+
+def require_ops_capability_implementation_action_header(
+    x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
+) -> None:
+    if x_yggy_ops_action != OPS_CAPABILITY_IMPLEMENTATION_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops capability implementation action header")
 
 
 def require_ops_source_proposal_action_header(
@@ -674,6 +692,39 @@ def ops_capability_proposal_detail(
     return _capability_proposal_summary(session, proposal)
 
 
+@router.post("/ops/capability-proposals/{proposal_id}/implement", include_in_schema=False)
+def ops_queue_capability_implementation(
+    proposal_id: str,
+    payload: OpsCapabilityImplementationRequest | None = None,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_capability_implementation_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(CapabilityProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="capability proposal not found")
+    reason = payload.reason if payload else ""
+    try:
+        run = create_implementation_run(session, proposal, created_by="ops_dashboard", reason=reason)
+    except CapabilityImplementationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    audit_event(
+        session,
+        "ops_dashboard",
+        "capability_implementation.queued",
+        "capability_implementation_run",
+        run.id,
+        {
+            "proposal_id": run.proposal_id,
+            "capability_id": run.capability_id,
+            "branch": run.branch,
+            "surface": "ops_ui",
+        },
+    )
+    session.commit()
+    return implementation_run_to_dict(run)
+
+
 @router.post("/ops/capability-proposals/{proposal_id}/{decision}", include_in_schema=False)
 def ops_decide_capability_proposal(
     proposal_id: str,
@@ -736,6 +787,22 @@ def ops_decide_capability_proposal(
     )
     session.commit()
     return _capability_proposal_summary(session, proposal)
+
+
+@router.get("/ops/capability-implementation-runs", include_in_schema=False)
+def ops_capability_implementation_runs(
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+    proposal_id: str | None = Query(default=None, min_length=1, max_length=64),
+    status_filter: str | None = Query(default=None, alias="status", min_length=1, max_length=32),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    runs = list_implementation_runs(session, proposal_id=proposal_id, status=status_filter, limit=limit)
+    return {
+        "generated_at": utcnow(),
+        "count": len(runs),
+        "runs": [implementation_run_to_dict(run) for run in runs],
+    }
 
 
 @router.get("/ops/source-proposals", include_in_schema=False)
@@ -1405,6 +1472,10 @@ def _capability_proposal_summary(session: Session, proposal: CapabilityProposalM
         proposal,
         implementation_plan=implementation_plan_for_proposal(session, proposal.id),
     )
+    payload["implementation_runs"] = [
+        implementation_run_to_dict(run)
+        for run in list_implementation_runs(session, proposal_id=proposal.id, limit=5)
+    ]
     return _bounded_value(
         redact_secrets(payload),
         max_depth=MAX_AUDIT_DETAIL_DEPTH,
@@ -3698,6 +3769,18 @@ DASHBOARD_HTML = f"""<!doctype html>
         <div><strong>Acceptance tests</strong>${{itemList(plan.acceptance_tests)}}</div>
       </details>`;
     }}
+    function implementationRunBlock(runs) {{
+      if (!Array.isArray(runs) || !runs.length) return '';
+      return `<details>
+        <summary>Local implementation runs <span class="pill">${{runs.length}}</span></summary>
+        ${{runs.map(run => `<div class="meta">
+          <code>${{esc(run.id)}}</code> <span class="pill">${{esc(run.status)}}</span>
+          branch <code>${{esc(run.branch || '')}}</code>
+          ${{run.commit_sha ? ` commit <code>${{esc(run.commit_sha)}}</code>` : ''}}
+          <br>CLI: <code>${{esc(run.operator_handoff?.cli_command || '')}}</code>
+        </div>`).join('')}}
+      </details>`;
+    }}
     function capabilityProposalCards(proposals, emptyText) {{
       return proposals.length ? proposals.map(item => {{
         const pending = item.status === 'pending';
@@ -3722,6 +3805,7 @@ DASHBOARD_HTML = f"""<!doctype html>
           <div><strong>Required inputs</strong>${{itemList(item.required_inputs)}}</div>
           <div><strong>Safety rules</strong>${{itemList(item.safety_rules)}}</div>
           ${{item.implementation_plan ? `<div>${{implementationPlanBlock(item.implementation_plan)}}</div>` : ''}}
+          ${{implementationRunBlock(item.implementation_runs)}}
           <div><strong>Execution boundary</strong><br>
             <span class="meta">creates task: ${{esc(item.execution?.creates_task)}}; creates approval: ${{esc(item.execution?.creates_approval)}}; can be applied: ${{esc(item.execution?.can_be_applied)}}</span>
           </div>
@@ -3732,6 +3816,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             ${{pending ? `<button type="button" data-capability-action="close" data-capability-id="${{esc(item.id)}}">Close</button>` : ''}}
             ${{accepted ? `<button type="button" data-capability-action="plan" data-capability-id="${{esc(item.id)}}">Plan implementation</button>` : ''}}
             ${{accepted ? `<button type="button" data-capability-action="close" data-capability-id="${{esc(item.id)}}">Close</button>` : ''}}
+            ${{planned ? `<button type="button" data-capability-implement="${{esc(item.id)}}" title="Queue a host-side CLI handoff; the API does not execute code">Queue local implementation</button>` : ''}}
             ${{planned ? `<button type="button" data-capability-action="implemented" data-capability-id="${{esc(item.id)}}" title="Requires the capability to be registered first">Mark implemented</button>` : ''}}
             ${{planned ? `<button type="button" class="danger" data-capability-action="supersede" data-capability-id="${{esc(item.id)}}">Supersede</button>` : ''}}
             <button type="button" data-capability-detail-id="${{esc(item.id)}}">Details</button>
@@ -3745,13 +3830,16 @@ DASHBOARD_HTML = f"""<!doctype html>
       container.querySelectorAll('[data-capability-action]').forEach(button => {{
         button.addEventListener('click', () => decideCapabilityProposal(button));
       }});
+      container.querySelectorAll('[data-capability-implement]').forEach(button => {{
+        button.addEventListener('click', () => queueCapabilityImplementation(button));
+      }});
       container.querySelectorAll('[data-capability-detail-id]').forEach(button => {{
         button.addEventListener('click', () => loadCapabilityProposalDetail(button));
       }});
     }}
     function renderCapabilityProposals(proposals) {{
       const container = document.getElementById('capabilities');
-      container.innerHTML = '<div class="meta">Capability proposals are implementation backlog only. Accepting one records operator interest; it does not create a task, approval, run, or executable Yggdrasil request.</div>'
+      container.innerHTML = '<div class="meta">Capability proposals are implementation backlog only. Accepting one records operator interest; it does not create a task, approval, run, or executable Yggdrasil request. Planned proposals can be queued for the host-side implementation CLI; the dashboard records the handoff but does not execute code.</div>'
         + capabilityProposalCards(proposals, 'No capability proposals match the current filters.');
       wireCapabilityProposalButtons(container);
     }}
@@ -4134,6 +4222,35 @@ DASHBOARD_HTML = f"""<!doctype html>
           throw new Error(error.detail || `status ${{response.status}}`);
         }}
         await refresh();
+      }} catch (error) {{
+        message.textContent = error.message;
+        message.className = 'meta approval-message bad';
+      }} finally {{
+        button.disabled = false;
+      }}
+    }}
+    async function queueCapabilityImplementation(button) {{
+      const proposalId = button.dataset.capabilityImplement;
+      const panel = button.closest('.approval');
+      const message = panel.querySelector('.approval-message');
+      const input = panel.querySelector('input');
+      const reason = input?.value || '';
+      button.disabled = true;
+      message.textContent = 'queueing local implementation handoff...';
+      message.className = 'meta approval-message';
+      try {{
+        const response = await fetch(`/ops/capability-proposals/${{encodeURIComponent(proposalId)}}/implement`, {{
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {{'Content-Type': 'application/json', 'X-Yggy-Ops-Action': 'capability-implementation'}},
+          body: JSON.stringify({{reason}}),
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const run = await response.json();
+        message.textContent = `Queued local implementation run ${{run.id}}. Host CLI: ${{run.operator_handoff?.cli_command || 'scripts/implement_capability_plan.py'}}`;
       }} catch (error) {{
         message.textContent = error.message;
         message.className = 'meta approval-message bad';

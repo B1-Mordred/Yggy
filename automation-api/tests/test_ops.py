@@ -94,6 +94,8 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "data-source-detail-id" in allowed.text
     assert "pending_sources" in allowed.text
     assert "Plan implementation" in allowed.text
+    assert "Queue local implementation" in allowed.text
+    assert "capability-implementation" in allowed.text
     assert "implementation_planned" in allowed.text
     assert "approval-filter-q" in allowed.text
     assert "task-detail" in allowed.text
@@ -521,6 +523,56 @@ def test_ops_can_plan_and_supersede_accepted_capability_proposal(client):
             "capability.implementation_planned",
             "capability.superseded",
         ]
+
+
+def test_ops_can_queue_capability_implementation_handoff_with_action_header(client):
+    proposal = client.post(
+        "/capability-proposals/draft",
+        headers=TOOL_HEADERS,
+        json=capability_proposal_payload(),
+    ).json()
+    client.post(f"/capability-proposals/{proposal['id']}/accept", headers=ADMIN_HEADERS)
+    planned = client.post(
+        f"/ops/capability-proposals/{proposal['id']}/plan",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-proposal"},
+        json={"reason": "Plan implementation."},
+    ).json()
+
+    missing_header = client.post(
+        f"/ops/capability-proposals/{proposal['id']}/implement",
+        headers=ADMIN_HEADERS,
+        json={"reason": "Run local implementation."},
+    )
+    queued = client.post(
+        f"/ops/capability-proposals/{proposal['id']}/implement",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-implementation"},
+        json={"reason": "Run local implementation."},
+    )
+    runs = client.get(
+        f"/ops/capability-implementation-runs?proposal_id={proposal['id']}",
+        headers=ADMIN_HEADERS,
+    )
+
+    assert missing_header.status_code == 403
+    assert queued.status_code == 200
+    body = queued.json()
+    assert body["status"] == "queued"
+    assert body["proposal_id"] == proposal["id"]
+    assert body["plan_id"] == planned["implementation_plan"]["id"]
+    assert body["execution"]["creates_task"] is False
+    assert body["execution"]["creates_approval"] is False
+    assert body["execution"]["can_run_automation"] is False
+    assert body["execution"]["can_push"] is False
+    assert runs.status_code == 200
+    assert runs.json()["runs"][0]["id"] == body["id"]
+    with Session(get_engine()) as session:
+        audits = (
+            session.query(AuditEventModel)
+            .filter(AuditEventModel.resource_type == "capability_implementation_run")
+            .order_by(AuditEventModel.created_at)
+            .all()
+        )
+        assert [audit.action for audit in audits] == ["capability_implementation.queued"]
 
 
 def test_ops_can_approve_and_apply_task_change_proposal_with_action_header(client):

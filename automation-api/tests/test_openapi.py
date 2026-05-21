@@ -11,6 +11,8 @@ def test_openapi_schema_is_generated(client):
     assert "/capabilities/prepare-yggdrasil-request" in data["paths"]
     assert "/capability-proposals/draft" in data["paths"]
     assert "/capability-proposals/{proposal_id}/close" in data["paths"]
+    assert "/capability-implementation-runs" not in data["paths"]
+    assert "/capability-implementation-runs/{run_id}" not in data["paths"]
     assert "/channels/events" in data["paths"]
     assert "/channels/events/{event_id}" in data["paths"]
     assert "/sources" in data["paths"]

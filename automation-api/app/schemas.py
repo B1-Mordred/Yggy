@@ -592,6 +592,45 @@ class CapabilityProposalClose(BaseModel):
     reason: str = Field(default="", max_length=1000)
 
 
+class CapabilityImplementationRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(default="", max_length=1000)
+    created_by: str = Field(default="local_cli", min_length=1, max_length=128)
+
+
+class CapabilityImplementationRunUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["queued", "running", "completed", "failed"] | None = None
+    branch: str | None = Field(default=None, max_length=255)
+    commit_sha: str | None = Field(default=None, max_length=64)
+    summary: str | None = Field(default=None, max_length=4000)
+    test_results: dict[str, Any] | None = None
+    error: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("branch")
+    @classmethod
+    def branch_must_be_plain(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        cleaned = value.strip()
+        if cleaned and not re.match(r"^[A-Za-z0-9._/\-]+$", cleaned):
+            raise ValueError("branch contains unsupported characters")
+        return cleaned
+
+    @field_validator("commit_sha")
+    @classmethod
+    def commit_sha_must_be_hex(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        cleaned = value.strip()
+        if cleaned and not re.match(r"^[0-9a-fA-F]{7,64}$", cleaned):
+            raise ValueError("commit_sha must be a git commit hash")
+        return cleaned
+
+
 class TopicConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

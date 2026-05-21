@@ -546,6 +546,24 @@ Yggdrasil to do anything. A planned capability can be marked `superseded`, or
 marked `implemented` only after the capability is actually present in the
 registered capability catalog.
 
+Planned capability proposals can also be queued for local implementation from
+the same `/ops` view. The **Queue local implementation** button records a
+`capability_implementation_run` handoff and requires
+`X-Yggy-Ops-Action: capability-implementation`. It does not execute code from
+the API container. The API container remains read-only and has no repo mount,
+Docker socket, or host shell authority. The operator must run the host-side CLI
+if they want Hermes to prepare repository changes:
+
+```bash
+python scripts/implement_capability_plan.py --proposal-id <proposal-id>
+```
+
+The CLI generates a bounded Hermes goal-style prompt, invokes the dedicated
+`capability-implementer` profile with a scrubbed environment, reruns validation,
+and creates a local git commit only after tests pass. It does not push, deploy,
+restart services, create tasks, approve anything, or run automations. See
+`docs/CAPABILITY_IMPLEMENTATION_AGENT.md` for the full operator model.
+
 Bragi can also create approved-source proposals through `POST /sources/propose`
 when the user explicitly asks to register one public RSS/feed or website URL.
 Tool-created source proposals do not return the approval nonce. Operators can

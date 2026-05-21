@@ -112,6 +112,10 @@ The automation API exposes these as guarded OpenAPI endpoints under
 For the natural Bragi layer and strict Heimdal capability gateway, see
 [docs/BRAGI_HEIMDAL_INTEGRATION.md](docs/BRAGI_HEIMDAL_INTEGRATION.md).
 
+For the bounded Hermes-assisted path from accepted capability proposal to local
+repo commit, see
+[docs/CAPABILITY_IMPLEMENTATION_AGENT.md](docs/CAPABILITY_IMPLEMENTATION_AGENT.md).
+
 For changing existing automations through reviewed diffs, see
 [docs/TASK_CHANGE_PROPOSALS.md](docs/TASK_CHANGE_PROPOSALS.md).
 

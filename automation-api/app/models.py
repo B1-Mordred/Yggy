@@ -154,6 +154,25 @@ class CapabilityImplementationPlanModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CapabilityImplementationRunModel(Base):
+    __tablename__ = "capability_implementation_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(String(64), ForeignKey("capability_proposals.id"), nullable=False, index=True)
+    plan_id: Mapped[str] = mapped_column(String(64), ForeignKey("capability_implementation_plans.id"), nullable=False, index=True)
+    capability_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False, index=True)
+    branch: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    commit_sha: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    test_results: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="ops_dashboard")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RunModel(Base):
     __tablename__ = "runs"
 
