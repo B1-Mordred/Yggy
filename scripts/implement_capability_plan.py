@@ -39,10 +39,13 @@ def parse_args() -> argparse.Namespace:
     target.add_argument("--run-id", help="Existing capability implementation run id to continue.")
     parser.add_argument("--base-url", default=os.getenv("AUTOMATION_API_BASE_URL", "http://127.0.0.1:8088"))
     parser.add_argument("--api-key-env", default="AUTOMATION_ADMIN_API_KEY")
-    parser.add_argument("--repo-root", type=Path, default=ROOT)
+    parser.add_argument("--repo-root", type=Path, default=Path(os.getenv("YGGY_IMPLEMENTATION_REPO_ROOT", str(ROOT))))
     parser.add_argument("--hermes-bin", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_BIN", DEFAULT_HERMES_BIN))
     parser.add_argument("--profile", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_PROFILE", DEFAULT_PROFILE))
     parser.add_argument("--model", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_MODEL", ""))
+    parser.add_argument("--hermes-user", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_USER", ""))
+    parser.add_argument("--hermes-home", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_HOME", "/srv/hermes/.hermes"))
+    parser.add_argument("--hermes-os-home", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_OS_HOME", "/srv/hermes"))
     parser.add_argument("--dry-run", action="store_true", help="Print the generated prompt and do not create/update runs.")
     parser.add_argument("--no-hermes", action="store_true", help="Create/update the run but only write the prompt file.")
     parser.add_argument("--no-commit", action="store_true", help="Leave validated changes uncommitted.")
@@ -79,6 +82,26 @@ def main() -> int:
         print(prompt)
         return 0
 
+    if args.no_hermes:
+        try:
+            if run is None:
+                run = create_or_reuse_run(args.base_url, api_key, proposal["id"])
+            prompt_path = write_prompt_file(prompt)
+            patch_run(
+                args.base_url,
+                api_key,
+                run["id"],
+                {
+                    "summary": f"Generated Hermes implementation prompt at {prompt_path}; Hermes was not invoked.",
+                    "branch": run.get("branch") or "",
+                },
+            )
+            print(json.dumps({"run_id": run["id"], "status": run["status"], "prompt_path": str(prompt_path)}, indent=2))
+            return 0
+        except RegistryError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+
     if args.allow_dirty and not args.no_commit:
         print("--allow-dirty is only permitted with --no-commit, to avoid mixing unrelated changes into the local commit.", file=sys.stderr)
         return 2
@@ -105,9 +128,6 @@ def main() -> int:
     try:
         switch_branch(repo_root, branch)
         prompt_path = write_prompt_file(prompt)
-        if args.no_hermes:
-            print(f"Wrote Hermes implementation prompt to {prompt_path}")
-            return 0
         run_hermes(args, repo_root, prompt)
         validation_results = run_validations(repo_root, args.validation_command or DEFAULT_VALIDATION_COMMANDS)
         changed = git_status(repo_root)
@@ -263,17 +283,22 @@ def run_hermes(args: argparse.Namespace, repo_root: Path, prompt: str) -> None:
     if not hermes_bin.exists():
         raise RuntimeError(f"Hermes binary not found: {hermes_bin}")
     env = {
-        "HOME": "/srv/hermes",
-        "HERMES_HOME": "/srv/hermes/.hermes",
+        "HOME": args.hermes_os_home,
+        "HERMES_HOME": args.hermes_home,
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "LANG": os.getenv("LANG", "C.UTF-8"),
         "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
     }
-    command = [str(hermes_bin), "-p", args.profile]
+    hermes_command = [str(hermes_bin), "-p", args.profile]
     if args.model:
-        command.extend(["-m", args.model])
-    command.extend(["-z", prompt])
-    subprocess.run(command, cwd=repo_root, env=env, check=True, timeout=args.timeout)
+        hermes_command.extend(["-m", args.model])
+    hermes_command.extend(["-z", prompt])
+    if args.hermes_user:
+        env_args = [f"{key}={value}" for key, value in env.items()]
+        command = ["sudo", "-n", "-u", args.hermes_user, "env", "-i", *env_args, *hermes_command]
+        subprocess.run(command, cwd=repo_root, check=True, timeout=args.timeout)
+    else:
+        subprocess.run(hermes_command, cwd=repo_root, env=env, check=True, timeout=args.timeout)
 
 
 def run_validations(repo_root: Path, commands: list[str]) -> dict[str, Any]:

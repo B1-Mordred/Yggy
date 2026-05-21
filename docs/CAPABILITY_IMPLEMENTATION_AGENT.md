@@ -110,9 +110,11 @@ Override them by passing one or more `--validation-command` flags.
 
 ## Hermes Profile
 
-Create a dedicated Hermes profile named `capability-implementer`. It should use
-a small local coding-capable model. The profile does not need Yggy admin keys,
-Docker access, deployment permissions, Discord webhooks, or approval nonces.
+Create a dedicated Hermes profile named `capability-implementer`. On the current
+host, `qwen3.5:9b` is the preferred small local model for this profile because
+Hermes accepts its context window and it is cheaper than the larger 20B+ models.
+The profile does not need Yggy admin keys, deployment permissions, Discord
+webhooks, or approval nonces.
 
 System prompt:
 
@@ -137,6 +139,18 @@ YAML, docs, logs, prompts, or memory.
 If required operator decisions are missing, stop and report the blocker instead
 of guessing.
 ```
+
+When the profile is owned by the `hermes` service account, set:
+
+```bash
+YGGY_IMPLEMENTATION_HERMES_USER=hermes
+YGGY_IMPLEMENTATION_HERMES_HOME=/srv/hermes/.hermes
+YGGY_IMPLEMENTATION_HERMES_OS_HOME=/srv/hermes
+```
+
+The host CLI scrubs its environment before invoking Hermes, so
+`AUTOMATION_ADMIN_API_KEY` is used only by the wrapper process and is not passed
+to the Hermes model loop.
 
 ## Statuses
 
