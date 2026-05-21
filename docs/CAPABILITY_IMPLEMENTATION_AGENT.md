@@ -146,11 +146,20 @@ When the profile is owned by the `hermes` service account, set:
 YGGY_IMPLEMENTATION_HERMES_USER=hermes
 YGGY_IMPLEMENTATION_HERMES_HOME=/srv/hermes/.hermes
 YGGY_IMPLEMENTATION_HERMES_OS_HOME=/srv/hermes
+YGGY_IMPLEMENTATION_ENV_ROOT=/srv/Yggy
+YGGY_IMPLEMENTATION_REPO_ROOT=/srv/hermes/workspaces/yggy-implementation
 ```
 
 The host CLI scrubs its environment before invoking Hermes, so
 `AUTOMATION_ADMIN_API_KEY` is used only by the wrapper process and is not passed
 to the Hermes model loop.
+
+Use a sanitized implementation clone or worktree such as
+`/srv/hermes/workspaces/yggy-implementation` when running Hermes as the service
+user. That workspace should contain tracked repository files only and must not
+contain `.env`, webhook URLs, API keys, or other live secrets. The wrapper can
+still load the admin key from `YGGY_IMPLEMENTATION_ENV_ROOT=/srv/Yggy` before it
+starts Hermes; the Hermes subprocess receives a scrubbed environment.
 
 ## Statuses
 

@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     target.add_argument("--run-id", help="Existing capability implementation run id to continue.")
     parser.add_argument("--base-url", default=os.getenv("AUTOMATION_API_BASE_URL", "http://127.0.0.1:8088"))
     parser.add_argument("--api-key-env", default="AUTOMATION_ADMIN_API_KEY")
+    parser.add_argument("--env-root", type=Path, default=Path(os.getenv("YGGY_IMPLEMENTATION_ENV_ROOT", str(ROOT))))
     parser.add_argument("--repo-root", type=Path, default=Path(os.getenv("YGGY_IMPLEMENTATION_REPO_ROOT", str(ROOT))))
     parser.add_argument("--hermes-bin", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_BIN", DEFAULT_HERMES_BIN))
     parser.add_argument("--profile", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_PROFILE", DEFAULT_PROFILE))
@@ -63,7 +64,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     repo_root = args.repo_root.resolve()
-    load_local_env(repo_root)
+    load_local_env(args.env_root.resolve())
     api_key = api_key_from_env(args.api_key_env)
 
     try:
