@@ -358,3 +358,19 @@ payload summary and intentionally omits inbound request headers.
 ## Secret References
 
 Reference credentials by stable names only, such as `discord_target: briefings`. Do not place raw tokens, webhooks, cookies, or passwords in YAML.
+
+## TLS Certificate Expiry Tasks
+
+Task type: `tls_certificate_expiry`
+
+Required task section: `tls_endpoints`
+
+Each endpoint entry is rendered from `configs/tls_endpoints.yaml` and must contain:
+
+- `endpoint_id`: approved endpoint ID, for example `yggy_ops_https`
+- `host`: approved hostname
+- `port`: approved TCP port
+- `warning_threshold_days`: positive warning threshold
+- `critical_threshold_days`: positive critical threshold no greater than the warning threshold
+
+The worker reports `ok`, `warning`, `critical`, `expired`, or `handshake_failed` states and sends Discord notifications only according to the task output and notification policy. Source certificate data is treated as data, never command authority.

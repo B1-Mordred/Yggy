@@ -62,6 +62,7 @@ class CapabilityDefinition(BaseModel):
     allow_any_approved_source: bool = False
     allowed_check_ids: list[str] = Field(default_factory=list)
     allowed_printer_ids: list[str] = Field(default_factory=list)
+    allowed_endpoint_ids: list[str] = Field(default_factory=list)
     allowed_webhook_ids: list[str] = Field(default_factory=list)
     safety_rules: list[str] = Field(default_factory=list)
     unsafe_keywords: list[str] = Field(default_factory=list)
@@ -87,6 +88,7 @@ class CapabilityDefinition(BaseModel):
         "allowed_source_ids",
         "allowed_check_ids",
         "allowed_printer_ids",
+        "allowed_endpoint_ids",
         "allowed_webhook_ids",
     )
     @classmethod
@@ -354,11 +356,35 @@ def validate_capability_specific_slots(slots: dict[str, Any], capability: Capabi
                 errors.append(f"printer_id {printer_id} is not allowed for {capability.id}")
             if not SLUG_RE.match(printer_id):
                 errors.append(f"printer_id {printer_id} is not valid")
+    if capability.id == "tls_certificate_expiry.v1":
+        endpoint_ids = list_slot(slots.get("endpoint_ids"))
+        for endpoint_id in endpoint_ids:
+            if endpoint_id not in capability.allowed_endpoint_ids:
+                errors.append(f"endpoint_id {endpoint_id} is not allowed for {capability.id}")
+            if not SLUG_RE.match(endpoint_id):
+                errors.append(f"endpoint_id {endpoint_id} is not valid")
+        warning = coerce_optional_positive_int(slots.get("warning_threshold_days"), "warning_threshold_days", errors)
+        critical = coerce_optional_positive_int(slots.get("critical_threshold_days"), "critical_threshold_days", errors)
+        if warning is not None and critical is not None and critical > warning:
+            errors.append("critical_threshold_days may not exceed warning_threshold_days")
     if capability.id == "n8n_webhook.v1":
         webhook_id = str(slots.get("webhook_id") or "")
         if webhook_id not in capability.allowed_webhook_ids:
             errors.append(f"webhook_id {webhook_id} is not allowed for {capability.id}")
     return errors
+
+
+def coerce_optional_positive_int(value: Any, name: str, errors: list[str]) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        errors.append(f"{name} must be an integer")
+        return None
+    if number < 1:
+        errors.append(f"{name} must be at least 1")
+    return number
 
 
 def source_ids_allowed_for_capability(capability: CapabilityDefinition) -> set[str]:
@@ -418,6 +444,10 @@ def template_values_from_slots(intent: CanonicalIntent, capability: CapabilityDe
         values["printer_ids"] = list_slot(slots.get("printer_ids"))
         if slots.get("low_threshold_percent") is not None:
             values["low_threshold_percent"] = slots.get("low_threshold_percent")
+    if capability.id == "tls_certificate_expiry.v1":
+        values["endpoint_ids"] = list_slot(slots.get("endpoint_ids"))
+        values["warning_threshold_days"] = slots.get("warning_threshold_days")
+        values["critical_threshold_days"] = slots.get("critical_threshold_days")
     if capability.id == "n8n_webhook.v1":
         values["webhook_id"] = slots.get("webhook_id")
         if slots.get("payload_description"):
@@ -458,6 +488,7 @@ def confirmation_summary(intent: CanonicalIntent, capability: CapabilityDefiniti
         "sources": list_slot(slots.get("source_ids")) if capability.id == "topic_digest.v1" else [],
         "checks": list_slot(slots.get("check_ids")) if capability.id == "server_health.v1" else [],
         "printers": list_slot(slots.get("printer_ids")) if capability.id == "printer_supply_status.v1" else [],
+        "endpoints": list_slot(slots.get("endpoint_ids")) if capability.id == "tls_certificate_expiry.v1" else [],
         "webhook_id": slots.get("webhook_id") if capability.id == "n8n_webhook.v1" else None,
         "output_target": slots.get("output_target"),
         "dry_run": True,
@@ -479,6 +510,8 @@ def worst_case_failure_mode(capability: CapabilityDefinition) -> str:
         return "A noisy, stale, or incorrect low-supply alert could be sent to the whitelisted alerts target after approval."
     if capability.id == "n8n_webhook.v1":
         return "An approved internal n8n workflow could receive an incorrect but bounded payload after approval."
+    if capability.id == "tls_certificate_expiry.v1":
+        return "A noisy, stale, or incorrect certificate-expiry alert could be sent to the whitelisted alerts target after approval."
     return "The task could produce incorrect output or fail within its configured policy."
 
 

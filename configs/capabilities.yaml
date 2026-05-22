@@ -191,3 +191,47 @@ capabilities:
       - submit print job
       - print job
       - raw url
+
+  - id: tls_certificate_expiry.v1
+    purpose: Monitor explicitly approved TLS endpoints for certificate expiry and handshake failures, then send anomaly-only Discord alerts before certificates expire.
+    maps_to_task_type: tls_certificate_expiry
+    maps_to_template: tls_certificate_expiry
+    deterministic_action: draft_task_from_template
+    allowed_approval_levels:
+      - L0_READ_ONLY
+      - L1_NOTIFY_ONLY
+    default_approval_level: L1_NOTIFY_ONLY
+    allowed_output_targets:
+      - alerts
+    required_slots:
+      - task_id
+      - name
+      - cron
+      - timezone
+      - endpoint_ids
+      - warning_threshold_days
+      - critical_threshold_days
+      - output_target
+    optional_slots:
+      - notification_policy
+    allowed_endpoint_ids:
+      - yggy_ops_https
+    safety_rules:
+      - Only approved endpoint IDs may be rendered into task configs; arbitrary hosts, URLs, IP ranges, and ports are forbidden.
+      - The worker may perform a TLS handshake and read certificate metadata only; it must not write files, run shell commands, scan networks, or use Docker.
+      - Rendered tasks must remain disabled and dry-run by default.
+      - Alerts must go only to whitelisted Discord targets and should be anomaly-only by default.
+      - Handshake failures must be recorded without crashing the worker.
+      - Run logs must not include secrets or credentials.
+    unsafe_keywords:
+      - arbitrary host
+      - arbitrary url
+      - url
+      - ip range
+      - scan network
+      - acme
+      - renew certificate
+      - reverse proxy
+      - firewall
+      - docker
+      - service restart

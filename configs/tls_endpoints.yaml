@@ -1,0 +1,6 @@
+version: 1
+endpoints:
+  - id: yggy_ops_https
+    host: yggy.b1.germering
+    port: 8443
+    enabled: true

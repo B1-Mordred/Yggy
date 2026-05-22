@@ -156,7 +156,10 @@ class TaskTemplateRenderRequest(BaseModel):
     source_ids: list[str] | None = None
     check_ids: list[str] | None = None
     printer_ids: list[str] | None = None
+    endpoint_ids: list[str] | None = None
     low_threshold_percent: int | None = Field(default=None, ge=1, le=100)
+    warning_threshold_days: int | None = Field(default=None, ge=1, le=3650)
+    critical_threshold_days: int | None = Field(default=None, ge=1, le=3650)
     webhook_id: str | None = None
     n8n_payload: dict[str, Any] | None = None
     include: list[str] | None = None
@@ -201,6 +204,23 @@ class TaskTemplateRenderRequest(BaseModel):
             if not SLUG_RE.match(printer_id):
                 raise ValueError("printer_ids must be slug-like")
         return value
+
+    @field_validator("endpoint_ids")
+    @classmethod
+    def endpoint_ids_must_be_slug_like(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        for endpoint_id in value:
+            if not SLUG_RE.match(endpoint_id):
+                raise ValueError("endpoint_ids must be slug-like")
+        return value
+
+    @model_validator(mode="after")
+    def threshold_order_must_be_safe(self) -> "TaskTemplateRenderRequest":
+        if self.warning_threshold_days is not None and self.critical_threshold_days is not None:
+            if self.critical_threshold_days > self.warning_threshold_days:
+                raise ValueError("critical_threshold_days may not exceed warning_threshold_days")
+        return self
 
     @field_validator("webhook_id")
     @classmethod
@@ -419,6 +439,36 @@ class PrinterSupplyEndpointConfig(BaseModel):
         return value
 
 
+class TlsEndpointConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint_id: str
+    host: str
+    port: int = Field(ge=1, le=65535)
+    warning_threshold_days: int = Field(default=30, ge=1, le=3650)
+    critical_threshold_days: int = Field(default=14, ge=1, le=3650)
+
+    @field_validator("endpoint_id")
+    @classmethod
+    def endpoint_id_must_be_slug(cls, value: str) -> str:
+        if not SLUG_RE.match(value):
+            raise ValueError("endpoint_id must be slug-like")
+        return value
+
+    @field_validator("host")
+    @classmethod
+    def host_must_be_plain_hostname(cls, value: str) -> str:
+        if not value.strip() or "://" in value or "/" in value or "@" in value:
+            raise ValueError("TLS endpoint host must be a plain hostname")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def thresholds_must_be_ordered(self) -> "TlsEndpointConfig":
+        if self.critical_threshold_days > self.warning_threshold_days:
+            raise ValueError("critical_threshold_days may not exceed warning_threshold_days")
+        return self
+
+
 class ApprovedPrinterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -499,6 +549,7 @@ class TaskConfig(BaseModel):
     n8n: N8nWebhookConfig | None = None
     backup: BackupVerificationConfig | None = None
     printer_supplies: list[PrinterSupplyEndpointConfig] = Field(default_factory=list)
+    tls_endpoints: list[TlsEndpointConfig] = Field(default_factory=list)
 
     @field_validator("id")
     @classmethod
@@ -515,6 +566,8 @@ class TaskConfig(BaseModel):
             raise ValueError("backup_verification task requires backup config")
         if self.type == "printer_supply_status" and not self.printer_supplies:
             raise ValueError("printer_supply_status task requires printer_supplies config")
+        if self.type == "tls_certificate_expiry" and not self.tls_endpoints:
+            raise ValueError("tls_certificate_expiry task requires tls_endpoints config")
         return self
 
 

@@ -19,6 +19,7 @@ EXPECTED_TEMPLATE_IDS = {
     "printer_supply_status",
     "backup_verification",
     "n8n_webhook",
+    "tls_certificate_expiry",
 }
 
 
@@ -100,6 +101,25 @@ def test_printer_supply_template_renders_approved_printer_ids():
     assert task["printer_supplies"][0]["url"].startswith("http://printer-status-exporter:")
 
 
+def test_tls_certificate_template_renders_approved_endpoint():
+    task = render_task_from_template(
+        "tls_certificate_expiry",
+        {"id": "rendered_tls_certificate_expiry", "name": "Rendered TLS Certificate Expiry", "endpoint_ids": ["yggy_ops_https"], "warning_threshold_days": 30, "critical_threshold_days": 14},
+    )
+
+    assert task["type"] == "tls_certificate_expiry"
+    assert task["enabled"] is False
+    assert task["runtime"]["dry_run"] is True
+    assert task["tls_endpoints"] == [{"endpoint_id": "yggy_ops_https", "host": "yggy.b1.germering", "port": 8443, "warning_threshold_days": 30, "critical_threshold_days": 14}]
+
+
+def test_tls_certificate_template_rejects_unknown_endpoint():
+    with pytest.raises(TemplateError) as exc:
+        render_task_from_template("tls_certificate_expiry", {"id": "bad_tls_certificate_expiry", "name": "Bad TLS Certificate Expiry", "endpoint_ids": ["unknown_endpoint"]})
+
+    assert "unknown_endpoint" in str(exc.value)
+
+
 def test_n8n_template_renders_approved_webhook_id():
     task = render_task_from_template(
         "n8n_webhook",
@@ -127,7 +147,10 @@ def test_render_script_values_support_gateway_fields():
             source_ids=None,
             check_ids=["automation_api"],
             printer_ids=["printer_status_exporter_example"],
+            endpoint_ids=["yggy_ops_https"],
             low_threshold_percent=20,
+            warning_threshold_days=30,
+            critical_threshold_days=14,
             webhook_id="daily_briefing_stub",
             n8n_payload_json='{"description":"bounded"}',
             include=None,
@@ -141,6 +164,9 @@ def test_render_script_values_support_gateway_fields():
     assert values["check_ids"] == ["automation_api"]
     assert values["printer_ids"] == ["printer_status_exporter_example"]
     assert values["low_threshold_percent"] == 20
+    assert values["endpoint_ids"] == ["yggy_ops_https"]
+    assert values["warning_threshold_days"] == 30
+    assert values["critical_threshold_days"] == 14
     assert values["webhook_id"] == "daily_briefing_stub"
     assert values["n8n_payload"] == {"description": "bounded"}
 

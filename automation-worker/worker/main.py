@@ -9,6 +9,7 @@ from worker.clients.automation_api import AutomationApiClient
 from worker.handlers.backup_verification import run_backup_verification
 from worker.handlers.n8n_webhook import run_n8n_webhook
 from worker.handlers.printer_supply_status import run_printer_supply_status
+from worker.handlers.tls_certificate_expiry import run_tls_certificate_expiry
 from worker.handlers.server_health import run_server_health
 from worker.handlers.topic_digest import run_topic_digest
 from worker.scheduler import due_tasks
@@ -488,6 +489,8 @@ def execute_task(
             result = run_backup_verification(effective_config)
         elif task_type == "printer_supply_status":
             result = run_printer_supply_status(effective_config)
+        elif task_type == "tls_certificate_expiry":
+            result = run_tls_certificate_expiry(effective_config)
         elif task_type == "n8n_webhook":
             result = run_n8n_webhook(effective_config, run_id=run_id)
         else:

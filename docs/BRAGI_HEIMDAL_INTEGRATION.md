@@ -896,3 +896,11 @@ Do not attach these to Bragi:
 
 Bragi needs only the model-facing automation tool key and, if configured, the
 Yggdrasil action API key.
+
+## TLS Certificate Expiry Capability
+
+`tls_certificate_expiry.v1` is a bounded monitoring capability. Bragi may draft a canonical intent only for approved TLS endpoint IDs, and Heimdal validates those IDs before Yggdrasil receives a deterministic `draft_task_from_template` request.
+
+The capability is intentionally alert-only. It may read certificate metadata through a TLS handshake, but it must not renew certificates, change ACME clients, edit reverse proxies, modify DNS, touch Docker, restart services, scan networks, or accept arbitrary hosts or URLs from natural language.
+
+Rendered tasks start disabled and dry-run with `L1_NOTIFY_ONLY`; live delivery remains subject to the normal Yggy approval, policy, audit, and worker execution path.

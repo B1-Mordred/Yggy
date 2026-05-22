@@ -30,7 +30,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-id", action="append", dest="source_ids", help="Approved source id. Repeatable.")
     parser.add_argument("--check-id", action="append", dest="check_ids", help="Approved service check id. Repeatable.")
     parser.add_argument("--printer-id", action="append", dest="printer_ids", help="Approved printer id. Repeatable.")
+    parser.add_argument("--endpoint-id", action="append", dest="endpoint_ids", help="Approved TLS endpoint id. Repeatable.")
     parser.add_argument("--low-threshold-percent", type=int, help="Printer supply low-threshold percentage.")
+    parser.add_argument("--warning-threshold-days", type=int, help="TLS certificate warning threshold in days.")
+    parser.add_argument("--critical-threshold-days", type=int, help="TLS certificate critical threshold in days.")
     parser.add_argument("--webhook-id", help="Approved n8n webhook id.")
     parser.add_argument("--n8n-payload-json", help="Small JSON object to place in n8n.payload.")
     parser.add_argument("--include", action="append", help="Include filter term. Repeatable.")
@@ -61,7 +64,10 @@ def values_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "source_ids": args.source_ids,
         "check_ids": args.check_ids,
         "printer_ids": args.printer_ids,
+        "endpoint_ids": getattr(args, "endpoint_ids", None),
         "low_threshold_percent": args.low_threshold_percent,
+        "warning_threshold_days": getattr(args, "warning_threshold_days", None),
+        "critical_threshold_days": getattr(args, "critical_threshold_days", None),
         "webhook_id": args.webhook_id,
         "n8n_payload": n8n_payload,
         "include": args.include,

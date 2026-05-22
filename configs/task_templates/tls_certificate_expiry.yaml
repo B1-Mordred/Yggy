@@ -1,0 +1,68 @@
+id: tls_certificate_expiry
+name: TLS Certificate Expiry Monitoring
+description: Render disabled dry-run tasks that monitor explicitly approved TLS endpoints for certificate expiry and handshake failures.
+task_type: tls_certificate_expiry
+default_approval_level: L1_NOTIFY_ONLY
+allowed_output_targets:
+  - alerts
+required_fields:
+  - id
+  - name
+optional_fields:
+  - endpoint_ids
+  - warning_threshold_days
+  - critical_threshold_days
+  - cron
+  - timezone
+  - output_target
+  - owner
+  - created_by
+safety_notes:
+  - Only approved endpoint IDs may be rendered into task configs.
+  - Arbitrary hosts, URLs, IP ranges, certificate renewal, reverse proxy changes, firewall changes, Docker changes, and service restarts are forbidden.
+  - Rendered tasks must remain disabled and dry-run by default.
+  - Alerts must go only to whitelisted Discord targets and should be anomaly-only by default.
+  - Handshake failures must be recorded without crashing the worker.
+example_prompts:
+  - Draft a TLS certificate expiry monitor for yggy_ops_https.
+  - Alert me before the approved Yggy HTTPS certificate expires.
+defaults:
+  enabled: false
+  owner: local_user
+  created_by: yggdrasil
+  trigger:
+    kind: schedule
+    cron: "0 8 * * *"
+    timezone: Europe/Berlin
+  tls_endpoints:
+    - endpoint_id: yggy_ops_https
+      host: yggy.b1.germering
+      port: 8443
+      warning_threshold_days: 30
+      critical_threshold_days: 14
+  output:
+    channel: discord
+    target: alerts
+    format: "anomalies only"
+  policy:
+    approval_level: L1_NOTIFY_ONLY
+    require_sources: false
+    max_runs_per_hour: 4
+    max_runs_per_day: 12
+    min_seconds_between_runs: 300
+    allow_external_side_effects: false
+    allow_shell: false
+    allow_docker_socket: false
+    allow_filesystem_write: false
+  runtime:
+    dry_run: true
+    timeout_seconds: 60
+    retry_count: 1
+  notifications:
+    on_success: false
+    on_failure: true
+    on_empty_result: false
+    quiet_hours:
+      enabled: false
+    collapse_repeated_failures: true
+    failure_collapse_window_minutes: 120

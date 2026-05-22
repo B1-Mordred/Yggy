@@ -131,12 +131,39 @@ def test_tool_key_can_list_capabilities(client):
 
     assert response.status_code == 200
     ids = {item["id"] for item in response.json()}
-    assert {"server_health.v1", "topic_digest.v1", "topic_digest.modify_subjects.v1", "n8n_webhook.v1", "printer_supply_status.v1"} <= ids
+    assert {"server_health.v1", "topic_digest.v1", "topic_digest.modify_subjects.v1", "n8n_webhook.v1", "printer_supply_status.v1", "tls_certificate_expiry.v1"} <= ids
     assert "unsafe_keywords" not in response.text
 
 
+def tls_certificate_intent(**overrides):
+    intent = {
+        "intent": "draft_task",
+        "capability_id": "tls_certificate_expiry.v1",
+        "confidence": 0.9,
+        "requires_user_confirmation": True,
+        "user_confirmation_obtained": True,
+        "user_request": "Watch the approved Yggy HTTPS certificate and alert before expiry.",
+        "slots": {
+            "task_id": "yggy_ops_tls_certificate_expiry",
+            "name": "Yggy Ops TLS Certificate Expiry",
+            "cron": "0 8 * * *",
+            "timezone": "Europe/Berlin",
+            "endpoint_ids": ["yggy_ops_https"],
+            "warning_threshold_days": 30,
+            "critical_threshold_days": 14,
+            "output_target": "alerts",
+        },
+    }
+    for key, value in overrides.items():
+        if key == "slots":
+            intent["slots"].update(value)
+        else:
+            intent[key] = value
+    return intent
+
+
 def test_gateway_accepts_supported_intents(client):
-    for payload in [server_health_intent(), topic_digest_intent(), n8n_intent(), printer_supply_intent()]:
+    for payload in [server_health_intent(), topic_digest_intent(), n8n_intent(), printer_supply_intent(), tls_certificate_intent()]:
         response = client.post("/capabilities/prepare-yggdrasil-request", headers=TOOL_HEADERS, json=payload)
         body = response.json()
 
@@ -211,6 +238,29 @@ def test_gateway_rejects_unknown_and_unsafe_requests(client):
     assert unknown_response.json()["outcome"] == "REJECT_UNSUPPORTED"
     assert unsafe_response.json()["outcome"] == "REJECT_UNSAFE"
     assert "restart docker" in unsafe_response.text.lower()
+
+
+def test_gateway_accepts_tls_certificate_capability_for_approved_endpoint(client):
+    response = client.post("/capabilities/prepare-yggdrasil-request", headers=TOOL_HEADERS, json=tls_certificate_intent())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["outcome"] == "ACCEPT"
+    assert body["yggdrasil_request"]["template_id"] == "tls_certificate_expiry"
+    assert body["yggdrasil_request"]["template_values"]["endpoint_ids"] == ["yggy_ops_https"]
+    assert body["confirmation_summary"]["endpoints"] == ["yggy_ops_https"]
+
+
+def test_gateway_rejects_unapproved_tls_endpoint(client):
+    response = client.post(
+        "/capabilities/validate-intent",
+        headers=TOOL_HEADERS,
+        json=tls_certificate_intent(slots={"endpoint_ids": ["unknown_endpoint"]}),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "REJECT_UNSAFE"
+    assert "unknown_endpoint" in response.text
 
 
 def test_gateway_accepts_printer_supply_capability_for_approved_printer(client):

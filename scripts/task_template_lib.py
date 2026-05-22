@@ -152,6 +152,8 @@ def render_task_from_template(
         apply_printer_supply_fields(task, render_values, config_root)
     if template.task_type == "n8n_webhook":
         apply_n8n_webhook_fields(task, render_values, config_root)
+    if template.task_type == "tls_certificate_expiry":
+        apply_tls_certificate_expiry_fields(task, render_values, config_root)
 
     validated = validate_task_against_policy(task)
     return drop_none_values(validated)
@@ -339,6 +341,49 @@ def apply_n8n_webhook_fields(task: dict[str, Any], values: dict[str, Any], confi
         if not isinstance(payload, dict):
             raise TemplateError("n8n_payload must be an object")
         n8n["payload"] = payload
+
+
+def coerce_tls_thresholds(values: dict[str, Any], defaults: list[dict[str, Any]]) -> tuple[int, int]:
+    default_warning = int(defaults[0].get("warning_threshold_days", 30)) if defaults else 30
+    default_critical = int(defaults[0].get("critical_threshold_days", 14)) if defaults else 14
+    warning = int(values.get("warning_threshold_days") or default_warning)
+    critical = int(values.get("critical_threshold_days") or default_critical)
+    if warning < 1 or critical < 1:
+        raise TemplateError("TLS certificate thresholds must be positive integers")
+    if critical > warning:
+        raise TemplateError("critical_threshold_days may not exceed warning_threshold_days")
+    return warning, critical
+
+
+def apply_tls_certificate_expiry_fields(task: dict[str, Any], values: dict[str, Any], config_dir: Path) -> None:
+    defaults = task.get("tls_endpoints") if isinstance(task.get("tls_endpoints"), list) else []
+    endpoint_ids = coerce_string_list(values["endpoint_ids"], "endpoint_ids") if values.get("endpoint_ids") is not None else [str(item.get("endpoint_id")) for item in defaults if isinstance(item, dict) and item.get("endpoint_id")]
+    if not endpoint_ids:
+        raise TemplateError("tls_certificate_expiry templates require endpoint_ids")
+    warning, critical = coerce_tls_thresholds(values, defaults)
+    approved = load_enabled_tls_endpoints(config_dir)
+    rendered: list[dict[str, Any]] = []
+    for endpoint_id in endpoint_ids:
+        endpoint = approved.get(endpoint_id)
+        if endpoint is None:
+            raise TemplateError(f"endpoint_id `{endpoint_id}` is not enabled in tls_endpoints.yaml")
+        rendered.append({"endpoint_id": endpoint_id, "host": endpoint["host"], "port": int(endpoint["port"]), "warning_threshold_days": warning, "critical_threshold_days": critical})
+    task["tls_endpoints"] = rendered
+
+
+def load_enabled_tls_endpoints(config_dir: Path) -> dict[str, dict[str, Any]]:
+    data = load_yaml_file(config_dir / "tls_endpoints.yaml")
+    endpoints = data.get("endpoints") if isinstance(data, dict) else []
+    enabled: dict[str, dict[str, Any]] = {}
+    for endpoint in endpoints if isinstance(endpoints, list) else []:
+        if not isinstance(endpoint, dict) or endpoint.get("enabled") is False:
+            continue
+        endpoint_id = str(endpoint.get("id") or "").strip()
+        host = str(endpoint.get("host") or "").strip()
+        port = endpoint.get("port")
+        if endpoint_id and host and isinstance(port, int):
+            enabled[endpoint_id] = {"host": host, "port": port}
+    return enabled
 
 
 def load_enabled_sources(config_dir: Path) -> dict[str, Any]:
