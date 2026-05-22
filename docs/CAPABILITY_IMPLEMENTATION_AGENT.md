@@ -70,6 +70,22 @@ Discord, task YAML, or documentation.
 The CLI does not push. The operator still reviews the commit and chooses when
 to push, deploy, rebuild, or restart services.
 
+The implementation runner is capability-neutral. It must not contain
+capability-specific payload writers or hard-coded code for one previous job.
+For staged runs it derives stages from the proposal and implementation plan:
+
+- capability registry and policy/config allowlists
+- renderable disabled dry-run task template
+- API schemas, Heimdal validation, template rendering, and focused API tests
+- bounded worker handler, dispatch, and worker tests
+- narrow operator documentation and final test alignment
+
+Each stage gets an explicit file allowlist. The wrapper then applies generic
+Yggy safety gates: existing capability entries must not be rewritten, generated
+templates must be disabled and dry-run by default, worker code must not gain
+shell/Docker/host-filesystem authority, and full repository validation must pass
+before a local commit is recorded.
+
 ## CLI
 
 Dry-run the generated Hermes prompt:
@@ -98,6 +114,43 @@ Leave changes uncommitted for manual inspection:
 ```bash
 python scripts/implement_capability_plan.py --proposal-id <proposal-id> --no-commit
 ```
+
+Use proposal-driven staged implementation:
+
+```bash
+python scripts/implement_capability_plan.py --proposal-id <proposal-id> --staged --fresh-profile
+```
+
+Staged implementation uses bounded one-shot Hermes chat queries by default,
+with `--max-turns` limiting each stage. Stage prompts are sent inline so the
+model receives the exact proposal contract and file allowlist directly instead
+of having to discover a temporary prompt file first. The persistent Hermes
+`/goal` loop can still be requested with `--goal-command`, but it is not the
+default because the wrapper already owns staging, validation, commit creation,
+and run status updates.
+
+Registry stages include a machine-derived list of existing capability IDs that
+must remain present. The post-generation gate also compares existing capability
+entries against `HEAD`, so a model cannot satisfy a new proposal by replacing an
+older capability entry.
+
+The first two stages also have capability-neutral deterministic scaffolds:
+the registry entry and disabled dry-run task template can be derived directly
+from the accepted proposal. Hermes is then used for the parts that need design
+judgment, such as validation/rendering, worker behavior, and focused tests. This
+keeps the pipeline generic without training it on one specific capability.
+
+The wrapper passes Hermes `--yolo` by default only inside the sanitized
+implementation workspace so non-interactive edit review prompts cannot block
+the run. This does not grant deployment, Docker, admin approval, or secret
+authority. The wrapper still enforces staged file allowlists, generic safety
+checks, full validation, and local-commit-only output. Use `--no-yolo` for a
+manual exploratory run that may pause for Hermes edit approvals.
+
+Hermes is invoked with ambient project/profile rules ignored for the stage
+execution. The accepted proposal, stage contract, and wrapper gates are the
+authority for the run; Hermes must not create new `proposals/` files while
+implementing an already accepted proposal.
 
 The default validation commands are:
 

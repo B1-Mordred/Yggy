@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import export_live_configs  # noqa: E402
 import import_task_drafts  # noqa: E402
 import validate_printer_status  # noqa: E402
 from conftest import sample_task  # noqa: E402
-from registry_lib import diff_registry, format_difference_report, load_yaml_file  # noqa: E402
+from registry_lib import diff_registry, format_difference_report, load_local_env, load_yaml_file  # noqa: E402
 
 
 def sample_topic(topic_id: str = "local_ai_security") -> dict:
@@ -64,6 +65,25 @@ def test_diff_registry_detects_yaml_only_and_live_only_tasks():
 
     assert ("yaml_only_task", "missing_live") in kinds
     assert ("live_only_task", "missing_yaml") in kinds
+
+
+def test_load_local_env_ignores_unreadable_env_file(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("SHOULD_NOT_BE_SET=value\n", encoding="utf-8")
+
+    original_read_text = Path.read_text
+
+    def guarded_read_text(self, *args, **kwargs):
+        if self == env_path:
+            raise PermissionError("not readable by this service account")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.delenv("SHOULD_NOT_BE_SET", raising=False)
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+    load_local_env(tmp_path)
+
+    assert "SHOULD_NOT_BE_SET" not in os.environ
 
 
 def test_export_live_configs_writes_generated_yaml(tmp_path, monkeypatch):

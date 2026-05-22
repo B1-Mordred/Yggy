@@ -50,7 +50,11 @@ def load_local_env(root: Path = ROOT) -> None:
     env_path = root / ".env"
     if not env_path.exists():
         return
-    for raw in env_path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except PermissionError:
+        return
+    for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
