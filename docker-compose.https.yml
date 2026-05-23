@@ -11,6 +11,7 @@ services:
       YGGY_HTTPS_HOST: "${YGGY_HTTPS_HOST:-yggy.b1.germering}"
     volumes:
       - ./ops-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./ops-proxy/static:/srv/ops-proxy/static:ro
       - yggy_caddy_data:/data
       - yggy_caddy_config:/config
     read_only: true

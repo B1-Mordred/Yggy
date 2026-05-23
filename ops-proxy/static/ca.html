@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yggy LAN CA Bootstrap</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #101418;
+      --panel: #161d24;
+      --text: #eef3f8;
+      --muted: #a9b4bf;
+      --border: #2b3642;
+      --accent: #75b7ff;
+      --warn: #ffd166;
+    }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 40px 20px 56px;
+    }
+    h1, h2 {
+      line-height: 1.2;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 32px;
+    }
+    h2 {
+      margin-top: 30px;
+      font-size: 20px;
+    }
+    p, li {
+      color: var(--muted);
+    }
+    a {
+      color: var(--accent);
+    }
+    .panel {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 18px;
+      margin: 20px 0;
+    }
+    .warning {
+      border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+    }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    pre {
+      overflow-x: auto;
+      background: #0b0f13;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      color: var(--text);
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin: 20px 0;
+    }
+    .button {
+      display: inline-block;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      background: #1f6fb2;
+      color: white;
+      text-decoration: none;
+      font-weight: 650;
+    }
+    .button.secondary {
+      background: transparent;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Yggy LAN CA Bootstrap</h1>
+    <p>
+      This page publishes the public Caddy local root certificate used for
+      <code>https://yggy.b1.germering:8443</code>. Install it only on devices
+      you control.
+    </p>
+
+    <div class="panel warning">
+      <strong>Security boundary:</strong>
+      <p>
+        The downloadable certificate is public and safe to distribute. The CA
+        private key is not exposed here and must never be copied to client
+        devices. Browsers and operating systems do not allow a web page to
+        silently install a trusted root CA; installation requires explicit
+        local administrator or device-owner approval.
+      </p>
+    </div>
+
+    <div class="actions">
+      <a class="button" href="/pki/ca/local/root.crt">Download Yggy root CA</a>
+      <a class="button secondary" href="/pki/ca/local/install-linux.sh">Download Linux install script</a>
+      <a class="button secondary" href="/ops">Open Yggy Ops</a>
+    </div>
+
+    <h2>Verify The Certificate</h2>
+    <p>After downloading, inspect the certificate before installing it:</p>
+    <pre><code>openssl x509 -in yggy-caddy-root.crt -noout -subject -issuer -dates -fingerprint -sha256</code></pre>
+    <p>
+      Compare the SHA-256 fingerprint with the value shown by the Yggy operator
+      on the server.
+    </p>
+
+    <h2>Ubuntu / Debian</h2>
+    <pre><code>sudo cp yggy-caddy-root.crt /usr/local/share/ca-certificates/yggy-caddy-root.crt
+sudo update-ca-certificates</code></pre>
+
+    <h2>Fedora / RHEL</h2>
+    <pre><code>sudo cp yggy-caddy-root.crt /etc/pki/ca-trust/source/anchors/yggy-caddy-root.crt
+sudo update-ca-trust</code></pre>
+
+    <h2>macOS</h2>
+    <pre><code>sudo security add-trusted-cert \
+  -d \
+  -r trustRoot \
+  -k /Library/Keychains/System.keychain \
+  yggy-caddy-root.crt</code></pre>
+
+    <h2>Windows</h2>
+    <p>Run PowerShell as Administrator:</p>
+    <pre><code>Import-Certificate `
+  -FilePath .\yggy-caddy-root.crt `
+  -CertStoreLocation Cert:\LocalMachine\Root</code></pre>
+
+    <h2>Important</h2>
+    <ul>
+      <li>Use <code>https://yggy.b1.germering:8443/ops</code>, not the raw IP address.</li>
+      <li>If the Caddy data volume is deleted, a new root CA may be generated and clients must trust the new certificate.</li>
+      <li>Firefox may require importing the certificate into its own Authorities store unless configured to use system roots.</li>
+    </ul>
+  </main>
+</body>
+</html>

@@ -13,5 +13,32 @@ https://{$YGGY_HTTPS_HOST}:8443 {
 		-Server
 	}
 
-	reverse_proxy automation-api:8088
+	@local_ca_page path /pki/ca/local /pki/ca/local/
+	handle @local_ca_page {
+		root * /srv/ops-proxy/static
+		rewrite * /ca.html
+		file_server
+	}
+
+	@local_ca_cert path /pki/ca/local/root.crt
+	handle @local_ca_cert {
+		root * /data/caddy/pki/authorities/local
+		rewrite * /root.crt
+		header Content-Type "application/x-x509-ca-cert"
+		header Content-Disposition "attachment; filename=\"yggy-caddy-root.crt\""
+		file_server
+	}
+
+	@local_ca_linux_installer path /pki/ca/local/install-linux.sh
+	handle @local_ca_linux_installer {
+		root * /srv/ops-proxy/static
+		rewrite * /install-linux.sh
+		header Content-Type "text/x-shellscript; charset=utf-8"
+		header Content-Disposition "attachment; filename=\"install-yggy-caddy-root.sh\""
+		file_server
+	}
+
+	handle {
+		reverse_proxy automation-api:8088
+	}
 }

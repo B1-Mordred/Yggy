@@ -773,6 +773,33 @@ docker cp yggy-https-proxy:/data/caddy/pki/authorities/local/root.crt ./yggy-cad
 
 Install that certificate as a trusted root CA only on devices you control.
 
+The same public root certificate is also exposed through the HTTPS proxy for
+LAN bootstrap:
+
+```text
+https://yggy.b1.germering:8443/pki/ca/local/
+https://yggy.b1.germering:8443/pki/ca/local/root.crt
+https://yggy.b1.germering:8443/pki/ca/local/install-linux.sh
+```
+
+The bootstrap page and script expose only the public `root.crt`; the Caddy CA
+private key stays inside the Docker volume and must never be distributed.
+Browsers and operating systems do not allow a web page to silently install a
+trusted root CA, so installation still requires explicit local administrator or
+device-owner approval. On Linux clients, the helper script can be run manually:
+
+```bash
+curl -kfsSL https://yggy.b1.germering:8443/pki/ca/local/install-linux.sh | sudo sh
+```
+
+Use `-k` only for this first bootstrap download, then verify the certificate
+fingerprint shown by the script against the value from the Yggy host:
+
+```bash
+docker exec yggy-https-proxy cat /data/caddy/pki/authorities/local/root.crt \
+  | openssl x509 -noout -subject -issuer -dates -fingerprint -sha256
+```
+
 ## Backups
 
 Create a local Yggy backup:
