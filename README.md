@@ -121,6 +121,11 @@ Granite-based summaries/tool probes, and the Qwen3-Coder implementation
 harness, see
 [docs/LOCAL_MODEL_STACK_ARCHITECTURE.md](docs/LOCAL_MODEL_STACK_ARCHITECTURE.md).
 
+For the complete live automation request path from Bragi intake through
+Heimdal, Yggdrasil, Yggy approval, worker execution, and return-state
+inspection, see
+[docs/AUTOMATION_REQUEST_PIPELINE.md](docs/AUTOMATION_REQUEST_PIPELINE.md).
+
 For changing existing automations through reviewed diffs, see
 [docs/TASK_CHANGE_PROPOSALS.md](docs/TASK_CHANGE_PROPOSALS.md).
 

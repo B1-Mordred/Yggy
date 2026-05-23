@@ -72,7 +72,7 @@ Focused test suite:
 Result:
 
 ```text
-78 passed
+79 passed
 ```
 
 Focused Bragi rerun after routing fixes:
@@ -84,7 +84,7 @@ Focused Bragi rerun after routing fixes:
 Result:
 
 ```text
-36 passed
+40 passed
 ```
 
 Configuration validation:
@@ -566,6 +566,38 @@ Result:
 
 ```text
 pass
+```
+
+## End-to-End Approval And Execution Test
+
+Date: 2026-05-23
+
+A later live run took the same three creation categories beyond intake:
+
+```text
+Bragi request -> intake confirmation -> Heimdal validation -> Yggdrasil draft
+-> Yggy L1 approval request -> local ops approval -> worker dry-run execution
+-> task pause/archive cleanup
+```
+
+The full evidence report is maintained separately:
+
+```text
+docs/E2E_AUTOMATION_REQUEST_TEST_REPORT_2026-05-23.md
+```
+
+Summary:
+
+```text
+topic_digest.v1: passed; 5 Docker items; completed_dry_run; no Discord send
+server_health.v1: passed; 3/3 checks ok; completed_dry_run
+n8n_webhook.v1: passed; approved webhook ID rendered; dry-run no network send
+```
+
+The complete request pipeline documentation is:
+
+```text
+docs/AUTOMATION_REQUEST_PIPELINE.md
 ```
 
 ## Final Result

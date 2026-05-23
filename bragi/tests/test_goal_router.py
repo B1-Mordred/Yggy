@@ -243,6 +243,33 @@ def test_new_n8n_webhook_preserves_payload_description(monkeypatch):
     assert payload["slots"]["cron"] == "5 6 * * 1-5"
 
 
+def test_creation_requests_can_use_explicit_task_ids(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    bragi.route_chat(
+        [
+            {
+                "role": "user",
+                "content": (
+                    'Set up a new daily 09:20 server health check with task id codex_e2e_stack_health_20260523 '
+                    'named "Codex E2E Stack Health" for Open WebUI and n8n, keep it disabled and dry-run.'
+                ),
+            }
+        ]
+    )
+
+    payload = calls[0][2]
+    assert payload["capability_id"] == "server_health.v1"
+    assert payload["slots"]["task_id"] == "codex_e2e_stack_health_20260523"
+    assert payload["slots"]["name"] == "Codex E2E Stack Health"
+
+
 def test_new_n8n_webhook_uses_registered_capability():
     result = classify_automation_request("create an n8n webhook task for the approved daily briefing workflow", task_aliases=bragi.TASK_ALIASES)
 

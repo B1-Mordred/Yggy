@@ -2061,6 +2061,8 @@ def ollama_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_I
 
 def server_health_intent(user_text: str) -> dict[str, Any]:
     check_ids = check_ids_from_text(user_text) or ["open_webui", "ollama", "automation_api", "automation_worker", "n8n"]
+    task_id = explicit_task_id_from_text(user_text) or "daily_ai_stack_health"
+    name = explicit_name_from_text(user_text) or ("Daily AI Stack Health Check" if task_id == "daily_ai_stack_health" else title_from_task_id(task_id, suffix="Health Check"))
     return {
         "intent": "draft_task",
         "capability_id": "server_health.v1",
@@ -2069,8 +2071,8 @@ def server_health_intent(user_text: str) -> dict[str, Any]:
         "user_confirmation_obtained": False,
         "user_request": user_text,
         "slots": {
-            "task_id": "daily_ai_stack_health",
-            "name": "Daily AI Stack Health Check",
+            "task_id": task_id,
+            "name": name,
             "cron": schedule_cron(user_text, default="0 8 * * *"),
             "timezone": "Europe/Berlin",
             "check_ids": check_ids,
@@ -2108,8 +2110,10 @@ def topic_digest_intent(user_text: str) -> dict[str, Any]:
     lowered = user_text.lower()
     local_ai = bool(re.search(r"\b(local[-\s]?ai|ai stack|open webui|ollama|hermes|yggy|yggdrasil)\b", lowered))
     topic = topic_from_text(user_text)
-    task_id = "daily_local_ai_security_briefing" if local_ai else slug(topic or user_text[:60], "topic_digest")
-    name = "Daily Local AI Security Briefing" if local_ai else title_from_topic(topic or "Topic Digest")
+    explicit_task_id = explicit_task_id_from_text(user_text)
+    explicit_name = explicit_name_from_text(user_text)
+    task_id = explicit_task_id or ("daily_local_ai_security_briefing" if local_ai else slug(topic or user_text[:60], "topic_digest"))
+    name = explicit_name or ("Daily Local AI Security Briefing" if local_ai and not explicit_task_id else title_from_topic(topic or title_from_task_id(task_id)))
     source_ids = source_ids_from_text(user_text)
     if local_ai and not source_ids:
         source_ids = ["open_webui_releases", "ollama_releases", "n8n_releases", "docker_blog"]
@@ -2176,11 +2180,13 @@ def topic_digest_subject_change_intent(user_text: str) -> dict[str, Any]:
 def n8n_intent(user_text: str) -> dict[str, Any]:
     webhook_id = webhook_id_from_text(user_text)
     payload_description = payload_description_from_text(user_text)
+    explicit_task_id = explicit_task_id_from_text(user_text)
+    explicit_name = explicit_name_from_text(user_text)
     default_daily_briefing = webhook_id == "daily_briefing_stub" and not payload_description and "new" not in user_text.lower()
     task_topic = payload_description or user_text[:70]
     slots: dict[str, Any] = {
-        "task_id": "daily_briefing_n8n_stub" if default_daily_briefing else slug(f"n8n {task_topic}", "n8n_webhook_task"),
-        "name": "Daily Briefing n8n Payload Normalizer" if default_daily_briefing else title_from_topic(payload_description or "n8n Webhook Task"),
+        "task_id": explicit_task_id or ("daily_briefing_n8n_stub" if default_daily_briefing else slug(f"n8n {task_topic}", "n8n_webhook_task")),
+        "name": explicit_name or ("Daily Briefing n8n Payload Normalizer" if default_daily_briefing else title_from_topic(payload_description or "n8n Webhook Task")),
         "cron": schedule_cron(user_text, default="15 8 * * 1-5"),
         "timezone": "Europe/Berlin",
         "output_target": "n8n",
@@ -2210,6 +2216,31 @@ def webhook_id_from_text(text: str) -> str | None:
     if "daily" in lowered and "brief" in lowered:
         return "daily_briefing_stub"
     return None
+
+
+def explicit_task_id_from_text(text: str) -> str | None:
+    for pattern in (
+        r"\btask\s+id\s+`?([a-z][a-z0-9_]{2,127})`?",
+        r"\bautomation\s+id\s+`?([a-z][a-z0-9_]{2,127})`?",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+    return None
+
+
+def explicit_name_from_text(text: str) -> str | None:
+    match = re.search(r'\b(?:named|called)\s+"([^"]{3,100})"', text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def title_from_task_id(task_id: str, *, suffix: str = "") -> str:
+    title = re.sub(r"_+", " ", task_id).strip().title()
+    if suffix and suffix.lower() not in title.lower():
+        title = f"{title} {suffix}"
+    return title or "Automation Task"
 
 
 def payload_description_from_text(text: str) -> str:
