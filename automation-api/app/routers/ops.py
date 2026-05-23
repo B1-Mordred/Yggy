@@ -2348,6 +2348,9 @@ def ops_login_html(
       --ok: #0f7b4b;
       --bad: #b42318;
       --accent: #2457c5;
+      --accent-strong: #173c8f;
+      --soft: #eef2f7;
+      --shadow: 0 12px 28px rgba(24, 32, 42, 0.08);
     }}
     @media (prefers-color-scheme: dark) {{
       :root {{
@@ -2359,6 +2362,9 @@ def ops_login_html(
         --ok: #49c783;
         --bad: #ff6b61;
         --accent: #8fb4ff;
+        --accent-strong: #b8ccff;
+        --soft: #202a35;
+        --shadow: 0 16px 32px rgba(0, 0, 0, 0.28);
       }}
     }}
     * {{ box-sizing: border-box; }}
@@ -2489,8 +2495,8 @@ DASHBOARD_HTML = f"""<!doctype html>
       color: var(--text);
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }}
-    header, .tabs, main {{ width: min(1180px, calc(100vw - 32px)); margin: 0 auto; }}
-    header {{ padding: 24px 0 12px; display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; }}
+    header, .tabs, main {{ width: min(1360px, calc(100vw - 32px)); margin: 0 auto; }}
+    header {{ padding: 20px 0 10px; display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; }}
     h1 {{ margin: 0; font-size: 24px; font-weight: 700; letter-spacing: 0; }}
     h2 {{ margin: 0 0 10px; font-size: 15px; letter-spacing: 0; }}
     h3 {{ margin: 0 0 8px; font-size: 13px; letter-spacing: 0; }}
@@ -2504,6 +2510,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       padding: 8px 0 10px;
       background: color-mix(in srgb, var(--bg) 92%, transparent);
       backdrop-filter: blur(8px);
+      border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
     }}
     .tab-button {{
       white-space: nowrap;
@@ -2514,6 +2521,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       color: var(--text);
       border-color: var(--accent);
       background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+      box-shadow: inset 0 -2px 0 var(--accent);
     }}
     .tab-count {{ color: var(--muted); margin-left: 4px; }}
     .view {{ display: none; }}
@@ -2527,6 +2535,16 @@ DASHBOARD_HTML = f"""<!doctype html>
       cursor: pointer;
     }}
     button:hover {{ border-color: var(--accent); }}
+    button.primary {{
+      border-color: var(--accent);
+      background: var(--accent);
+      color: white;
+    }}
+    button.primary:hover {{ border-color: var(--accent-strong); }}
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {{
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }}
     .link-button {{
       border: 0;
       background: transparent;
@@ -2559,7 +2577,14 @@ DASHBOARD_HTML = f"""<!doctype html>
     .meta {{ color: var(--muted); font-size: 12px; }}
     .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }}
     .section {{ margin: 18px 0; }}
-    .section-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }}
+    .section-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }}
     .header-actions {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
     .logout-form {{ margin: 0; }}
     .saved-view {{
@@ -2570,12 +2595,24 @@ DASHBOARD_HTML = f"""<!doctype html>
       font-size: 12px;
     }}
     .saved-view select {{ min-width: 220px; }}
+    .density-control {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .density-control select {{ min-width: 130px; }}
     .filter-bar {{
       display: flex;
       gap: 8px;
       align-items: center;
       flex-wrap: wrap;
       margin: 10px 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel) 88%, var(--bg));
     }}
     .filter-bar input {{ width: min(320px, 100%); }}
     .filter-bar button {{ padding: 8px 10px; }}
@@ -2611,7 +2648,45 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     .metric {{ padding: 12px; min-height: 72px; }}
     .metric .value {{ font-size: 24px; font-weight: 700; margin-top: 4px; }}
-    .panel {{ padding: 14px; }}
+    .panel {{ padding: 14px; box-shadow: var(--shadow); }}
+    .notice {{
+      display: none;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 10px 0 0;
+      background: var(--panel);
+    }}
+    .notice.visible {{ display: block; }}
+    .notice.bad {{ border-color: var(--bad); }}
+    .quick-grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }}
+    .quick-card {{
+      display: grid;
+      gap: 5px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: color-mix(in srgb, var(--panel) 90%, var(--soft));
+      text-align: left;
+      min-height: 92px;
+    }}
+    .quick-card strong {{
+      font-size: 20px;
+      line-height: 1.1;
+    }}
+    .quick-card button {{
+      width: fit-content;
+      padding: 6px 9px;
+    }}
+    .toolbar-status {{
+      min-height: 18px;
+      margin-top: 6px;
+    }}
     .status {{ display: inline-flex; gap: 6px; align-items: center; font-weight: 650; }}
     .dot {{ width: 9px; height: 9px; border-radius: 99px; background: var(--muted); display: inline-block; }}
     .ok .dot {{ background: var(--ok); }}
@@ -2644,6 +2719,13 @@ DASHBOARD_HTML = f"""<!doctype html>
     .pill {{ display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; font-size: 12px; }}
     .empty {{ color: var(--muted); padding: 12px 0; }}
     .approval {{ display: grid; gap: 10px; }}
+    .approval, .source-item, .proposal-item {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: color-mix(in srgb, var(--panel) 92%, var(--bg));
+      margin: 10px 0;
+    }}
     .approval-head {{ display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }}
     .approval-actions {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
     .approval-message {{ min-height: 18px; }}
@@ -2713,9 +2795,26 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     .summary-stat {{ min-width: 0; }}
     .summary-stat strong {{ display: block; font-size: 18px; margin-top: 3px; overflow-wrap: anywhere; }}
+    body.density-compact {{
+      font-size: 13px;
+    }}
+    body.density-compact header {{ padding-top: 12px; }}
+    body.density-compact .panel,
+    body.density-compact .metric,
+    body.density-compact .approval,
+    body.density-compact .source-item,
+    body.density-compact .proposal-item {{ padding: 9px; }}
+    body.density-compact th,
+    body.density-compact td {{ padding: 6px 8px; }}
+    body.density-compact button,
+    body.density-compact input,
+    body.density-compact select {{ padding: 6px 9px; }}
+    body.density-compact .section {{ margin: 12px 0; }}
+    body.density-compact pre {{ max-height: 220px; }}
     @media (max-width: 860px) {{
       header {{ align-items: flex-start; flex-direction: column; }}
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .quick-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .detail-grid {{ grid-template-columns: 1fr; }}
       .observability-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .timeline-item {{ grid-template-columns: 1fr; }}
@@ -2723,6 +2822,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     @media (max-width: 560px) {{
       .grid {{ grid-template-columns: 1fr; }}
+      .quick-grid {{ grid-template-columns: 1fr; }}
       .observability-grid {{ grid-template-columns: 1fr; }}
     }}
   </style>
@@ -2747,6 +2847,12 @@ DASHBOARD_HTML = f"""<!doctype html>
           <option value="worker_activity">Worker activity</option>
         </select>
       </label>
+      <label class="density-control" for="density-select">Density
+        <select id="density-select" aria-label="Dashboard density">
+          <option value="compact">Compact</option>
+          <option value="comfortable">Comfortable</option>
+        </select>
+      </label>
       <button id="refresh" type="button" title="Refresh status">Refresh</button>
       <form class="logout-form" method="post" action="/ops/logout">
         <button type="submit" title="Sign out of the ops dashboard">Sign out</button>
@@ -2765,7 +2871,9 @@ DASHBOARD_HTML = f"""<!doctype html>
     <button class="tab-button" type="button" data-view-target="retention">Retention</button>
   </nav>
   <main>
+    <div class="notice bad" id="load-error" role="alert"></div>
     <section class="view active" data-view="overview">
+      <section class="section panel" id="attention"></section>
       <section class="grid" id="metrics"></section>
       <section class="section panel" id="service"></section>
     </section>
@@ -3160,6 +3268,13 @@ DASHBOARD_HTML = f"""<!doctype html>
       try {{ window.localStorage.setItem(storageKey(key), value); }}
       catch (error) {{}}
     }}
+    function applyDensity(value) {{
+      const density = value === 'comfortable' ? 'comfortable' : 'compact';
+      document.body.classList.toggle('density-compact', density === 'compact');
+      const select = byId('density-select');
+      if (select) select.value = density;
+      storeValue('density', density);
+    }}
     function boundedNumber(value, fallback, min = MIN_PAGE_SIZE, max = MAX_PAGE_SIZE) {{
       const number = Number.parseInt(value, 10);
       if (Number.isNaN(number)) return fallback;
@@ -3384,6 +3499,44 @@ DASHBOARD_HTML = f"""<!doctype html>
     function setTabCount(name, value) {{
       const target = document.querySelector(`[data-count="${{name}}"]`);
       if (target) target.textContent = `(${{value}})`;
+    }}
+    function quickCard(label, value, sub, view, savedView = '') {{
+      const target = savedView ? `data-saved-view="${{esc(savedView)}}"` : `data-jump-view="${{esc(view)}}"`;
+      const actionLabel = value > 0 ? 'Review' : 'Open';
+      return `<div class="quick-card">
+        <span class="meta">${{esc(label)}}</span>
+        <strong>${{esc(value)}}</strong>
+        <span class="meta">${{esc(sub)}}</span>
+        <button type="button" ${{target}}>${{actionLabel}}</button>
+      </div>`;
+    }}
+    function renderAttention(data) {{
+      const counts = data.counts || {{}};
+      const failedRuns = (data.recent_runs || []).filter(run => run.status === 'failed').length;
+      byId('attention').innerHTML = `
+        <div class="section-head">
+          <div>
+            <h2>Attention Queue</h2>
+            <div class="meta">Fast entry points for work that usually needs an operator decision.</div>
+          </div>
+          <button type="button" class="primary" data-jump-view="tasks">Manage Tasks</button>
+        </div>
+        <div class="quick-grid">
+          ${{quickCard('Pending approvals', counts.pending_general_approvals || 0, 'operator decisions', 'approvals', 'pending_approvals')}}
+          ${{quickCard('Task changes', counts.open_task_change_proposals || 0, 'proposal review', 'proposals', 'pending_proposals')}}
+          ${{quickCard('Capabilities and gaps', (counts.pending_capability_proposals || 0) + (counts.active_capability_gaps || 0), `${{counts.pending_capability_proposals || 0}} proposals; ${{counts.active_capability_gaps || 0}} gaps`, 'capabilities', 'pending_capabilities')}}
+          ${{quickCard('Recent failed runs', failedRuns, 'from current status window', 'runs', 'failed_runs')}}
+        </div>`;
+      byId('attention').querySelectorAll('[data-jump-view]').forEach(button => {{
+        button.addEventListener('click', () => showView(button.dataset.jumpView));
+      }});
+      byId('attention').querySelectorAll('[data-saved-view]').forEach(button => {{
+        button.addEventListener('click', () => {{
+          const select = byId('saved-view-select');
+          if (select) select.value = button.dataset.savedView;
+          applySavedView(button.dataset.savedView);
+        }});
+      }});
     }}
     const fieldValue = id => (byId(id)?.value || '').trim();
     const lower = value => text(value).toLowerCase();
@@ -4140,7 +4293,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <span class="meta approval-message"></span>
           </div>
         </div>`;
-      }}).join('<hr>') : `<div class="empty">${{esc(emptyText)}}</div>`;
+      }}).join('') : `<div class="empty">${{esc(emptyText)}}</div>`;
     }}
     function wireApprovalButtons(container) {{
       container.querySelectorAll('[data-approval-action]').forEach(button => {{
@@ -4188,7 +4341,7 @@ DASHBOARD_HTML = f"""<!doctype html>
           </div>
           <div class="proposal-detail-panel"></div>
         </div>`;
-      }}).join('<hr>') : `<div class="empty">${{esc(emptyText)}}</div>`;
+      }}).join('') : `<div class="empty">${{esc(emptyText)}}</div>`;
     }}
     function wireTaskChangeProposalButtons(container) {{
       container.querySelectorAll('[data-proposal-action]').forEach(button => {{
@@ -4276,7 +4429,7 @@ DASHBOARD_HTML = f"""<!doctype html>
           </div>
           <div class="proposal-detail-panel"></div>
         </div>`;
-      }}).join('<hr>') : `<div class="empty">${{esc(emptyText)}}</div>`;
+      }}).join('') : `<div class="empty">${{esc(emptyText)}}</div>`;
     }}
     function wireCapabilityProposalButtons(container) {{
       container.querySelectorAll('[data-capability-action]').forEach(button => {{
@@ -4330,7 +4483,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             <button type="button" data-gap-edit="${{esc(item.id)}}">Edit</button>
           </div>
         </div>`;
-      }}).join('<hr>') : '<div class="empty">No capability gaps configured.</div>';
+      }}).join('') : '<div class="empty">No capability gaps configured.</div>';
     }}
     function setCapabilityGapForm(item) {{
       byId('gap-id').value = item?.id || '';
@@ -4418,7 +4571,7 @@ DASHBOARD_HTML = f"""<!doctype html>
           </div>
           <div class="proposal-detail-panel"></div>
         </div>`;
-      }}).join('<hr>') : `<div class="empty">${{esc(emptyText)}}</div>`;
+      }}).join('') : `<div class="empty">${{esc(emptyText)}}</div>`;
     }}
     function wireSourceProposalButtons(container) {{
       container.querySelectorAll('[data-source-action]').forEach(button => {{
@@ -4947,6 +5100,9 @@ DASHBOARD_HTML = f"""<!doctype html>
       if (!response.ok) throw new Error(`status ${{response.status}}`);
       const data = await response.json();
       lastStatusData = data;
+      const loadError = byId('load-error');
+      loadError.classList.remove('visible');
+      loadError.textContent = '';
       document.getElementById('generated').textContent = `Generated ${{new Date(data.generated_at).toLocaleString()}}`;
       setTabCount('tasks', data.counts.tasks);
       setTabCount('runs', data.recent_runs.length);
@@ -4960,6 +5116,7 @@ DASHBOARD_HTML = f"""<!doctype html>
         metric('Active Runs', data.counts.active_runs, 'queued or running'),
         metric('Pending Reviews', data.counts.pending_reviews || data.counts.pending_approvals, `${{data.counts.pending_task_change_proposals || 0}} task changes; ${{data.counts.pending_capability_proposals || 0}} capabilities; ${{data.counts.active_capability_gaps || 0}} gaps; ${{data.counts.open_source_proposals || 0}} sources; ${{data.counts.pending_general_approvals || 0}} general`),
       ].join('');
+      renderAttention(data);
       document.getElementById('service').innerHTML = `
         <h2>Service Health</h2>
         <div>Database: ${{statusLabel(data.service.database.connected, data.service.database.connected ? 'connected' : 'degraded')}}</div>
@@ -5221,7 +5378,14 @@ DASHBOARD_HTML = f"""<!doctype html>
         if (activeView === 'sources') await loadSourceProposals();
         if (activeView === 'approvals') await loadReviewQueue('approvals');
       }}
-      catch (error) {{ document.getElementById('generated').textContent = `Unable to load status: ${{error.message}}`; }}
+      catch (error) {{
+        document.getElementById('generated').textContent = `Unable to load status: ${{error.message}}`;
+        const loadError = byId('load-error');
+        if (loadError) {{
+          loadError.textContent = `Unable to load /ops/status: ${{error.message}}`;
+          loadError.classList.add('visible');
+        }}
+      }}
     }}
     document.getElementById('refresh').addEventListener('click', refresh);
     document.getElementById('run-refresh').addEventListener('click', loadRuns);
@@ -5234,7 +5398,9 @@ DASHBOARD_HTML = f"""<!doctype html>
     document.getElementById('source-refresh').addEventListener('click', loadSourceProposals);
     document.getElementById('approval-refresh').addEventListener('click', () => loadReviewQueue('approvals'));
     document.getElementById('saved-view-select').addEventListener('change', event => applySavedView(event.target.value));
+    document.getElementById('density-select').addEventListener('change', event => applyDensity(event.target.value));
     wireViewTabs();
+    applyDensity(storedValue('density') || 'compact');
     restorePersistentFields();
     wireFilters();
     refresh();

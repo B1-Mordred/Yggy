@@ -106,6 +106,10 @@ def test_ops_dashboard_uses_login_page_and_keeps_basic_compatibility(client, mon
     allowed = basic_allowed.text
     assert "Yggy Operations" in allowed
     assert "action=\"/ops/logout\"" in allowed
+    assert "density-select" in allowed
+    assert "Attention Queue" in allowed
+    assert "load-error" in allowed
+    assert "density-compact" in allowed
     assert "data-view-target=\"audit\"" in allowed
     assert "data-view=\"tasks\"" in allowed
     assert "data-view=\"proposals\"" in allowed
