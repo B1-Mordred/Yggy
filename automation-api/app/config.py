@@ -31,6 +31,7 @@ class Settings:
     ops_dashboard_enabled: bool = True
     ops_dashboard_user: str = "admin"
     ops_dashboard_password: str = ""
+    ops_dashboard_session_ttl_seconds: int = 28800
     version: str = "0.1.0"
 
 
@@ -68,4 +69,5 @@ def get_settings() -> Settings:
         ops_dashboard_enabled=env_bool("AUTOMATION_OPS_DASHBOARD_ENABLED", True),
         ops_dashboard_user=os.getenv("AUTOMATION_OPS_DASHBOARD_USER", "admin"),
         ops_dashboard_password=os.getenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", ""),
+        ops_dashboard_session_ttl_seconds=int(os.getenv("AUTOMATION_OPS_DASHBOARD_SESSION_TTL_SECONDS", "28800")),
     )

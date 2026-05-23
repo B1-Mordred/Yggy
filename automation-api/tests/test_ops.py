@@ -64,76 +64,106 @@ def source_proposal_payload(**overrides) -> dict:
     return {"source": source, "summary": "Please review this public source.", "requested_by": "bragi"}
 
 
-def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
+def test_ops_dashboard_uses_login_page_and_keeps_basic_compatibility(client, monkeypatch):
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
     monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
 
-    denied = client.get("/ops")
-    allowed = client.get("/ops", auth=("operator", "test-dashboard-password"))
+    denied = client.get("/ops", follow_redirects=False)
+    login_page = client.get("/ops/login")
+    bad_login = client.post(
+        "/ops/login",
+        data={"username": "operator", "password": "wrong", "next": "/ops"},
+    )
+    login = client.post(
+        "/ops/login",
+        data={"username": "operator", "password": "test-dashboard-password", "next": "/ops"},
+        follow_redirects=False,
+    )
+    cookie_allowed = client.get("/ops")
+    logout = client.post("/ops/logout", follow_redirects=False)
+    after_logout = client.get("/ops", follow_redirects=False)
+    basic_allowed = client.get("/ops", auth=("operator", "test-dashboard-password"))
 
-    assert denied.status_code == 401
-    assert denied.headers["www-authenticate"] == "Basic"
-    assert allowed.status_code == 200
-    assert "Yggy Operations" in allowed.text
-    assert "data-view-target=\"audit\"" in allowed.text
-    assert "data-view=\"tasks\"" in allowed.text
-    assert "data-view=\"proposals\"" in allowed.text
-    assert "data-view=\"capabilities\"" in allowed.text
-    assert "data-view=\"sources\"" in allowed.text
-    assert "data-count=\"proposals\"" in allowed.text
-    assert "data-count=\"capabilities\"" in allowed.text
-    assert "data-count=\"sources\"" in allowed.text
-    assert "proposal-filter-q" in allowed.text
-    assert "capability-filter-q" in allowed.text
-    assert "capability-page-size" in allowed.text
-    assert "data-capability-action" in allowed.text
-    assert "source-filter-q" in allowed.text
-    assert "source-filter-source-id" in allowed.text
-    assert "source-page-size" in allowed.text
-    assert "data-source-action" in allowed.text
-    assert "data-source-detail-id" in allowed.text
-    assert "pending_sources" in allowed.text
-    assert "Plan implementation" in allowed.text
-    assert "Start implementation" in allowed.text
-    assert "capability-implementation" in allowed.text
-    assert "implementation_planned" in allowed.text
-    assert "approval-filter-q" in allowed.text
-    assert "task-detail" in allowed.text
-    assert "data-task-detail-id" in allowed.text
-    assert "Status Control" in allowed.text
-    assert "data-task-status-select" in allowed.text
-    assert "data-task-status-apply" in allowed.text
-    assert "Approval Control" in allowed.text
-    assert "data-task-archive" in allowed.text
-    assert "data-task-version-revert" in allowed.text
-    assert "task-filter-text" in allowed.text
-    assert "task-page-size" in allowed.text
-    assert "run-filter-status" in allowed.text
-    assert "run-filter-task-id" in allowed.text
-    assert "run-filter-notification-sent" in allowed.text
-    assert "run-page-size" in allowed.text
-    assert "run-timeline" in allowed.text
-    assert "data-task-timeline-id" in allowed.text
-    assert "proposal-page-size" in allowed.text
-    assert "approval-page-size" in allowed.text
-    assert "audit-filter-action" in allowed.text
-    assert "audit-page-size" in allowed.text
-    assert "source.propose" in allowed.text
-    assert "source_proposal" in allowed.text
-    assert "task-pagination" in allowed.text
-    assert "run-pagination" in allowed.text
-    assert "data-sort-view" in allowed.text
-    assert "sortHeader('tasks', 'Task', 'id')" in allowed.text
-    assert "sortHeader('runs', 'Created', 'created_at')" in allowed.text
-    assert "sortHeader('audit', 'Action', 'action')" in allowed.text
-    assert "saved-view-select" in allowed.text
-    assert "failed_runs" in allowed.text
-    assert "pending_capabilities" in allowed.text
-    assert "recent_discord_sends" in allowed.text
-    assert "worker_activity" in allowed.text
-    assert "runTimelineContext" in allowed.text
-    assert "run-summary-strip" in allowed.text
-    assert "sent_discord_count" in allowed.text
+    assert denied.status_code == 303
+    assert denied.headers["location"] == "/ops/login?next=%2Fops"
+    assert "www-authenticate" not in denied.headers
+    assert login_page.status_code == 200
+    assert "Sign in to manage local approvals" in login_page.text
+    assert "autocomplete=\"current-password\"" in login_page.text
+    assert bad_login.status_code == 401
+    assert "Invalid dashboard username or password" in bad_login.text
+    assert login.status_code == 303
+    assert login.headers["location"] == "/ops"
+    assert "yggy_ops_session=" in login.headers["set-cookie"]
+    assert "HttpOnly" in login.headers["set-cookie"]
+    assert "SameSite=lax" in login.headers["set-cookie"]
+    assert cookie_allowed.status_code == 200
+    assert logout.status_code == 303
+    assert logout.headers["location"] == "/ops/login?logged_out=true"
+    assert after_logout.status_code == 303
+    assert basic_allowed.status_code == 200
+    allowed = basic_allowed.text
+    assert "Yggy Operations" in allowed
+    assert "action=\"/ops/logout\"" in allowed
+    assert "data-view-target=\"audit\"" in allowed
+    assert "data-view=\"tasks\"" in allowed
+    assert "data-view=\"proposals\"" in allowed
+    assert "data-view=\"capabilities\"" in allowed
+    assert "data-view=\"sources\"" in allowed
+    assert "data-count=\"proposals\"" in allowed
+    assert "data-count=\"capabilities\"" in allowed
+    assert "data-count=\"sources\"" in allowed
+    assert "proposal-filter-q" in allowed
+    assert "capability-filter-q" in allowed
+    assert "capability-page-size" in allowed
+    assert "data-capability-action" in allowed
+    assert "source-filter-q" in allowed
+    assert "source-filter-source-id" in allowed
+    assert "source-page-size" in allowed
+    assert "data-source-action" in allowed
+    assert "data-source-detail-id" in allowed
+    assert "pending_sources" in allowed
+    assert "Plan implementation" in allowed
+    assert "Start implementation" in allowed
+    assert "capability-implementation" in allowed
+    assert "implementation_planned" in allowed
+    assert "approval-filter-q" in allowed
+    assert "task-detail" in allowed
+    assert "data-task-detail-id" in allowed
+    assert "Status Control" in allowed
+    assert "data-task-status-select" in allowed
+    assert "data-task-status-apply" in allowed
+    assert "Approval Control" in allowed
+    assert "data-task-archive" in allowed
+    assert "data-task-version-revert" in allowed
+    assert "task-filter-text" in allowed
+    assert "task-page-size" in allowed
+    assert "run-filter-status" in allowed
+    assert "run-filter-task-id" in allowed
+    assert "run-filter-notification-sent" in allowed
+    assert "run-page-size" in allowed
+    assert "run-timeline" in allowed
+    assert "data-task-timeline-id" in allowed
+    assert "proposal-page-size" in allowed
+    assert "approval-page-size" in allowed
+    assert "audit-filter-action" in allowed
+    assert "audit-page-size" in allowed
+    assert "source.propose" in allowed
+    assert "source_proposal" in allowed
+    assert "task-pagination" in allowed
+    assert "run-pagination" in allowed
+    assert "data-sort-view" in allowed
+    assert "sortHeader('tasks', 'Task', 'id')" in allowed
+    assert "sortHeader('runs', 'Created', 'created_at')" in allowed
+    assert "sortHeader('audit', 'Action', 'action')" in allowed
+    assert "saved-view-select" in allowed
+    assert "failed_runs" in allowed
+    assert "pending_capabilities" in allowed
+    assert "recent_discord_sends" in allowed
+    assert "worker_activity" in allowed
+    assert "runTimelineContext" in allowed
+    assert "run-summary-strip" in allowed
+    assert "sent_discord_count" in allowed
 
 
 def test_admin_key_can_access_ops_status_without_dashboard_password(client):
@@ -1992,6 +2022,8 @@ def test_ops_routes_are_not_in_openapi(client):
     assert response.status_code == 200
     paths = response.json()["paths"]
     assert "/ops" not in paths
+    assert "/ops/login" not in paths
+    assert "/ops/logout" not in paths
     assert "/ops/status" not in paths
     assert "/ops/audit" not in paths
     assert "/ops/reviews" not in paths

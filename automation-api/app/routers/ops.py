@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
+import hmac
+import json
 import secrets
+import time
 from html import escape
 from typing import Annotated, Any, Literal
+from urllib.parse import parse_qs, quote
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import or_, text
@@ -108,6 +114,9 @@ PROPOSAL_CHANGE_TYPES = {"draft", "update", "revert_draft", "approval_request"}
 MIN_OPS_PAGE_SIZE = 5
 DEFAULT_OPS_PAGE_SIZE = 10
 MAX_OPS_PAGE_SIZE = 100
+OPS_SESSION_COOKIE = "yggy_ops_session"
+OPS_SESSION_MIN_TTL_SECONDS = 300
+OPS_SESSION_MAX_TTL_SECONDS = 86400
 
 
 class OpsApprovalDecision(BaseModel):
@@ -138,17 +147,95 @@ class OpsSourceProposalDecision(BaseModel):
     reason: str = Field(default="", max_length=1000)
 
 
-def require_ops_access(
+def ops_session_ttl_seconds() -> int:
+    settings = get_settings()
+    return min(
+        OPS_SESSION_MAX_TTL_SECONDS,
+        max(OPS_SESSION_MIN_TTL_SECONDS, int(settings.ops_dashboard_session_ttl_seconds)),
+    )
+
+
+def b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
+
+
+def ops_session_signing_key() -> bytes:
+    settings = get_settings()
+    material = "\0".join(
+        [
+            "yggy-ops-session-v1",
+            settings.admin_api_key,
+            settings.ops_dashboard_user,
+            settings.ops_dashboard_password,
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).digest()
+
+
+def create_ops_session_token(username: str) -> str:
+    now = int(time.time())
+    payload = {
+        "u": username,
+        "iat": now,
+        "exp": now + ops_session_ttl_seconds(),
+    }
+    payload_part = b64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    signature = hmac.new(ops_session_signing_key(), payload_part.encode("ascii"), hashlib.sha256).digest()
+    return f"{payload_part}.{b64url_encode(signature)}"
+
+
+def verify_ops_session_token(token: str | None) -> bool:
+    if not token or "." not in token:
+        return False
+    payload_part, signature_part = token.split(".", 1)
+    try:
+        expected = hmac.new(ops_session_signing_key(), payload_part.encode("ascii"), hashlib.sha256).digest()
+        supplied = b64url_decode(signature_part)
+        if not hmac.compare_digest(expected, supplied):
+            return False
+        payload = json.loads(b64url_decode(payload_part))
+    except Exception:
+        return False
+    settings = get_settings()
+    username = payload.get("u")
+    expires_at = int(payload.get("exp") or 0)
+    issued_at = int(payload.get("iat") or 0)
+    now = int(time.time())
+    if not isinstance(username, str) or not secrets.compare_digest(username, settings.ops_dashboard_user):
+        return False
+    if expires_at < now or issued_at > now + 60:
+        return False
+    return True
+
+
+def safe_ops_next_url(next_url: str | None) -> str:
+    value = (next_url or "/ops").strip()
+    if not value.startswith("/ops") or value.startswith("//") or "\r" in value or "\n" in value:
+        return "/ops"
+    return value[:512]
+
+
+def ops_cookie_secure(request: Request) -> bool:
+    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https"
+
+
+def has_ops_access(
+    request: Request,
     credentials: Annotated[HTTPBasicCredentials | None, Depends(basic_security)] = None,
     x_automation_api_key: str | None = Header(default=None),
-) -> None:
+) -> bool:
     settings = get_settings()
     if not settings.ops_dashboard_enabled:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ops dashboard is disabled")
     if x_automation_api_key:
         try:
             if classify_api_key(x_automation_api_key) == ApiRole.ADMIN:
-                return
+                return True
         except HTTPException:
             pass
     if not settings.ops_dashboard_password:
@@ -161,11 +248,22 @@ def require_ops_access(
         and secrets.compare_digest(credentials.username, settings.ops_dashboard_user)
         and secrets.compare_digest(credentials.password, settings.ops_dashboard_password)
     ):
+        return True
+    if verify_ops_session_token(request.cookies.get(OPS_SESSION_COOKIE)):
+        return True
+    return False
+
+
+def require_ops_access(
+    request: Request,
+    credentials: Annotated[HTTPBasicCredentials | None, Depends(basic_security)] = None,
+    x_automation_api_key: str | None = Header(default=None),
+) -> None:
+    if has_ops_access(request, credentials, x_automation_api_key):
         return
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="ops dashboard credentials required",
-        headers={"WWW-Authenticate": "Basic"},
     )
 
 
@@ -231,8 +329,86 @@ def require_ops_source_proposal_action_header(
 
 
 @router.get("/ops", response_class=HTMLResponse, include_in_schema=False)
-def ops_dashboard(_: None = Depends(require_ops_access)) -> HTMLResponse:
+def ops_dashboard(
+    request: Request,
+    credentials: Annotated[HTTPBasicCredentials | None, Depends(basic_security)] = None,
+    x_automation_api_key: str | None = Header(default=None),
+) -> Response:
+    if not has_ops_access(request, credentials, x_automation_api_key):
+        next_url = quote(safe_ops_next_url(str(request.url.path)), safe="")
+        return RedirectResponse(f"/ops/login?next={next_url}", status_code=status.HTTP_303_SEE_OTHER)
     return HTMLResponse(DASHBOARD_HTML)
+
+
+@router.get("/ops/login", response_class=HTMLResponse, include_in_schema=False)
+def ops_login_page(
+    request: Request,
+    next: str = Query(default="/ops", max_length=512),
+    logged_out: bool = Query(default=False),
+) -> Response:
+    settings = get_settings()
+    if not settings.ops_dashboard_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ops dashboard is disabled")
+    next_url = safe_ops_next_url(next)
+    if settings.ops_dashboard_password and verify_ops_session_token(request.cookies.get(OPS_SESSION_COOKIE)):
+        return RedirectResponse(next_url, status_code=status.HTTP_303_SEE_OTHER)
+    if not settings.ops_dashboard_password:
+        return HTMLResponse(
+            ops_login_html(
+                next_url=next_url,
+                error="The operations dashboard password is not configured.",
+                disabled=True,
+            ),
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return HTMLResponse(ops_login_html(next_url=next_url, logged_out=logged_out))
+
+
+@router.post("/ops/login", include_in_schema=False)
+async def ops_login_submit(request: Request) -> Response:
+    settings = get_settings()
+    if not settings.ops_dashboard_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ops dashboard is disabled")
+    body = (await request.body()).decode("utf-8", errors="replace")
+    form = parse_qs(body, keep_blank_values=True)
+    username = (form.get("username") or [""])[0]
+    password = (form.get("password") or [""])[0]
+    next_url = safe_ops_next_url((form.get("next") or ["/ops"])[0])
+    if not settings.ops_dashboard_password:
+        return HTMLResponse(
+            ops_login_html(
+                next_url=next_url,
+                error="The operations dashboard password is not configured.",
+                disabled=True,
+            ),
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    if not (
+        secrets.compare_digest(username, settings.ops_dashboard_user)
+        and secrets.compare_digest(password, settings.ops_dashboard_password)
+    ):
+        return HTMLResponse(
+            ops_login_html(next_url=next_url, error="Invalid dashboard username or password."),
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+    response = RedirectResponse(next_url, status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        OPS_SESSION_COOKIE,
+        create_ops_session_token(username),
+        max_age=ops_session_ttl_seconds(),
+        httponly=True,
+        secure=ops_cookie_secure(request),
+        samesite="lax",
+        path="/ops",
+    )
+    return response
+
+
+@router.post("/ops/logout", include_in_schema=False)
+def ops_logout() -> RedirectResponse:
+    response = RedirectResponse("/ops/login?logged_out=true", status_code=status.HTTP_303_SEE_OTHER)
+    response.delete_cookie(OPS_SESSION_COOKIE, path="/ops")
+    return response
 
 
 @router.get("/ops/status", include_in_schema=False)
@@ -2072,6 +2248,138 @@ def _bounded_audit_detail(detail: Any) -> Any:
     )
 
 
+def ops_login_html(
+    *,
+    next_url: str = "/ops",
+    error: str = "",
+    logged_out: bool = False,
+    disabled: bool = False,
+) -> str:
+    message = ""
+    if error:
+        message = f'<div class="notice bad" role="alert">{escape(error)}</div>'
+    elif logged_out:
+        message = '<div class="notice ok" role="status">Signed out. The gates are shut again.</div>'
+    disabled_attr = " disabled" if disabled else ""
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in - Yggy Operations</title>
+  <style>
+    :root {{
+      color-scheme: light dark;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #18202a;
+      --muted: #5f6b7a;
+      --line: #d9dee7;
+      --ok: #0f7b4b;
+      --bad: #b42318;
+      --accent: #2457c5;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #101418;
+        --panel: #171d24;
+        --text: #eef2f6;
+        --muted: #a7b0bd;
+        --line: #2b3542;
+        --ok: #49c783;
+        --bad: #ff6b61;
+        --accent: #8fb4ff;
+      }}
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    main {{
+      width: min(430px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 24px;
+    }}
+    h1 {{ margin: 0; font-size: 24px; letter-spacing: 0; }}
+    p {{ margin: 8px 0 0; color: var(--muted); }}
+    form {{ display: grid; gap: 14px; margin-top: 22px; }}
+    label {{ display: grid; gap: 6px; font-weight: 650; }}
+    input {{
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 10px 11px;
+      font: inherit;
+    }}
+    input:focus {{
+      outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      outline-offset: 2px;
+      border-color: var(--accent);
+    }}
+    button {{
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: white;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }}
+    button:disabled {{
+      border-color: var(--line);
+      background: var(--line);
+      color: var(--muted);
+      cursor: not-allowed;
+    }}
+    .notice {{
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 11px;
+    }}
+    .notice.bad {{ border-color: var(--bad); color: var(--bad); }}
+    .notice.ok {{ border-color: var(--ok); color: var(--ok); }}
+    .boundary {{
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Yggy Operations</h1>
+    <p>Sign in to manage local approvals, tasks, proposals, runs, and audit views.</p>
+    {message}
+    <form method="post" action="/ops/login" autocomplete="on">
+      <input type="hidden" name="next" value="{escape(safe_ops_next_url(next_url), quote=True)}">
+      <label>Username
+        <input name="username" type="text" autocomplete="username" autofocus required{disabled_attr}>
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required{disabled_attr}>
+      </label>
+      <button type="submit"{disabled_attr}>Sign in</button>
+    </form>
+    <div class="boundary">This session is local to the ops dashboard. It does not expose admin API keys, approval nonces, Docker, shell, or host filesystem access to Bragi or Open WebUI.</div>
+  </main>
+</body>
+</html>
+"""
+
+
 DASHBOARD_HTML = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2183,6 +2491,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     .section {{ margin: 18px 0; }}
     .section-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }}
     .header-actions {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
+    .logout-form {{ margin: 0; }}
     .saved-view {{
       display: inline-flex;
       align-items: center;
@@ -2359,6 +2668,9 @@ DASHBOARD_HTML = f"""<!doctype html>
         </select>
       </label>
       <button id="refresh" type="button" title="Refresh status">Refresh</button>
+      <form class="logout-form" method="post" action="/ops/logout">
+        <button type="submit" title="Sign out of the ops dashboard">Sign out</button>
+      </form>
     </div>
   </header>
   <nav class="tabs" aria-label="Operations views">
@@ -4363,6 +4675,10 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     async function loadStatus() {{
       const response = await fetch('/ops/status', {{credentials: 'same-origin'}});
+      if (response.status === 401) {{
+        window.location.href = `/ops/login?next=${{encodeURIComponent(window.location.pathname)}}`;
+        return;
+      }}
       if (!response.ok) throw new Error(`status ${{response.status}}`);
       const data = await response.json();
       lastStatusData = data;

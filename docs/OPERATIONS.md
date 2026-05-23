@@ -461,6 +461,14 @@ The API serves a local operations and approval dashboard at:
 http://127.0.0.1:8088/ops
 ```
 
+Browser users are redirected to `/ops/login`, which uses the dashboard
+username/password and then sets a signed HttpOnly, SameSite session cookie.
+This avoids the browser's built-in Basic-auth prompt for normal use. Existing
+scripted callers can still use Basic credentials, and hidden ops endpoints can
+still be reached with the admin API key where documented. Signing material is
+derived from local dashboard/admin configuration; changing the dashboard
+password invalidates existing browser sessions.
+
 It is split into views for overview, tasks, runs, task-change proposals,
 capability proposals, approvals, audit, and retention so routine checks do not
 require scanning every table. It shows task state, latest runs, pending reviews,
@@ -655,6 +663,7 @@ Configure it with separate local credentials:
 AUTOMATION_OPS_DASHBOARD_ENABLED=true
 AUTOMATION_OPS_DASHBOARD_USER=admin
 AUTOMATION_OPS_DASHBOARD_PASSWORD=replace-with-long-random-dashboard-password
+AUTOMATION_OPS_DASHBOARD_SESSION_TTL_SECONDS=28800
 ```
 
 By default Compose publishes the API only on localhost:
@@ -682,7 +691,11 @@ Then use:
 http://192.168.2.2:8088/ops
 ```
 
-LAN exposure publishes the whole automation API port, not only the dashboard. The dashboard still requires Basic auth, and write/API endpoints still require API keys, but `/health`, `/docs`, and `/openapi.json` are reachable on that interface. Do not expose this port to untrusted networks or the public internet.
+LAN exposure publishes the whole automation API port, not only the dashboard.
+The dashboard still requires local ops login or compatible Basic credentials,
+and write/API endpoints still require API keys, but `/health`, `/docs`, and
+`/openapi.json` are reachable on that interface. Do not expose this port to
+untrusted networks or the public internet.
 
 ### LAN Firewall Scope
 
