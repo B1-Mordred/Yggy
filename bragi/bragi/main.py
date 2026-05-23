@@ -46,6 +46,7 @@ from .goal_router import (
     AutomationRequestKind,
     AutomationTargetKind,
     classify_automation_request,
+    requires_new_monitoring_capability,
 )
 from .goal_models import GOAL_CAPABILITY_IDS
 from .hermes_client import HermesClarifierClient
@@ -1892,6 +1893,8 @@ def build_candidate_intent(user_text: str) -> dict[str, Any] | None:
     if mode != "draft":
         return None
     lowered = user_text.lower()
+    if requires_new_monitoring_capability(user_text):
+        return None
     if is_topic_digest_subject_change_request(user_text):
         return topic_digest_subject_change_intent(user_text)
     if is_printer_supply_request(user_text):
@@ -2261,7 +2264,9 @@ def webhook_id_from_text(text: str) -> str | None:
             return webhook_id
     match = re.search(r"\bwebhook(?:\s+id)?\s+([a-z0-9][a-z0-9_-]{2,80})\b", lowered)
     if match:
-        return match.group(1)
+        candidate = match.group(1)
+        if candidate not in {"task", "automation", "workflow", "job", "request", "new"}:
+            return candidate
     if "daily" in lowered and "brief" in lowered:
         return "daily_briefing_stub"
     return None
@@ -3939,6 +3944,46 @@ def capability_proposal_payload(
     channel: str = "openwebui",
 ) -> dict[str, Any]:
     lowered = user_text.lower()
+    if requires_new_monitoring_capability(user_text):
+        return {
+            "title": "Storage And Host Resource Monitoring",
+            "requested_by": user_id or "bragi",
+            "source_channel": canonical_intake_channel(channel),
+            "original_request_preview": redact_diagnostic_text(user_text)[:1000],
+            "purpose": (
+                "Review a bounded read-only host-resource monitoring capability for disk, storage, or other explicit "
+                "local resource metrics before those checks can be used by server-health automations."
+            ),
+            "suggested_capability_id": "storage_usage.v1",
+            "suggested_task_type": "storage_usage",
+            "likely_approval_level": "L1_NOTIFY_ONLY",
+            "required_inputs": [
+                "approved read-only metrics endpoint ID",
+                "explicit mount, volume, or filesystem allowlist",
+                "warning threshold, such as 10 percent free",
+                "critical threshold, such as 5 percent free",
+                "polling schedule",
+                "whitelisted notification target",
+            ],
+            "safety_rules": [
+                "must start disabled and dry-run",
+                "must use a narrow read-only endpoint owned by Yggy or an approved metrics exporter",
+                "must not give Bragi, Hermes, or Open WebUI shell access",
+                "must not mount or expose the Docker socket",
+                "must not inspect arbitrary host paths outside the explicit allowlist",
+                "must not write, delete, clean up, resize, or repair filesystems automatically",
+            ],
+            "non_goals": [
+                "no arbitrary shell execution such as df or du from the model path",
+                "no Docker socket access",
+                "no broad host filesystem access",
+                "no automatic cleanup, deletion, package updates, or service restarts",
+            ],
+            "review_notes": str(
+                (result or {}).get("message")
+                or "Bragi classified this as a new monitoring capability requirement, not an executable server_health.v1 task."
+            ),
+        }
     if any(term in lowered for term in ("printer", "toner", "cartridge", "ink level")):
         return {
             "title": "Printer Supply Monitoring",
@@ -4920,6 +4965,10 @@ def should_use_hermes_classification(
 
 def classify_goal_request_with_context(user_text: str, *, use_hermes: bool = True) -> AutomationRequestClassification:
     classification = classify_goal_request(user_text, use_hermes=False)
+    if classification.request_kind == AutomationRequestKind.MODIFY_EXISTING and classification.target_task_id:
+        return classification
+    if source_search_requested(user_text):
+        return classification
     if classification.request_kind in {
         AutomationRequestKind.INSPECT_EXISTING,
         AutomationRequestKind.RUN_EXISTING,

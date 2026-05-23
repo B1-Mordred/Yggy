@@ -57,6 +57,22 @@ MODIFY_VERBS = r"(add|include|cover|remove|drop|exclude|change|modify|update|imp
 CREATE_VERBS = r"(draft|create|set up|setup|schedule|build|prepare|monitor|watch|keep an eye|check|erstelle|richte|plane|überwache|ueberwache|beobachte|prüfe|pruefe)"
 
 SUPPORTED_OPERATION_ACTIONS = {"list_tasks", "show_task", "run_task", "pause_task"}
+REGISTERED_HEALTH_CHECK_IDS = {
+    "automation_api",
+    "automation_worker",
+    "n8n",
+    "ollama",
+    "open_webui",
+    "yggdrasil_action_api",
+}
+HOST_RESOURCE_CHECK_RE = re.compile(
+    r"\b("
+    r"disk(?:[_ -]?usage)?|storage(?:[_ -]?usage)?|filesystem|file system|free space|space free|space usage|"
+    r"mount|partition|volume|cpu(?:[_ -]?usage)?|memory(?:[_ -]?usage)?|ram(?:[_ -]?usage)?|"
+    r"load average|swap|temperature"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def classify_automation_request(
@@ -132,6 +148,17 @@ def classify_deterministic_automation_request(
             request_kind=AutomationRequestKind.HELP,
             confidence=0.90,
             reason="help, explanation, or ordinary chat request",
+        )
+
+    if requires_new_monitoring_capability(text):
+        return AutomationRequestClassification(
+            request_kind=AutomationRequestKind.PROPOSE_NEW_CAPABILITY,
+            target_kind=AutomationTargetKind.NEW_CAPABILITY,
+            confidence=0.82,
+            reason=(
+                "request describes a monitoring check that is not a registered server_health.v1 check "
+                "and appears to require a new bounded endpoint or capability"
+            ),
         )
 
     resolution = resolve_task(
@@ -608,6 +635,8 @@ def infer_registered_capability(text: str) -> str | None:
     lowered = text.lower()
     if re.search(r"\b(printer|toner|ink|cartridge|supply|supplies)\b", lowered):
         return "printer_supply_status.v1"
+    if requires_new_monitoring_capability(text):
+        return None
     health_subject = re.search(
         r"\b(ai stack|local ai stack|health|broken|service|endpoint|server|open webui|ollama|automation api|worker|n8n|"
         r"überwache|ueberwache|beobachte)\b",
@@ -625,6 +654,44 @@ def infer_registered_capability(text: str) -> str | None:
     if re.search(r"\b(brief|briefing|digest|newsletter|summary|summar|news|nachrichten)\b", lowered):
         return "topic_digest.v1"
     return None
+
+
+def requires_new_monitoring_capability(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if not lowered:
+        return False
+
+    host_resource = bool(HOST_RESOURCE_CHECK_RE.search(lowered))
+    if "disk_usage" in lowered or "storage_usage" in lowered:
+        host_resource = True
+
+    missing_endpoint = bool(
+        re.search(r"\b(endpoint|api endpoint|metrics endpoint|exporter|resource)\b.{0,80}\b(needs? to be created|must be created|has to be created|not yet created|missing|does not exist|doesn't exist)\b", lowered)
+        or re.search(r"\b(needs? to be created|must be created|has to be created)\b.{0,80}\b(endpoint|api endpoint|metrics endpoint|exporter|resource)\b", lowered)
+        or re.search(r"\b(create|build|add|need|needs|require|requires)\b.{0,40}\b(new )?(api endpoint|metrics endpoint|exporter)\b", lowered)
+    )
+    threshold_context = bool(re.search(r"\b(thresholds?|warn(?:ing)?|critical|free|percent|%)\b", lowered))
+    monitoring_context = bool(
+        re.search(
+            r"\b(monitor|monitoring|watch|check|checking|health|status|usage|alert|notify|thresholds?|warn(?:ing)?|critical|"
+            r"server_health\.v1|new checks?|add checks?|add new checks?|modify .*checks?|expand .*monitoring)\b",
+            lowered,
+        )
+    )
+
+    check_id_match = re.search(r"\bcheck\s*id\s*[:=-]?\s*`?([a-z][a-z0-9_]{2,127})`?", lowered)
+    unknown_check_id = False
+    if check_id_match:
+        check_id = check_id_match.group(1)
+        unknown_check_id = check_id not in REGISTERED_HEALTH_CHECK_IDS
+
+    if host_resource and (monitoring_context or threshold_context or missing_endpoint or unknown_check_id):
+        return True
+    if missing_endpoint and (monitoring_context or unknown_check_id):
+        return True
+    if unknown_check_id and (host_resource or threshold_context or "server_health.v1" in lowered):
+        return True
+    return False
 
 
 def looks_like_useful_unsupported_automation(lowered: str) -> bool:

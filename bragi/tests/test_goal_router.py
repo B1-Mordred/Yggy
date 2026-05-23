@@ -284,6 +284,63 @@ def test_unsupported_safe_idea_becomes_capability_proposal_classification():
     assert result.target_kind.value == "new_capability"
 
 
+def test_disk_usage_monitoring_requires_new_capability_not_server_health():
+    examples = [
+        (
+            "Check ID: disk_usage. Description: Monitor Disk usage on AI server. "
+            "Endpoint: needs to be created. Thresholds: warn 10% free, critical 5% free."
+        ),
+        "frist we need the new api endpoint for monitoring disk usage, dont you think?",
+        "modify server_health.v1 to add a disk usage check with warning at 10% free and critical at 5% free",
+    ]
+
+    for example in examples:
+        result = classify_automation_request(example, task_aliases=bragi.TASK_ALIASES)
+        assert result.request_kind == AutomationRequestKind.PROPOSE_NEW_CAPABILITY
+        assert result.target_kind.value == "new_capability"
+        assert result.capability_id is None
+        assert "new bounded endpoint or capability" in result.reason
+
+
+def test_disk_usage_monitoring_routes_to_non_executable_capability_proposal(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        assert (method, path) == ("POST", "/capability-proposals/draft")
+        return {
+            "id": "capability_proposal_storage_usage",
+            "status": "pending",
+            "suggested_capability_id": payload["suggested_capability_id"],
+            "suggested_task_type": payload["suggested_task_type"],
+            "likely_approval_level": payload["likely_approval_level"],
+            "purpose": payload["purpose"],
+        }
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: (_ for _ in ()).throw(AssertionError("forwarded")))
+
+    answer = bragi.route_chat(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Check ID: disk_usage. Description: Monitor Disk usage on AI server. "
+                    "Endpoint: needs to be created. Thresholds: warn 10% free, critical 5% free."
+                ),
+            }
+        ]
+    )
+
+    assert calls[0][0:2] == ("POST", "/capability-proposals/draft")
+    assert calls[0][2]["suggested_capability_id"] == "storage_usage.v1"
+    assert calls[0][2]["suggested_task_type"] == "storage_usage"
+    assert "shell access" in " ".join(calls[0][2]["safety_rules"])
+    assert "Capability proposal drafted" in answer
+    assert "This is backlog state only" in answer
+    assert bragi.build_candidate_intent("frist we need the new api endpoint for monitoring disk usage") is None
+
+
 def test_device_command_word_is_not_shell_execution_but_shell_commands_remain_unsafe():
     device = classify_automation_request(
         "Send a command to switch off the lights via WiFi using the SONOFF MINIR4M after no motion.",
