@@ -353,7 +353,7 @@ def ops_dashboard(
     if not has_ops_access(request, credentials, x_automation_api_key):
         next_url = quote(safe_ops_next_url(str(request.url.path)), safe="")
         return RedirectResponse(f"/ops/login?next={next_url}", status_code=status.HTTP_303_SEE_OTHER)
-    return HTMLResponse(DASHBOARD_HTML)
+    return HTMLResponse(DASHBOARD_HTML, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/ops/login", response_class=HTMLResponse, include_in_schema=False)
@@ -4296,7 +4296,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       wireCapabilityProposalButtons(container);
     }}
     function splitLines(value) {{
-      return String(value || '').split(/[,\n]/).map(item => item.trim()).filter(Boolean);
+      return String(value || '').split(/[,\\n]/).map(item => item.trim()).filter(Boolean);
     }}
     function joinLines(items) {{
       return Array.isArray(items) ? items.join('\\n') : '';

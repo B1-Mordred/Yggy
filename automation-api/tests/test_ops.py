@@ -102,6 +102,7 @@ def test_ops_dashboard_uses_login_page_and_keeps_basic_compatibility(client, mon
     assert logout.headers["location"] == "/ops/login?logged_out=true"
     assert after_logout.status_code == 303
     assert basic_allowed.status_code == 200
+    assert basic_allowed.headers["cache-control"] == "no-store"
     allowed = basic_allowed.text
     assert "Yggy Operations" in allowed
     assert "action=\"/ops/logout\"" in allowed
@@ -120,6 +121,8 @@ def test_ops_dashboard_uses_login_page_and_keeps_basic_compatibility(client, mon
     assert "Capability Gap Routing" in allowed
     assert "capability-gap-save" in allowed
     assert "capability-gap" in allowed
+    assert "split(/[,\\n]/)" in allowed
+    assert "split(/[,\n]/)" not in allowed
     assert "source-filter-q" in allowed
     assert "source-filter-source-id" in allowed
     assert "source-page-size" in allowed
