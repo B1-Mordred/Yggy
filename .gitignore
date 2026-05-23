@@ -18,3 +18,4 @@ backups/
 restore-work/
 exports/
 tmp/
+.implementation-workspaces/

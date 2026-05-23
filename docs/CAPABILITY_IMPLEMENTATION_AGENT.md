@@ -16,6 +16,9 @@ Ops UI / Yggy API
   may accept a proposal, create an implementation plan, and queue an
   implementation-run record
 
+Host runner
+  polls queued implementation-run records and invokes the bounded host CLI
+
 Host CLI
   may invoke the dedicated Hermes implementation profile against the local repo
   and create a local git commit after tests pass
@@ -37,15 +40,29 @@ The Dockerized automation API keeps its existing production boundary:
 - no host shell execution
 - no push or deployment authority
 
-Because of that, the `/ops` button named **Queue local implementation** only
-creates a `capability_implementation_run` database record. It does not run
-Hermes, mutate the repository, create a task, create an approval, run a worker,
-or call Yggdrasil.
+Because of that, the `/ops` button named **Start implementation** only creates a
+`capability_implementation_run` database record. It does not run Hermes, mutate
+the repository, create a task, create an approval, run a worker, or call
+Yggdrasil inside the API request.
 
-Actual implementation is done by the host-side CLI:
+The actual start is performed by a separate host-side runner:
 
 ```bash
-python scripts/implement_capability_plan.py --proposal-id <proposal-id>
+python scripts/capability_implementation_runner.py
+```
+
+That runner must run only on the local host. It loads the admin key from the
+local environment or `.env`, polls queued runs, prepares a clean secret-free
+implementation workspace when configured, and invokes the existing bounded
+implementation CLI with `--run-id <run-id>`. If the runner service is active,
+pressing **Start implementation** in `/ops` is enough to make the queued run
+begin. If the runner service is stopped, the run remains queued and can still be
+processed manually.
+
+Manual fallback is still the host-side CLI:
+
+```bash
+python scripts/implement_capability_plan.py --run-id <run-id>
 ```
 
 The CLI requires `AUTOMATION_ADMIN_API_KEY` in the local environment or `.env`.
@@ -58,14 +75,16 @@ Discord, task YAML, or documentation.
 2. The operator reviews it in `/ops`.
 3. The operator accepts it.
 4. The operator creates an implementation plan.
-5. The operator queues a local implementation run.
-6. The operator runs the host CLI.
-7. The CLI fetches the proposal and plan with the admin key.
-8. The CLI generates a bounded goal-style Hermes prompt.
-9. The CLI invokes Hermes with a scrubbed environment.
-10. The CLI reruns validation.
-11. If validation passes, the CLI creates a local git commit.
-12. The CLI marks the implementation run `completed` with the local commit SHA.
+5. The operator starts implementation from `/ops`, which queues a local
+   implementation run.
+6. The host runner sees the queued run.
+7. The runner invokes the host CLI with `--run-id <run-id>`.
+8. The CLI fetches the proposal and plan with the admin key.
+9. The CLI generates a bounded goal-style Hermes prompt.
+10. The CLI invokes Hermes with a scrubbed environment.
+11. The CLI reruns validation.
+12. If validation passes, the CLI creates a local git commit.
+13. The CLI marks the implementation run `completed` with the local commit SHA.
 
 The CLI does not push. The operator still reviews the commit and chooses when
 to push, deploy, rebuild, or restart services.
@@ -99,6 +118,56 @@ Use a queued run from the ops UI:
 ```bash
 python scripts/implement_capability_plan.py --run-id <run-id>
 ```
+
+Run the queue processor once:
+
+```bash
+python scripts/capability_implementation_runner.py --once
+```
+
+Run continuously:
+
+```bash
+python scripts/capability_implementation_runner.py --poll-seconds 20
+```
+
+The runner defaults to staged implementation with a fresh Hermes profile. A
+safe production-style runner should use a managed workspace that contains no
+`.env` or other secret files:
+
+```bash
+YGGY_IMPLEMENTATION_RUNNER_WORKSPACE=/srv/Yggy/.implementation-workspaces/capability-runner \
+YGGY_IMPLEMENTATION_HERMES_USER=hermes \
+YGGY_IMPLEMENTATION_HERMES_PROFILE=capability-implementer \
+python scripts/capability_implementation_runner.py
+```
+
+The managed workspace is reset to the source repository `HEAD` before each run,
+keeps a symlink to the source `.venv` for validation, and grants the configured
+Hermes service user write access. It is ignored by Git.
+
+## Systemd
+
+A unit template is provided at:
+
+```text
+deploy/systemd/yggy-capability-implementation-runner.service
+```
+
+Install and start it on the local host with:
+
+```bash
+sudo cp deploy/systemd/yggy-capability-implementation-runner.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now yggy-capability-implementation-runner.service
+systemctl status yggy-capability-implementation-runner.service --no-pager
+```
+
+The unit runs as `mordred`, reads the admin key from `/srv/Yggy/.env` through
+the wrapper process, uses `/srv/Yggy/.implementation-workspaces/capability-runner`
+as a secret-free managed workspace, and invokes Hermes as the `hermes` service
+account with the `capability-implementer` profile. The Hermes subprocess still
+receives a scrubbed environment.
 
 Use a different Hermes profile or model:
 

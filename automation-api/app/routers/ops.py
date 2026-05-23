@@ -3777,7 +3777,8 @@ DASHBOARD_HTML = f"""<!doctype html>
           <code>${{esc(run.id)}}</code> <span class="pill">${{esc(run.status)}}</span>
           branch <code>${{esc(run.branch || '')}}</code>
           ${{run.commit_sha ? ` commit <code>${{esc(run.commit_sha)}}</code>` : ''}}
-          <br>CLI: <code>${{esc(run.operator_handoff?.cli_command || '')}}</code>
+          <br>Runner: <code>${{esc(run.operator_handoff?.runner_command || '')}}</code>
+          <br>CLI fallback: <code>${{esc(run.operator_handoff?.cli_command || '')}}</code>
         </div>`).join('')}}
       </details>`;
     }}
@@ -3816,7 +3817,7 @@ DASHBOARD_HTML = f"""<!doctype html>
             ${{pending ? `<button type="button" data-capability-action="close" data-capability-id="${{esc(item.id)}}">Close</button>` : ''}}
             ${{accepted ? `<button type="button" data-capability-action="plan" data-capability-id="${{esc(item.id)}}">Plan implementation</button>` : ''}}
             ${{accepted ? `<button type="button" data-capability-action="close" data-capability-id="${{esc(item.id)}}">Close</button>` : ''}}
-            ${{planned ? `<button type="button" data-capability-implement="${{esc(item.id)}}" title="Queue a host-side CLI handoff; the API does not execute code">Queue local implementation</button>` : ''}}
+            ${{planned ? `<button type="button" data-capability-implement="${{esc(item.id)}}" title="Queue a run for the host-side implementation runner; the API request itself does not execute code">Start implementation</button>` : ''}}
             ${{planned ? `<button type="button" data-capability-action="implemented" data-capability-id="${{esc(item.id)}}" title="Requires the capability to be registered first">Mark implemented</button>` : ''}}
             ${{planned ? `<button type="button" class="danger" data-capability-action="supersede" data-capability-id="${{esc(item.id)}}">Supersede</button>` : ''}}
             <button type="button" data-capability-detail-id="${{esc(item.id)}}">Details</button>
@@ -3839,7 +3840,7 @@ DASHBOARD_HTML = f"""<!doctype html>
     }}
     function renderCapabilityProposals(proposals) {{
       const container = document.getElementById('capabilities');
-      container.innerHTML = '<div class="meta">Capability proposals are implementation backlog only. Accepting one records operator interest; it does not create a task, approval, run, or executable Yggdrasil request. Planned proposals can be queued for the host-side implementation CLI; the dashboard records the handoff but does not execute code.</div>'
+      container.innerHTML = '<div class="meta">Capability proposals are implementation backlog only. Accepting one records operator interest; it does not create a task, approval, run, or executable Yggdrasil request. Planned proposals can be started by queueing a run for the host-side implementation runner. The API request itself still does not execute code.</div>'
         + capabilityProposalCards(proposals, 'No capability proposals match the current filters.');
       wireCapabilityProposalButtons(container);
     }}
@@ -4236,7 +4237,7 @@ DASHBOARD_HTML = f"""<!doctype html>
       const input = panel.querySelector('input');
       const reason = input?.value || '';
       button.disabled = true;
-      message.textContent = 'queueing local implementation handoff...';
+      message.textContent = 'queueing implementation run for the local runner...';
       message.className = 'meta approval-message';
       try {{
         const response = await fetch(`/ops/capability-proposals/${{encodeURIComponent(proposalId)}}/implement`, {{
@@ -4250,7 +4251,7 @@ DASHBOARD_HTML = f"""<!doctype html>
           throw new Error(error.detail || `status ${{response.status}}`);
         }}
         const run = await response.json();
-        message.textContent = `Queued local implementation run ${{run.id}}. Host CLI: ${{run.operator_handoff?.cli_command || 'scripts/implement_capability_plan.py'}}`;
+        message.textContent = `Implementation run ${{run.id}} queued. The host-side runner will pick it up. CLI fallback: ${{run.operator_handoff?.cli_command || 'scripts/implement_capability_plan.py --run-id ' + run.id}}`;
       }} catch (error) {{
         message.textContent = error.message;
         message.className = 'meta approval-message bad';

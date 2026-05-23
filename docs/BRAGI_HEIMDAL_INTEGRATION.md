@@ -496,19 +496,27 @@ report this proposal and plan status through read-only context so the user can
 ask what happened with an automation idea, but Bragi still cannot implement,
 approve, or execute it.
 
-The `/ops` UI can queue a separate `capability_implementation_run` handoff for a
-planned proposal. This is still not model-facing execution. It only records that
-the local operator intends to run the host-side implementation CLI:
+The `/ops` UI can queue a separate `capability_implementation_run` for a planned
+proposal. This is still not model-facing execution. If the local host-side
+runner is active, it will pick up queued runs and invoke the bounded
+implementation CLI. The API request itself still does not execute code:
 
 ```bash
-python scripts/implement_capability_plan.py --proposal-id <proposal-id>
+python scripts/capability_implementation_runner.py
 ```
 
-That CLI may invoke a dedicated Hermes profile named `capability-implementer`
-to edit the repository and then create a local commit after validation passes.
+Manual fallback uses:
+
+```bash
+python scripts/implement_capability_plan.py --run-id <run-id>
+```
+
+That CLI may invoke a dedicated Hermes profile named `capability-implementer` to
+edit the repository and then create a local commit after validation passes.
 Bragi, Open WebUI, Yggdrasil, and model-facing tool keys do not receive admin
 keys, approval nonces, Docker access, deployment authority, or the ability to
-run this implementation path. See `docs/CAPABILITY_IMPLEMENTATION_AGENT.md`.
+run this implementation path directly. See
+`docs/CAPABILITY_IMPLEMENTATION_AGENT.md`.
 
 Unsafe requests still stay rejected instead of becoming proposals. For example,
 requests to restart Docker, reorganize arbitrary server files, change firewall

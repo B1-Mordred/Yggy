@@ -54,8 +54,8 @@ def create_implementation_run(
             redact_secrets(
                 reason
                 or (
-                    "Queued local implementation handoff. Run the host-side implementation CLI to invoke Hermes, "
-                    "validate the patch, and create a local commit."
+                    "Queued for the host-side capability implementation runner. The API only records the run; "
+                    "the local runner invokes Hermes, validates the patch, and creates a local commit."
                 )
             )
         ),
@@ -150,9 +150,12 @@ def implementation_run_to_dict(run: CapabilityImplementationRunModel) -> dict[st
             "updated_at": run.updated_at,
             "completed_at": run.completed_at,
             "operator_handoff": {
-                "cli_command": f"python scripts/implement_capability_plan.py --proposal-id {run.proposal_id}",
+                "cli_command": f"python scripts/implement_capability_plan.py --run-id {run.id}",
+                "runner_command": "python scripts/capability_implementation_runner.py --once",
                 "queued_only": run.status == "queued",
                 "requires_host_cli": True,
+                "requires_host_runner": True,
+                "runner_picks_up_queued_runs": True,
             },
             "execution": {
                 "creates_task": False,

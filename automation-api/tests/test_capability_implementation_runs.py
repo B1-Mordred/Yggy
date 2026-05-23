@@ -81,7 +81,10 @@ def test_admin_can_queue_and_complete_capability_implementation_run(client):
         "can_push": False,
         "local_commit_only": True,
     }
-    assert body["operator_handoff"]["cli_command"] == f"python scripts/implement_capability_plan.py --proposal-id {planned['id']}"
+    assert body["operator_handoff"]["cli_command"] == f"python scripts/implement_capability_plan.py --run-id {body['id']}"
+    assert body["operator_handoff"]["runner_command"] == "python scripts/capability_implementation_runner.py --once"
+    assert body["operator_handoff"]["requires_host_runner"] is True
+    assert body["operator_handoff"]["runner_picks_up_queued_runs"] is True
     assert duplicate.status_code == 409
     assert "active implementation run" in duplicate.text
 

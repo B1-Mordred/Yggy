@@ -1,0 +1,29 @@
+[Unit]
+Description=Yggy capability implementation runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mordred
+Group=mordred
+WorkingDirectory=/srv/Yggy
+Environment=AUTOMATION_API_BASE_URL=http://127.0.0.1:8088
+Environment=YGGY_IMPLEMENTATION_ENV_ROOT=/srv/Yggy
+Environment=YGGY_IMPLEMENTATION_RUNNER_SOURCE_ROOT=/srv/Yggy
+Environment=YGGY_IMPLEMENTATION_RUNNER_WORKSPACE=/srv/Yggy/.implementation-workspaces/capability-runner
+Environment=YGGY_IMPLEMENTATION_HERMES_USER=hermes
+Environment=YGGY_IMPLEMENTATION_HERMES_HOME=/srv/hermes/.hermes
+Environment=YGGY_IMPLEMENTATION_HERMES_OS_HOME=/srv/hermes
+Environment=YGGY_IMPLEMENTATION_HERMES_PROFILE=capability-implementer
+Environment=YGGY_IMPLEMENTATION_HERMES_MODEL=hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL
+Environment=YGGY_IMPLEMENTATION_RUNNER_STAGED=true
+Environment=YGGY_IMPLEMENTATION_RUNNER_FRESH_PROFILE=true
+Environment=YGGY_IMPLEMENTATION_RUNNER_POLL_SECONDS=20
+Environment=YGGY_IMPLEMENTATION_RUNNER_BATCH_SIZE=1
+ExecStart=/srv/Yggy/.venv/bin/python /srv/Yggy/scripts/capability_implementation_runner.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

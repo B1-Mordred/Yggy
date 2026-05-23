@@ -94,7 +94,7 @@ def test_ops_dashboard_requires_basic_credentials(client, monkeypatch):
     assert "data-source-detail-id" in allowed.text
     assert "pending_sources" in allowed.text
     assert "Plan implementation" in allowed.text
-    assert "Queue local implementation" in allowed.text
+    assert "Start implementation" in allowed.text
     assert "capability-implementation" in allowed.text
     assert "implementation_planned" in allowed.text
     assert "approval-filter-q" in allowed.text
