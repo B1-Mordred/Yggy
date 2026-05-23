@@ -43,6 +43,54 @@ class ChannelAuditClient:
         data = response.json() if response.content else {}
         return data if isinstance(data, dict) else None
 
+    async def pending_notifications(
+        self,
+        *,
+        channel: str,
+        user_id: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        headers = {"X-Automation-Api-Key": self.api_key}
+        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+            response = await client.get(
+                f"{self.base_url}/channels/notifications/pending",
+                headers=headers,
+                params={"channel": channel, "user_id": user_id, "limit": limit},
+            )
+        if response.status_code >= 400:
+            logger.warning("channel notifications rejected by automation-api: HTTP %s", response.status_code)
+            return []
+        data = response.json() if response.content else {}
+        notifications = data.get("notifications") if isinstance(data, dict) else None
+        return [item for item in notifications if isinstance(item, dict)] if isinstance(notifications, list) else []
+
+    async def mark_notification(
+        self,
+        *,
+        notification_id: str,
+        status: str,
+        error: str = "",
+    ) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        headers = {
+            "Content-Type": "application/json",
+            "X-Automation-Api-Key": self.api_key,
+        }
+        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+            response = await client.post(
+                f"{self.base_url}/channels/notifications/{notification_id}/mark",
+                headers=headers,
+                json={"status": status, "error": error},
+            )
+        if response.status_code >= 400:
+            logger.warning("channel notification mark rejected by automation-api: HTTP %s", response.status_code)
+            return None
+        data = response.json() if response.content else {}
+        return data if isinstance(data, dict) else None
+
 
 def hash_identifier(value: str | int | None) -> str | None:
     if value is None:

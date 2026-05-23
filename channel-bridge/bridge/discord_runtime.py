@@ -9,7 +9,15 @@ import discord
 
 from .audit_client import ChannelAuditClient, build_channel_event
 from .bragi_client import BragiClient, BragiClientError, build_discord_payload
-from .config import BridgeSettings, ChannelConfig, env_ref_value, is_placeholder_value, resolve_discord_channel, split_discord_reply
+from .config import (
+    BridgeSettings,
+    ChannelConfig,
+    comma_env_values,
+    env_ref_value,
+    is_placeholder_value,
+    resolve_discord_channel,
+    split_discord_reply,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -34,7 +42,7 @@ class BragiDiscordClient(discord.Client):
         self._followup_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
-        if self.settings.followups_enabled:
+        if self.settings.followups_enabled or self.settings.notifications_enabled:
             self._followup_task = asyncio.create_task(self._followup_loop())
 
     async def close(self) -> None:
@@ -226,12 +234,20 @@ class BragiDiscordClient(discord.Client):
     async def _followup_loop(self) -> None:
         await self.wait_until_ready()
         while not self.is_closed():
-            try:
-                await self._send_due_followups()
-            except asyncio.CancelledError:  # pragma: no cover - shutdown path.
-                raise
-            except Exception as exc:  # pragma: no cover - background guard.
-                logger.warning("could not process Bragi followups: %s", exc.__class__.__name__)
+            if self.settings.followups_enabled:
+                try:
+                    await self._send_due_followups()
+                except asyncio.CancelledError:  # pragma: no cover - shutdown path.
+                    raise
+                except Exception as exc:  # pragma: no cover - background guard.
+                    logger.warning("could not process Bragi followups: %s", exc.__class__.__name__)
+            if self.settings.notifications_enabled:
+                try:
+                    await self._send_due_channel_notifications()
+                except asyncio.CancelledError:  # pragma: no cover - shutdown path.
+                    raise
+                except Exception as exc:  # pragma: no cover - background guard.
+                    logger.warning("could not process channel notifications: %s", exc.__class__.__name__)
             await asyncio.sleep(self.settings.followup_poll_seconds)
 
     async def _send_due_followups(self) -> None:
@@ -276,6 +292,97 @@ class BragiDiscordClient(discord.Client):
             if not is_placeholder_value(channel_id):
                 return channel, channel_id
         return None, ""
+
+    async def _send_due_channel_notifications(self) -> None:
+        if not self.audit or not self.audit.enabled:
+            return
+        seen: set[tuple[str, str]] = set()
+        for channel_config in self.channels:
+            if not channel_config.enabled or channel_config.type not in {"discord", "discord_dm"}:
+                continue
+            key = (channel_config.type, channel_config.audience)
+            if key in seen:
+                continue
+            seen.add(key)
+            notifications = await self.audit.pending_notifications(
+                channel=channel_config.type,
+                user_id=channel_config.audience,
+                limit=self.settings.notification_limit,
+            )
+            for notification in notifications:
+                notification_id = str(notification.get("id") or "")
+                message = str(notification.get("message") or "").strip()
+                if not notification_id:
+                    continue
+                if not message:
+                    await self.audit.mark_notification(
+                        notification_id=notification_id,
+                        status="skipped",
+                        error="empty notification message",
+                    )
+                    continue
+                delivery_status, error, delivered_targets = await self._deliver_channel_notification(channel_config, message)
+                await self.audit.mark_notification(
+                    notification_id=notification_id,
+                    status=delivery_status,
+                    error=error,
+                )
+                await self._record_channel_event(
+                    build_channel_event(
+                        channel_type="discord",
+                        channel_config_id=channel_config.id,
+                        channel_id=delivered_targets[0] if delivered_targets else None,
+                        route="channel_notification",
+                        required_capability=str(notification.get("kind") or "notification"),
+                        forwarded_to_yggdrasil=False,
+                        status="replied" if delivery_status == "sent" else "failed",
+                        blocked_reason=error if delivery_status != "sent" else None,
+                        reply_preview=message,
+                        metadata={
+                            "notification_id": notification_id,
+                            "notification_kind": notification.get("kind"),
+                            "notification_channel": channel_config.type,
+                            "resource_type": notification.get("resource_type"),
+                            "resource_id": notification.get("resource_id"),
+                            "target_count": len(delivered_targets),
+                        },
+                    )
+                )
+
+    async def _deliver_channel_notification(self, channel_config: ChannelConfig, message: str) -> tuple[str, str, list[str]]:
+        targets = await self._notification_targets(channel_config)
+        if not targets:
+            return "failed", f"no configured {channel_config.type} delivery target", []
+
+        delivered_targets: list[str] = []
+        errors: list[str] = []
+        for target_id, target in targets:
+            try:
+                for chunk in split_discord_reply(message, limit=self.settings.discord_reply_limit):
+                    await target.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+                delivered_targets.append(target_id)
+            except Exception as exc:  # pragma: no cover - Discord permissions/network vary.
+                errors.append(f"{target_id}: {exc.__class__.__name__}")
+        if delivered_targets:
+            return "sent", "", delivered_targets
+        return "failed", "; ".join(errors)[:1000] or "discord delivery failed", delivered_targets
+
+    async def _notification_targets(self, channel_config: ChannelConfig) -> list[tuple[str, Any]]:
+        if channel_config.type == "discord":
+            channel_id = env_ref_value(channel_config.channel_id_ref)
+            if is_placeholder_value(channel_id):
+                return []
+            target = await self._discord_channel(channel_id)
+            return [(channel_id, target)] if target else []
+        if channel_config.type == "discord_dm":
+            targets: list[tuple[str, Any]] = []
+            for user_id in sorted(comma_env_values(channel_config.allowed_user_ids_ref)):
+                try:
+                    targets.append((user_id, await self.fetch_user(int(user_id))))
+                except Exception as exc:  # pragma: no cover - Discord permissions/network vary.
+                    logger.warning("could not fetch Discord DM user for notification: %s", exc.__class__.__name__)
+            return targets
+        return []
 
     async def _discord_channel(self, channel_id: str) -> Any | None:
         try:

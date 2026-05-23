@@ -61,6 +61,7 @@ from app.services.capability_implementation_service import (
     implementation_run_to_dict,
     list_implementation_runs,
 )
+from app.services.channel_notification_service import enqueue_implementation_status_notification
 from app.services.source_proposal_service import (
     SourceProposalError,
     apply_source_proposal,
@@ -721,6 +722,7 @@ def ops_queue_capability_implementation(
             "surface": "ops_ui",
         },
     )
+    enqueue_implementation_status_notification(session, run=run, proposal=proposal)
     session.commit()
     return implementation_run_to_dict(run)
 

@@ -150,6 +150,7 @@ def test_bridge_settings_from_env_clamps_values():
                 "CHANNEL_BRIDGE_DISCORD_REPLY_LIMIT": "99999",
                 "CHANNEL_BRIDGE_FOLLOWUP_POLL_SECONDS": "1",
                 "CHANNEL_BRIDGE_FOLLOWUP_LIMIT": "999",
+                "CHANNEL_BRIDGE_NOTIFICATION_LIMIT": "999",
             }
         )
     )
@@ -163,6 +164,8 @@ def test_bridge_settings_from_env_clamps_values():
     assert settings.followups_enabled is True
     assert settings.followup_poll_seconds == 30
     assert settings.followup_limit == 20
+    assert settings.notifications_enabled is True
+    assert settings.notification_limit == 50
 
 
 def test_split_discord_reply_respects_limit():

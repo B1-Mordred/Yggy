@@ -923,6 +923,20 @@ class ChannelEventCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ChannelNotificationStatus(str, Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class ChannelNotificationMark(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["sent", "failed", "skipped"]
+    error: str = Field(default="", max_length=1000)
+
+
 class ResearchQueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

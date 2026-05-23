@@ -16,6 +16,7 @@ from app.services.capability_implementation_service import (
     list_implementation_runs,
     update_implementation_run,
 )
+from app.services.channel_notification_service import enqueue_implementation_status_notification
 
 router = APIRouter(
     prefix="/capability-implementation-runs",
@@ -55,6 +56,7 @@ def create_capability_implementation_run(
             "created_by": run.created_by,
         },
     )
+    enqueue_implementation_status_notification(session, run=run, proposal=proposal)
     session.commit()
     return implementation_run_to_dict(run)
 
@@ -114,5 +116,9 @@ def update_capability_implementation_run(
             "commit_sha": run.commit_sha,
         },
     )
+    if before != run.status:
+        proposal = session.get(CapabilityProposalModel, run.proposal_id)
+        if proposal is not None:
+            enqueue_implementation_status_notification(session, run=run, proposal=proposal, previous_status=before)
     session.commit()
     return implementation_run_to_dict(run)

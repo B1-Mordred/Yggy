@@ -28,6 +28,8 @@ CHANNEL_BRIDGE_CONFIG_ROOT
 CHANNEL_BRIDGE_FOLLOWUPS_ENABLED
 CHANNEL_BRIDGE_FOLLOWUP_POLL_SECONDS
 CHANNEL_BRIDGE_FOLLOWUP_LIMIT
+CHANNEL_BRIDGE_NOTIFICATIONS_ENABLED
+CHANNEL_BRIDGE_NOTIFICATION_LIMIT
 ```
 
 Rules:
@@ -39,6 +41,9 @@ Rules:
 - optionally enforce `DISCORD_ALLOWED_USER_IDS`
 - pass bounded recent channel history to Bragi for confirmations
 - poll Bragi for due intake follow-ups and post bounded reminders to the configured channel
+- poll the Yggy automation API for pending channel notifications, including
+  capability-implementation status changes, and post them through the same
+  configured Discord surface
 - do not approve tasks from Discord
 - do not expose admin keys, approval nonces, webhook URLs, or database secrets
 - post Bragi replies with Discord mentions disabled
@@ -82,6 +87,37 @@ POST /intakes/followups/mark-sent
 
 This only advances reminder metadata. It does not confirm, approve, run, or
 forward anything to Yggdrasil.
+
+## Channel Notifications
+
+The automation API owns a generic channel-notification outbox for status changes
+that happen after the original request has returned. The first producer is the
+capability-implementation workflow. When an implementation run moves through
+`queued`, `running`, `completed`, or `failed`, the API stores a redacted Bragi
+persona message for the requesting audience and source channel.
+
+When enabled, the bridge polls:
+
+```text
+GET /channels/notifications/pending?channel=discord&user_id=<audience>
+GET /channels/notifications/pending?channel=discord_dm&user_id=<audience>
+```
+
+After a successful post it calls:
+
+```text
+POST /channels/notifications/{notification_id}/mark
+```
+
+These calls use `AUTOMATION_CHANNEL_BRIDGE_API_KEY`. They can read and mark
+delivery state only; they cannot approve, run, mutate, deploy, or call
+Yggdrasil. Discord delivery uses the configured channel id. Discord DM delivery
+uses the explicitly allowed user ids from `DISCORD_ALLOWED_USER_IDS`.
+
+Open WebUI-originated notifications are also stored in the outbox with
+`channel=openwebui`, but this repository does not yet include an outbound Open
+WebUI push adapter. Until such an adapter exists, those messages are durable
+and admin-visible but not pushed into an Open WebUI chat session.
 
 ## Direct Messages
 

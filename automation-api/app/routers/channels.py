@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 from app.auth import ApiRole, require_roles
 from app.database import get_session
 from app.models import AuditEventModel
-from app.schemas import ChannelEventCreate, ChannelEventStatus
+from app.schemas import ChannelEventCreate, ChannelEventStatus, ChannelNotificationMark
+from app.services.channel_notification_service import (
+    channel_notification_to_dict,
+    get_channel_notification,
+    list_pending_channel_notifications,
+    mark_channel_notification,
+)
 from app.services.validation_service import redact_secrets
 
 router = APIRouter(prefix="/channels", tags=["channels"])
@@ -79,6 +85,38 @@ def get_channel_event(
     if event is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="channel event not found")
     return channel_event_to_dict(event)
+
+
+@router.get("/notifications/pending", include_in_schema=False)
+def pending_channel_notifications(
+    channel: Literal["discord", "discord_dm", "openwebui"],
+    user_id: str | None = Query(default=None, min_length=1, max_length=128),
+    limit: int = Query(default=20, ge=1, le=50),
+    role: ApiRole = Depends(require_roles(ApiRole.CHANNEL_BRIDGE, ApiRole.ADMIN)),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    notifications = list_pending_channel_notifications(session, channel=channel, user_id=user_id, limit=limit)
+    return {
+        "notifications": [channel_notification_to_dict(notification) for notification in notifications],
+        "count": len(notifications),
+    }
+
+
+@router.post("/notifications/{notification_id}/mark", include_in_schema=False)
+def mark_channel_notification_delivery(
+    notification_id: str,
+    payload: ChannelNotificationMark,
+    role: ApiRole = Depends(require_roles(ApiRole.CHANNEL_BRIDGE, ApiRole.ADMIN)),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    notification = get_channel_notification(session, notification_id)
+    if notification is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="channel notification not found")
+    if notification.status == "pending":
+        mark_channel_notification(notification, payload)
+        session.commit()
+        session.refresh(notification)
+    return channel_notification_to_dict(notification)
 
 
 def channel_event_to_dict(event: AuditEventModel) -> dict[str, Any]:

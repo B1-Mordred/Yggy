@@ -70,3 +70,40 @@ async def test_channel_audit_client_is_disabled_without_key():
 
     assert await client.record_event({"channel_type": "discord", "status": "replied"}) is None
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_channel_audit_client_fetches_and_marks_notifications():
+    seen = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            {
+                "method": request.method,
+                "url": str(request.url),
+                "key": request.headers.get("x-automation-api-key"),
+                "payload": json.loads(request.content.decode()) if request.content else None,
+            }
+        )
+        if request.method == "GET":
+            return httpx.Response(200, json={"notifications": [{"id": "note-1", "message": "status changed"}]})
+        return httpx.Response(200, json={"id": "note-1", "status": "sent"})
+
+    client = ChannelAuditClient(
+        base_url="http://automation-api:8088",
+        api_key="audit-key",
+        transport=httpx.MockTransport(handler),
+    )
+
+    notifications = await client.pending_notifications(channel="discord", user_id="local_user", limit=4)
+    marked = await client.mark_notification(notification_id="note-1", status="sent")
+
+    assert notifications == [{"id": "note-1", "message": "status changed"}]
+    assert marked == {"id": "note-1", "status": "sent"}
+    assert seen[0]["url"] == (
+        "http://automation-api:8088/channels/notifications/pending"
+        "?channel=discord&user_id=local_user&limit=4"
+    )
+    assert seen[0]["key"] == "audit-key"
+    assert seen[1]["url"] == "http://automation-api:8088/channels/notifications/note-1/mark"
+    assert seen[1]["payload"] == {"status": "sent", "error": ""}

@@ -69,6 +69,8 @@ class BridgeSettings:
     followups_enabled: bool = True
     followup_poll_seconds: int = 300
     followup_limit: int = 5
+    notifications_enabled: bool = True
+    notification_limit: int = 10
     http_timeout_seconds: float = 30.0
 
     @classmethod
@@ -88,6 +90,8 @@ class BridgeSettings:
             followups_enabled=env_bool(resolver("CHANNEL_BRIDGE_FOLLOWUPS_ENABLED"), True),
             followup_poll_seconds=clamp_int(resolver("CHANNEL_BRIDGE_FOLLOWUP_POLL_SECONDS"), default=300, minimum=30, maximum=86400),
             followup_limit=clamp_int(resolver("CHANNEL_BRIDGE_FOLLOWUP_LIMIT"), default=5, minimum=1, maximum=20),
+            notifications_enabled=env_bool(resolver("CHANNEL_BRIDGE_NOTIFICATIONS_ENABLED"), True),
+            notification_limit=clamp_int(resolver("CHANNEL_BRIDGE_NOTIFICATION_LIMIT"), default=10, minimum=1, maximum=50),
             http_timeout_seconds=float(resolver("CHANNEL_BRIDGE_HTTP_TIMEOUT") or "30"),
         )
 

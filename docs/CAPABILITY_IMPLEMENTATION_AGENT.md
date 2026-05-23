@@ -89,6 +89,39 @@ Discord, task YAML, or documentation.
 The CLI does not push. The operator still reviews the commit and chooses when
 to push, deploy, rebuild, or restart services.
 
+## Requester Status Updates
+
+Implementation runs can outlive the chat turn that requested them, so status is
+reported through a separate channel-notification outbox owned by the automation
+API. Whenever a run changes status, the API writes a redacted Bragi persona
+message for the proposal's `requested_by` audience and `source_channel`.
+
+Status notifications are emitted for:
+
+- `queued`
+- `running`
+- `completed`
+- `failed`
+
+The message includes the capability id, run id, branch, previous status when
+applicable, and the local commit short SHA on completion. It does not include
+admin API keys, approval nonces, Discord tokens, webhook URLs, raw environment
+variables, or secret-bearing logs.
+
+Delivery is adapter-owned:
+
+- Discord requests are delivered by `channel-bridge` back to the configured
+  Discord channel for the same audience.
+- Discord DM requests are delivered by `channel-bridge` back to the explicitly
+  allowed DM user ids.
+- Open WebUI requests are stored as `channel=openwebui` notifications. This repo
+  does not yet include an Open WebUI push adapter, so those notifications remain
+  durable/admin-visible until an Open WebUI delivery surface is added.
+
+The delivery key is `AUTOMATION_CHANNEL_BRIDGE_API_KEY`. It can fetch and mark
+channel notifications, but it cannot approve, mutate tasks, run automations,
+deploy code, or contact Yggdrasil as an authority.
+
 The implementation runner is capability-neutral. It must not contain
 capability-specific payload writers or hard-coded code for one previous job.
 For staged runs it derives stages from the proposal and implementation plan:

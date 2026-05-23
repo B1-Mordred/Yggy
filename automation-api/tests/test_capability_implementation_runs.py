@@ -87,6 +87,13 @@ def test_admin_can_queue_and_complete_capability_implementation_run(client):
     assert body["operator_handoff"]["runner_picks_up_queued_runs"] is True
     assert duplicate.status_code == 409
     assert "active implementation run" in duplicate.text
+    queued_notifications = client.get(
+        "/channels/notifications/pending?channel=discord&user_id=bragi",
+        headers=ADMIN_HEADERS,
+    )
+    assert queued_notifications.status_code == 200
+    assert [item["metadata"]["status"] for item in queued_notifications.json()["notifications"]] == ["queued"]
+    assert "Bragi here" in queued_notifications.json()["notifications"][0]["message"]
 
     running = client.patch(
         f"/capability-implementation-runs/{body['id']}",
@@ -123,6 +130,13 @@ def test_admin_can_queue_and_complete_capability_implementation_run(client):
     assert completed.json()["completed_at"] is not None
     assert completed.json()["commit_sha"] == "abcdef1234567890"
     assert regress.status_code == 409
+    notifications = client.get(
+        "/channels/notifications/pending?channel=discord&user_id=bragi",
+        headers=ADMIN_HEADERS,
+    ).json()["notifications"]
+    assert [item["metadata"]["status"] for item in notifications] == ["queued", "running", "completed"]
+    assert notifications[-1]["resource_id"] == body["id"]
+    assert "No task was enabled" in notifications[-1]["message"]
 
 
 def test_cannot_queue_capability_implementation_without_active_plan(client):

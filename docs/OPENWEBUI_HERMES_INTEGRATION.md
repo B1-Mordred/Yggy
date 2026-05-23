@@ -163,6 +163,21 @@ operations or the admin API key to Open WebUI.
 
 Do not implement this system by giving Open WebUI Workspace Tools or Functions broad Python execution. Treat broad Python tools as shell-level trust. Use the automation API as the policy boundary instead.
 
+## Asynchronous Status Messages
+
+Some workflows, especially capability implementation, continue after the chat
+turn has returned. The automation API records status changes in a
+channel-notification outbox addressed to the same logical audience and origin
+channel that created the request.
+
+Discord and Discord DM delivery are active through `channel-bridge`. Open WebUI
+delivery is currently persistence-only: notifications from Open WebUI requests
+are stored with `channel=openwebui`, but this repository does not yet include an
+adapter that can push a new assistant message into an existing Open WebUI chat.
+Until that adapter exists, operators can inspect those pending notifications
+from the API/ops side, and Bragi/Yggdrasil must not pretend that an Open WebUI
+push occurred.
+
 ## Knowledge
 
 Knowledge may contain non-secret operational context only.

@@ -173,6 +173,27 @@ class CapabilityImplementationRunModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ChannelNotificationModel(Base):
+    __tablename__ = "channel_notifications"
+    __table_args__ = (UniqueConstraint("dedupe_key", name="uq_channel_notifications_dedupe_key"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    channel: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    resource_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    notification_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RunModel(Base):
     __tablename__ = "runs"
 

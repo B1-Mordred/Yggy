@@ -605,6 +605,48 @@ The channel bridge may poll the first endpoint and call the second endpoint
 after it posts a reminder. These endpoints do not confirm, approve, run, or
 forward anything to Yggdrasil.
 
+## Implementation Status Notifications
+
+Capability implementation is asynchronous. Bragi may help a user create a
+capability proposal, but the actual implementation run is queued and updated by
+the Yggy automation API and the local host-side runner.
+
+When a capability implementation run changes status, the automation API creates
+a channel notification addressed to the original proposal's `requested_by`
+audience and `source_channel`. The status message uses Bragi's persona, but it
+is still a status report only. It does not confirm Yggy approval, deploy code,
+enable tasks, expose admin credentials, or grant execution authority.
+
+Current status producers:
+
+```text
+capability_implementation_run queued
+capability_implementation_run running
+capability_implementation_run completed
+capability_implementation_run failed
+```
+
+Current delivery behavior:
+
+- `discord`: delivered by `channel-bridge` to the configured Discord channel
+  for the same audience.
+- `discord_dm`: delivered by `channel-bridge` to the explicitly allowed DM
+  user ids for the same audience.
+- `openwebui`: stored durably in the API outbox for the same audience. A future
+  Open WebUI adapter can surface it in chat; this repository does not yet have
+  a push path into an Open WebUI conversation.
+
+The channel bridge uses its own `AUTOMATION_CHANNEL_BRIDGE_API_KEY` to poll and
+mark notifications:
+
+```text
+GET /channels/notifications/pending
+POST /channels/notifications/{notification_id}/mark
+```
+
+This key is not an admin key and cannot approve, mutate, deploy, execute, or
+call Yggdrasil as an authority.
+
 See `docs/RESEARCH_GATEWAY.md`.
 
 ## Route Diagnostics
