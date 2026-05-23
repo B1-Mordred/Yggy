@@ -72,7 +72,7 @@ Focused test suite:
 Result:
 
 ```text
-75 passed
+78 passed
 ```
 
 Focused Bragi rerun after routing fixes:
@@ -421,6 +421,153 @@ Regression test:
 test_explicit_setup_request_beats_existing_health_check_alias
 ```
 
+## Additional New Automation Request Tests
+
+Date: 2026-05-23
+
+The follow-up test run used only creation-oriented requests. None of these
+requests asked Bragi to run an existing task. Each request created a Bragi
+intake awaiting user confirmation, and each test intake was deleted immediately
+after the response was captured.
+
+### Fixes From First Pass
+
+The first pass found two issues before the final passing run:
+
+- A server-health request that included `n8n` as a service was routed to
+  `n8n_webhook.v1` because `n8n` was treated as a webhook signal before health
+  intent was considered.
+- A Docker-only digest reused the old `daily_local_ai_security_briefing`
+  identity because `docker` was treated as a local-AI/security default.
+
+Implemented fixes:
+
+- Health-monitoring language now wins over the `n8n` service name unless the
+  request explicitly mentions a webhook.
+- Local-AI defaults now require an actual local-AI stack signal such as
+  `local ai`, `open webui`, `ollama`, `hermes`, `yggy`, or `yggdrasil`;
+  generic Docker/security digests get their own task identity.
+- Topic extraction ignores time-of-day colons such as `07:10` and can derive a
+  clean topic from creation requests like `Create a new daily 07:10 Docker blog
+  digest`.
+- n8n webhook drafts preserve explicit `payload description is ...` text and do
+  not reuse the `daily_briefing_n8n_stub` task ID for clearly new requests.
+
+Regression validation:
+
+```bash
+.venv/bin/pytest bragi/tests/test_goal_router.py bragi/tests/test_goal_clarifier.py
+```
+
+Result:
+
+```text
+39 passed
+```
+
+### 1. Simple New Topic Digest
+
+Request:
+
+```text
+Create a new daily 07:10 Docker blog digest using source docker_blog, send it to briefings, show 5 items, keep it disabled and dry-run.
+```
+
+Observed result:
+
+```text
+Capability: topic_digest.v1
+Task: docker_blog
+Name: Docker Blog Digest
+Schedule: 10 7 * * * Europe/Berlin
+Output target: briefings
+Source IDs: docker_blog
+Max items: 5
+Status: awaiting user confirmation
+```
+
+Cleanup:
+
+```text
+Deleted the Bragi intake. Nothing was sent to Yggdrasil.
+```
+
+Result:
+
+```text
+pass
+```
+
+### 2. Medium New Server Health Automation
+
+Request:
+
+```text
+Set up a new daily 09:20 server health check for Open WebUI, the Yggy automation API, and n8n. Notify alerts only on anomalies, keep it disabled and dry-run.
+```
+
+Observed result:
+
+```text
+Capability: server_health.v1
+Task: daily_ai_stack_health
+Schedule: 20 9 * * * Europe/Berlin
+Output target: alerts
+Checks: open_webui, automation_api, n8n
+Status: awaiting user confirmation
+```
+
+Boundary verified:
+
+```text
+The request mentioned n8n as a monitored service and was not misrouted to
+n8n_webhook.v1.
+```
+
+Cleanup:
+
+```text
+Deleted the Bragi intake. Nothing was sent to Yggdrasil.
+```
+
+Result:
+
+```text
+pass
+```
+
+### 3. Complex New n8n Webhook Automation
+
+Request:
+
+```text
+Create a new weekday 06:05 n8n webhook automation using approved webhook ID daily_briefing_stub. The payload description is normalize AI policy and security digest metadata for the internal workflow. Output target n8n, keep it disabled and dry-run.
+```
+
+Observed result:
+
+```text
+Capability: n8n_webhook.v1
+Task: n8n_normalize_ai_policy_and_security_digest_metadata_for_the_internal_workflow
+Schedule: 5 6 * * 1-5 Europe/Berlin
+Output target: n8n
+Webhook ID: daily_briefing_stub
+Payload description: normalize AI policy and security digest metadata for the internal workflow
+Status: awaiting user confirmation
+```
+
+Cleanup:
+
+```text
+Deleted the Bragi intake. Nothing was sent to Yggdrasil.
+```
+
+Result:
+
+```text
+pass
+```
+
 ## Final Result
 
 The deployed stack now preserves the intended architecture:
@@ -432,5 +579,9 @@ The deployed stack now preserves the intended architecture:
 - Existing visible task names beat broad legacy aliases.
 - Explicit setup requests create disabled/dry-run drafts and require user
   confirmation instead of running existing tasks.
+- New digest requests get their own topic-derived task identity unless they
+  explicitly target the local-AI default.
+- Server-health requests may include `n8n` as a monitored service without being
+  misclassified as an n8n webhook.
 - The complex test intake was cleaned up and nothing was forwarded to
   Yggdrasil.

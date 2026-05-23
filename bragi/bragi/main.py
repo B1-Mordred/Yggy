@@ -2105,7 +2105,8 @@ def printer_supply_intent(user_text: str) -> dict[str, Any]:
 
 
 def topic_digest_intent(user_text: str) -> dict[str, Any]:
-    local_ai = any(term in user_text.lower() for term in ("local ai", "open webui", "ollama", "docker", "security"))
+    lowered = user_text.lower()
+    local_ai = bool(re.search(r"\b(local[-\s]?ai|ai stack|open webui|ollama|hermes|yggy|yggdrasil)\b", lowered))
     topic = topic_from_text(user_text)
     task_id = "daily_local_ai_security_briefing" if local_ai else slug(topic or user_text[:60], "topic_digest")
     name = "Daily Local AI Security Briefing" if local_ai else title_from_topic(topic or "Topic Digest")
@@ -2173,14 +2174,17 @@ def topic_digest_subject_change_intent(user_text: str) -> dict[str, Any]:
 
 
 def n8n_intent(user_text: str) -> dict[str, Any]:
-    webhook_id = "daily_briefing_stub" if "daily" in user_text.lower() or "brief" in user_text.lower() else None
+    webhook_id = webhook_id_from_text(user_text)
+    payload_description = payload_description_from_text(user_text)
+    default_daily_briefing = webhook_id == "daily_briefing_stub" and not payload_description and "new" not in user_text.lower()
+    task_topic = payload_description or user_text[:70]
     slots: dict[str, Any] = {
-        "task_id": "daily_briefing_n8n_stub" if webhook_id else slug(user_text[:60], "n8n_webhook_task"),
-        "name": "Daily Briefing n8n Payload Normalizer" if webhook_id else "n8n Webhook Task",
+        "task_id": "daily_briefing_n8n_stub" if default_daily_briefing else slug(f"n8n {task_topic}", "n8n_webhook_task"),
+        "name": "Daily Briefing n8n Payload Normalizer" if default_daily_briefing else title_from_topic(payload_description or "n8n Webhook Task"),
         "cron": schedule_cron(user_text, default="15 8 * * 1-5"),
         "timezone": "Europe/Berlin",
         "output_target": "n8n",
-        "payload_description": "Bounded internal workflow payload.",
+        "payload_description": payload_description or "Bounded internal workflow payload.",
     }
     if webhook_id:
         slots["webhook_id"] = webhook_id
@@ -2193,6 +2197,31 @@ def n8n_intent(user_text: str) -> dict[str, Any]:
         "user_request": user_text,
         "slots": slots,
     }
+
+
+def webhook_id_from_text(text: str) -> str | None:
+    lowered = text.lower()
+    for webhook_id in ("daily_briefing_stub",):
+        if webhook_id in lowered:
+            return webhook_id
+    match = re.search(r"\bwebhook(?:\s+id)?\s+([a-z0-9][a-z0-9_-]{2,80})\b", lowered)
+    if match:
+        return match.group(1)
+    if "daily" in lowered and "brief" in lowered:
+        return "daily_briefing_stub"
+    return None
+
+
+def payload_description_from_text(text: str) -> str:
+    match = re.search(
+        r"\bpayload description\s+(?:is|:)\s+(.+?)(?:\.\s|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return ""
+    value = re.sub(r"\s+", " ", match.group(1)).strip(" .,-")
+    return value[:180]
 
 
 def approved_sources_from_api() -> list[dict[str, Any]]:
@@ -3559,12 +3588,15 @@ def low_threshold_from_text(text: str) -> int | None:
 
 
 def topic_from_text(text: str) -> str:
-    colon_match = re.search(r":\s*(.+)$", text, flags=re.DOTALL)
+    colon_match = re.search(r"(?<!\d):\s*(.+)$", text, flags=re.DOTALL)
     if colon_match:
         topic = clean_topic_candidate(colon_match.group(1))
         if topic:
             return topic[:120]
     patterns = [
+        r"\b(?:create|draft|set up|setup|schedule|build|prepare)\s+(?:a\s+)?(?:new\s+)?"
+        r"(?:(?:daily|weekday|weekdays|weekly|werktag|werktags)\s+)?"
+        r"(?:\d{1,2}[:.]\d{2}\s+)?(.+?)\s+(?:digest|brief|briefing|newsletter)\b",
         r"\babout\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",
         r"\bon\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",
         r"\bfollow(?:ing)?\s+(.+?)(?:\s+(?:to|for)\s+discord|\s+on\s+discord|,|$)",

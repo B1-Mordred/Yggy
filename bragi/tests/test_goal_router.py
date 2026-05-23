@@ -171,6 +171,78 @@ def test_explicit_setup_request_beats_existing_health_check_alias():
     assert result.capability_id == "server_health.v1"
 
 
+def test_new_server_health_can_include_n8n_as_service_without_webhook_routing():
+    result = classify_automation_request(
+        "Set up a new daily 09:20 server health check for Open WebUI, the Yggy automation API, and n8n. "
+        "Notify alerts only on anomalies, keep it disabled and dry-run.",
+        task_aliases=bragi.TASK_ALIASES,
+    )
+
+    assert result.request_kind == AutomationRequestKind.CREATE_NEW
+    assert result.capability_id == "server_health.v1"
+
+
+def test_new_docker_digest_does_not_reuse_local_ai_security_task(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    answer = bragi.route_chat(
+        [
+            {
+                "role": "user",
+                "content": "Create a new daily 07:10 Docker blog digest using source docker_blog, send it to briefings, "
+                "show 5 items, keep it disabled and dry-run.",
+            }
+        ]
+    )
+
+    payload = calls[0][2]
+    assert payload["capability_id"] == "topic_digest.v1"
+    assert payload["slots"]["task_id"] != "daily_local_ai_security_briefing"
+    assert payload["slots"]["name"] != "Daily Local AI Security Briefing"
+    assert payload["slots"]["task_id"] == "docker_blog"
+    assert payload["slots"]["name"] == "Docker Blog Digest"
+    assert payload["slots"]["source_ids"] == ["docker_blog"]
+    assert payload["slots"]["include"] == ["Docker blog"]
+    assert payload["slots"]["max_items"] == 5
+    assert "Canonical intent pending confirmation" in answer
+
+
+def test_new_n8n_webhook_preserves_payload_description(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+
+    bragi.route_chat(
+        [
+            {
+                "role": "user",
+                "content": "Create a new weekday 06:05 n8n webhook automation using approved webhook ID daily_briefing_stub. "
+                "The payload description is normalize AI policy and security digest metadata for the internal workflow. "
+                "Output target n8n, keep it disabled and dry-run.",
+            }
+        ]
+    )
+
+    payload = calls[0][2]
+    assert payload["capability_id"] == "n8n_webhook.v1"
+    assert payload["slots"]["task_id"] != "daily_briefing_n8n_stub"
+    assert payload["slots"]["webhook_id"] == "daily_briefing_stub"
+    assert payload["slots"]["payload_description"] == (
+        "normalize AI policy and security digest metadata for the internal workflow"
+    )
+    assert payload["slots"]["cron"] == "5 6 * * 1-5"
+
+
 def test_new_n8n_webhook_uses_registered_capability():
     result = classify_automation_request("create an n8n webhook task for the approved daily briefing workflow", task_aliases=bragi.TASK_ALIASES)
 
