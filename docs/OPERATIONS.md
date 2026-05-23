@@ -461,7 +461,9 @@ The API serves a local operations and approval dashboard at:
 http://127.0.0.1:8088/ops
 ```
 
-Browser users are redirected to `/ops/login`, which uses the dashboard
+`/ops` is the current React single-page operator UI. The previous inline
+dashboard is preserved at `/ops/legacy` for fallback and comparison while the
+new UI matures. Browser users are redirected to `/ops/login`, which uses the dashboard
 username/password and then sets a signed HttpOnly, SameSite session cookie.
 This avoids the browser's built-in Basic-auth prompt for normal use. Existing
 scripted callers can still use Basic credentials, and hidden ops endpoints can
@@ -469,10 +471,18 @@ still be reached with the admin API key where documented. Signing material is
 derived from local dashboard/admin configuration; changing the dashboard
 password invalidates existing browser sessions.
 
-It is split into views for overview, tasks, runs, task-change proposals,
-capability proposals, approvals, audit, and retention so routine checks do not
-require scanning every table. It shows task state, latest runs, pending reviews,
-worker heartbeat, pending source proposals, and retention status.
+The SPA is served by the `automation-api` container itself. The Docker build
+compiles `automation-api/ops-ui` in a Node build stage and copies the compiled
+bundle into the Python runtime image. Runtime containers do not need Node. Static
+assets are served from `/ops/assets/*`; non-secret frontend metadata is served
+from `/ops/bootstrap`; authenticated live refresh frames are served from
+`/ops/events`. If the compiled bundle is missing in a source-tree development
+run, `/ops` shows a small fallback page linking to `/ops/legacy`.
+
+It is split into views for builder work, tasks, runs, reviews, sources, audit,
+and system state so routine checks do not require scanning every table. It shows
+task state, latest runs, pending reviews, worker heartbeat, pending source
+proposals, capability gaps, implementation runs, and retention status.
 The task view includes browser-side filters for quick narrowing by text, state,
 and type. Runs, proposals, approvals, and audit use hidden server-side endpoints
 for filtering and pagination so larger queues can be narrowed without exposing

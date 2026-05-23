@@ -1,0 +1,12 @@
+ops-ui/node_modules/
+ops-ui/dist/
+ops-ui/*.tsbuildinfo
+ops-ui/vite.config.js
+ops-ui/vite.config.d.ts
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyc
+*.pyo
+*.egg-info/

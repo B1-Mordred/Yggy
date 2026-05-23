@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
 from app.routers import (
@@ -56,4 +57,5 @@ app.include_router(runs.router)
 app.include_router(source_proposals.router)
 app.include_router(notifications.router)
 app.include_router(maintenance.router)
+app.mount("/ops/assets", StaticFiles(directory=ops.ops_assets_dir(), check_dir=False), name="ops-assets")
 app.include_router(ops.router)

@@ -99,6 +99,11 @@ docker compose -f docker-compose.automation.yml -f docker-compose.https.yml up -
 
 The default HTTPS dashboard URL is `https://yggy.b1.germering:8443/ops`.
 
+The default `/ops` surface is a bundled React operator UI. The previous inline
+dashboard remains at `/ops/legacy`. See
+[docs/OPS_UI_ARCHITECTURE.md](docs/OPS_UI_ARCHITECTURE.md) for the frontend
+boundary, build path, and live-update flow.
+
 Do not connect Open WebUI/Hermes until you have reviewed [docs/OPENWEBUI_HERMES_INTEGRATION.md](docs/OPENWEBUI_HERMES_INTEGRATION.md).
 
 For registry drift checks between Git YAML and live API state, see

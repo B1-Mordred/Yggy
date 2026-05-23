@@ -83,6 +83,7 @@ def test_ops_dashboard_uses_login_page_and_keeps_basic_compatibility(client, mon
     logout = client.post("/ops/logout", follow_redirects=False)
     after_logout = client.get("/ops", follow_redirects=False)
     basic_allowed = client.get("/ops", auth=("operator", "test-dashboard-password"))
+    legacy_allowed = client.get("/ops/legacy", auth=("operator", "test-dashboard-password"))
 
     assert denied.status_code == 303
     assert denied.headers["location"] == "/ops/login?next=%2Fops"
@@ -103,7 +104,12 @@ def test_ops_dashboard_uses_login_page_and_keeps_basic_compatibility(client, mon
     assert after_logout.status_code == 303
     assert basic_allowed.status_code == 200
     assert basic_allowed.headers["cache-control"] == "no-store"
-    allowed = basic_allowed.text
+    assert 'id="root"' in basic_allowed.text
+    assert "Yggy Operations" in basic_allowed.text
+    assert "/ops/legacy" in basic_allowed.text
+    assert legacy_allowed.status_code == 200
+    assert legacy_allowed.headers["cache-control"] == "no-store"
+    allowed = legacy_allowed.text
     assert "Yggy Operations" in allowed
     assert "action=\"/ops/logout\"" in allowed
     assert "density-select" in allowed
@@ -174,6 +180,40 @@ def test_ops_dashboard_uses_login_page_and_keeps_basic_compatibility(client, mon
     assert "runTimelineContext" in allowed
     assert "run-summary-strip" in allowed
     assert "sent_discord_count" in allowed
+
+
+def test_ops_bootstrap_exposes_non_secret_spa_metadata(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+
+    response = client.get("/ops/bootstrap", auth=("operator", "test-dashboard-password"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["app"]["surface"] == "ops_spa"
+    assert body["app"]["legacy_url"] == "/ops/legacy"
+    assert body["features"]["sse"] is True
+    assert body["features"]["min_page_size"] == 5
+    assert body["security"]["admin_keys_exposed"] is False
+    assert body["security"]["approval_nonces_persisted"] is False
+    assert "api_key" not in response.text.lower()
+    assert "nonce_hash" not in response.text.lower()
+
+
+def test_ops_events_requires_auth_and_emits_sse_frames(client, monkeypatch):
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_USER", "operator")
+    monkeypatch.setenv("AUTOMATION_OPS_DASHBOARD_PASSWORD", "test-dashboard-password")
+
+    denied = client.get("/ops/events?once=true")
+    response = client.get("/ops/events?once=true", auth=("operator", "test-dashboard-password"))
+
+    assert denied.status_code == 401
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: ops.ready" in response.text
+    assert "event: status.updated" in response.text
+    assert "admin" not in response.text.lower()
+    assert "nonce_hash" not in response.text.lower()
 
 
 def test_admin_key_can_access_ops_status_without_dashboard_password(client):
@@ -2032,6 +2072,9 @@ def test_ops_routes_are_not_in_openapi(client):
     assert response.status_code == 200
     paths = response.json()["paths"]
     assert "/ops" not in paths
+    assert "/ops/legacy" not in paths
+    assert "/ops/bootstrap" not in paths
+    assert "/ops/events" not in paths
     assert "/ops/login" not in paths
     assert "/ops/logout" not in paths
     assert "/ops/status" not in paths

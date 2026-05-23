@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import hashlib
@@ -8,11 +9,12 @@ import json
 import secrets
 import time
 from html import escape
+from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qs, quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import or_, text
@@ -126,6 +128,7 @@ MAX_OPS_PAGE_SIZE = 100
 OPS_SESSION_COOKIE = "yggy_ops_session"
 OPS_SESSION_MIN_TTL_SECONDS = 300
 OPS_SESSION_MAX_TTL_SECONDS = 86400
+OPS_EVENTS_POLL_SECONDS = 10
 
 
 class OpsApprovalDecision(BaseModel):
@@ -154,6 +157,21 @@ class OpsCapabilityImplementationRequest(BaseModel):
 
 class OpsSourceProposalDecision(BaseModel):
     reason: str = Field(default="", max_length=1000)
+
+
+def ops_static_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "ops_static"
+
+
+def ops_assets_dir() -> Path:
+    return ops_static_dir() / "assets"
+
+
+def ops_index_html() -> str:
+    index_file = ops_static_dir() / "index.html"
+    if index_file.exists():
+        return index_file.read_text(encoding="utf-8")
+    return FALLBACK_OPS_SPA_HTML
 
 
 def ops_session_ttl_seconds() -> int:
@@ -353,7 +371,83 @@ def ops_dashboard(
     if not has_ops_access(request, credentials, x_automation_api_key):
         next_url = quote(safe_ops_next_url(str(request.url.path)), safe="")
         return RedirectResponse(f"/ops/login?next={next_url}", status_code=status.HTTP_303_SEE_OTHER)
+    return HTMLResponse(ops_index_html(), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/legacy", response_class=HTMLResponse, include_in_schema=False)
+def ops_legacy_dashboard(
+    request: Request,
+    credentials: Annotated[HTTPBasicCredentials | None, Depends(basic_security)] = None,
+    x_automation_api_key: str | None = Header(default=None),
+) -> Response:
+    if not has_ops_access(request, credentials, x_automation_api_key):
+        next_url = quote(safe_ops_next_url(str(request.url.path)), safe="")
+        return RedirectResponse(f"/ops/login?next={next_url}", status_code=status.HTTP_303_SEE_OTHER)
     return HTMLResponse(DASHBOARD_HTML, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/ops/bootstrap", include_in_schema=False)
+def ops_bootstrap(_: None = Depends(require_ops_access)) -> dict:
+    return {
+        "generated_at": utcnow(),
+        "app": {
+            "name": "Yggy Operations",
+            "surface": "ops_spa",
+            "legacy_url": "/ops/legacy",
+            "api_base": "/ops",
+        },
+        "session": {"authenticated": True},
+        "navigation": [
+            {"id": "builder", "label": "Builder", "priority": "primary"},
+            {"id": "tasks", "label": "Tasks", "priority": "primary"},
+            {"id": "runs", "label": "Runs", "priority": "primary"},
+            {"id": "reviews", "label": "Reviews", "priority": "primary"},
+            {"id": "sources", "label": "Sources", "priority": "secondary"},
+            {"id": "audit", "label": "Audit", "priority": "secondary"},
+            {"id": "system", "label": "System", "priority": "secondary"},
+        ],
+        "features": {
+            "sse": True,
+            "polling_fallback_seconds": 30,
+            "events_url": "/ops/events",
+            "min_page_size": MIN_OPS_PAGE_SIZE,
+            "default_page_size": DEFAULT_OPS_PAGE_SIZE,
+            "max_page_size": MAX_OPS_PAGE_SIZE,
+            "legacy_dashboard": True,
+        },
+        "security": {
+            "admin_keys_exposed": False,
+            "approval_nonces_persisted": False,
+            "action_headers_required": True,
+            "openapi_exposed": False,
+        },
+    }
+
+
+@router.get("/ops/events", include_in_schema=False)
+async def ops_events(
+    request: Request,
+    once: bool = Query(default=False),
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+) -> StreamingResponse:
+    async def event_stream():
+        yield _sse_event("ops.ready", {"generated_at": utcnow(), "poll_seconds": OPS_EVENTS_POLL_SECONDS})
+        yield _sse_event("status.updated", _ops_realtime_snapshot(session))
+        if once:
+            return
+        while not await request.is_disconnected():
+            await asyncio.sleep(OPS_EVENTS_POLL_SECONDS)
+            yield _sse_event("status.updated", _ops_realtime_snapshot(session))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/ops/login", response_class=HTMLResponse, include_in_schema=False)
@@ -1634,6 +1728,71 @@ def ops_reject_approval(
     return _approval_summary(approval, task, session=session)
 
 
+def _sse_event(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str, separators=(',', ':'))}\n\n"
+
+
+def _ops_realtime_snapshot(session: Session) -> dict:
+    now = utcnow()
+    database = {"connected": False}
+    try:
+        session.execute(text("SELECT 1"))
+        database["connected"] = True
+    except Exception as exc:  # pragma: no cover - exercised only with unavailable DB
+        database["error"] = exc.__class__.__name__
+
+    if not database["connected"]:
+        return {
+            "generated_at": now,
+            "service": {"status": "degraded", "database": database, "worker": {"ok": False}},
+            "counts": {"pending_reviews": 0, "active_runs": 0},
+        }
+
+    worker = heartbeat_to_dict(session.get(HeartbeatModel, "automation-worker"))
+    active_run_count = (
+        session.query(RunModel)
+        .filter(RunModel.status.in_(["queued", "queued_dry_run", "running", "running_dry_run"]))
+        .count()
+    )
+    pending_approval_count = session.query(ApprovalModel).filter(ApprovalModel.status == "pending").count()
+    pending_task_change_count = (
+        session.query(TaskChangeProposalModel)
+        .filter(TaskChangeProposalModel.status.in_(["pending", "approved"]))
+        .count()
+    )
+    pending_capability_count = (
+        session.query(CapabilityProposalModel).filter(CapabilityProposalModel.status == "pending").count()
+    )
+    open_source_count = (
+        session.query(SourceProposalModel)
+        .filter(SourceProposalModel.status.in_(["pending", "approved"]))
+        .count()
+    )
+    latest_run = session.query(RunModel).order_by(RunModel.created_at.desc()).first()
+    return {
+        "generated_at": now,
+        "service": {
+            "status": "ok" if worker.get("ok") is not False else "degraded",
+            "database": database,
+            "worker": worker,
+        },
+        "counts": {
+            "pending_approvals": pending_approval_count,
+            "open_task_change_proposals": pending_task_change_count,
+            "pending_capability_proposals": pending_capability_count,
+            "open_source_proposals": open_source_count,
+            "pending_reviews": (
+                pending_approval_count
+                + pending_task_change_count
+                + pending_capability_count
+                + open_source_count
+            ),
+            "active_runs": active_run_count,
+        },
+        "latest_run": _run_summary(latest_run),
+    }
+
+
 def _pagination_offset(page: int, page_size: int) -> int:
     return (page - 1) * page_size
 
@@ -2454,6 +2613,46 @@ def ops_login_html(
 </body>
 </html>
 """
+
+
+FALLBACK_OPS_SPA_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yggy Operations</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #172033;
+      background: #f4f6f8;
+    }
+    main {
+      width: min(720px, calc(100vw - 32px));
+      padding: 28px;
+      border: 1px solid #d9e1ea;
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 18px 54px rgba(15, 23, 42, 0.12);
+    }
+    h1 { margin: 0 0 10px; font-size: 1.35rem; letter-spacing: 0; }
+    p { margin: 0 0 14px; color: #526071; line-height: 1.5; }
+    a { color: #1f5fbf; font-weight: 700; }
+    code { padding: 2px 5px; border-radius: 4px; background: #eef2f7; }
+  </style>
+</head>
+<body>
+  <main id="root">
+    <h1>Yggy Operations</h1>
+    <p>The compiled operations UI bundle is not present in this runtime image.</p>
+    <p>Build <code>automation-api/ops-ui</code> or open the preserved <a href="/ops/legacy">legacy dashboard</a>.</p>
+  </main>
+</body>
+</html>"""
 
 
 DASHBOARD_HTML = f"""<!doctype html>

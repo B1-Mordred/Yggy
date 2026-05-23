@@ -7,8 +7,11 @@ __pycache__/
 .ruff_cache/
 .venv
 .venv/
+node_modules/
+automation-api/ops-ui/node_modules/
 *.pyc
 *.pyo
+*.tsbuildinfo
 *.sqlite
 *.db
 dist/
