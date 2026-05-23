@@ -88,8 +88,34 @@ def test_stage_prompt_is_proposal_driven_and_keeps_execution_boundaries():
     assert "existing_capability_ids_must_remain" in prompt
     assert "append new entries instead of replacing" in prompt
     assert "Do not create or edit `proposals/` files" in prompt
+    assert "Yggy harness constraints for local code models, including Qwen3-Coder" in prompt
+    assert "Allowed repository paths for this stage are exact" in prompt
+    assert "no shell execution by Bragi" in prompt
+    assert "no Docker socket access" in prompt
+    assert "Heimdal validates before any Yggdrasil canonical action" in prompt
+    assert "copy every mandatory boundary below verbatim" in prompt
+    assert "`capabilities/`" in prompt
     assert not prompt.startswith("/goal")
     assert "yggy_ops_https" not in prompt
+
+
+def test_one_shot_prompt_includes_qwen3_harness_contract():
+    proposal = generic_proposal()
+
+    prompt = implement_capability_plan.build_implementation_prompt(
+        proposal,
+        profile="capability-implementer",
+        model="hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL",
+        repo_root=ROOT,
+    )
+
+    assert "Yggy harness constraints for local code models, including Qwen3-Coder" in prompt
+    assert "Treat implementation_plan.files_to_change" in prompt
+    assert "Do not invent new top-level directories" in prompt
+    assert "configs/task_templates/http_json_metric_threshold.yaml" in prompt
+    assert "no admin approvals or approval nonces" in prompt
+    assert "task templates remain disabled and dry-run by default" in prompt
+    assert "Heimdal validates before any Yggdrasil canonical action" in prompt
 
 
 def test_stage_prompt_can_opt_into_hermes_goal_command():

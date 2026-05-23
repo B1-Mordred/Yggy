@@ -132,12 +132,43 @@ def test_inspect_existing_by_explicit_id_and_alias():
     assert alias.operation == {"action": "show_task", "task_id": "daily_local_ai_security_briefing"}
 
 
+def test_visible_task_name_wins_over_broad_alias():
+    visible_tasks = [
+        {"id": "astronomy_and_astrophysics", "name": "Astronomy And Astrophysics Digest", "enabled": True},
+        {"id": "daily_ai_stack_health", "name": "AI Stack Health Monitor", "enabled": True},
+        {
+            "id": "twice_daily_ai_policy_security_brief",
+            "name": "Twice Daily AI, Security, and Policy Brief",
+            "enabled": True,
+        },
+    ]
+
+    result = classify_automation_request(
+        "show the twice daily AI policy security brief",
+        visible_tasks=visible_tasks,
+        task_aliases=bragi.TASK_ALIASES,
+    )
+
+    assert result.request_kind == AutomationRequestKind.INSPECT_EXISTING
+    assert result.operation == {"action": "show_task", "task_id": "twice_daily_ai_policy_security_brief"}
+
+
 def test_modify_existing_topic_digest_classifies_to_task_change_intent():
     result = classify_automation_request("include Ubuntu security notices in the daily brief", task_aliases=bragi.TASK_ALIASES)
 
     assert result.request_kind == AutomationRequestKind.MODIFY_EXISTING
     assert result.capability_id == "topic_digest.modify_subjects.v1"
     assert result.target_task_id == "daily_local_ai_security_briefing"
+
+
+def test_explicit_setup_request_beats_existing_health_check_alias():
+    result = classify_automation_request(
+        "set up a daily 08:15 server health check for Open WebUI and Ollama to the alerts target, keep it disabled and dry-run",
+        task_aliases=bragi.TASK_ALIASES,
+    )
+
+    assert result.request_kind == AutomationRequestKind.CREATE_NEW
+    assert result.capability_id == "server_health.v1"
 
 
 def test_new_n8n_webhook_uses_registered_capability():
@@ -302,6 +333,34 @@ def test_run_brief_now_selects_only_enabled_matching_brief(monkeypatch):
     assert "Run queued" in answer
 
 
+def test_route_chat_uses_visible_task_name_before_legacy_alias(monkeypatch):
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        if method == "GET" and path == "/tasks":
+            return {
+                "data": [
+                    {"id": "astronomy_and_astrophysics", "name": "Astronomy And Astrophysics Digest", "enabled": True, "status": "enabled"},
+                    {"id": "daily_ai_stack_health", "name": "AI Stack Health Monitor", "enabled": True, "status": "enabled"},
+                    {
+                        "id": "twice_daily_ai_policy_security_brief",
+                        "name": "Twice Daily AI, Security, and Policy Brief",
+                        "enabled": True,
+                        "status": "enabled",
+                    },
+                ]
+            }
+        return gateway_response_for(payload)
+
+    monkeypatch.setattr(bragi, "api_request", fake_api_request)
+    monkeypatch.setattr(bragi, "yggdrasil_canonical_request", lambda payload: calls.append(payload) or {"answer": "Task shown."})
+
+    answer = bragi.route_chat([{"role": "user", "content": "show the twice daily AI policy security brief"}])
+
+    assert calls == [{"action": "show_task", "task_id": "twice_daily_ai_policy_security_brief"}]
+    assert "Task shown" in answer
+
+
 def test_run_existing_daily_brief_routes_to_yggdrasil(monkeypatch):
     calls = []
 
@@ -361,6 +420,8 @@ def test_modify_existing_security_brief_uses_source_selection_intake(monkeypatch
 
     def fake_api_request(method, path, payload=None):
         calls.append((method, path, payload))
+        if method == "GET" and path == "/tasks":
+            return {"data": []}
         return source_registry_response(method, path, payload)
 
     monkeypatch.setattr(bragi, "api_request", fake_api_request)
@@ -368,7 +429,7 @@ def test_modify_existing_security_brief_uses_source_selection_intake(monkeypatch
 
     answer = bragi.route_chat([{"role": "user", "content": "Nimm CISA und NVD in den Security Brief auf."}])
 
-    assert calls == [("GET", "/sources", None)]
+    assert ("GET", "/sources", None) in calls
     assert "`cisa_news_events`" in answer
     assert "`nist_national_vulnerability_database`" in answer
     assert "awaiting_source_selection" in answer

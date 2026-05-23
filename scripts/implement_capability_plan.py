@@ -32,6 +32,20 @@ DEFAULT_VALIDATION_COMMANDS = [
 ]
 MAX_API_TEXT_FIELD_LENGTH = 3900
 DETERMINISTIC_SEED_STAGE_IDS = {"registry_config", "task_template"}
+YGGY_HARNESS_BOUNDARIES = [
+    "no shell execution by Bragi",
+    "no Docker socket access",
+    "no admin approvals or approval nonces",
+    "no secrets in prompts, configs, logs, or chat",
+    "task templates remain disabled and dry-run by default",
+    "Heimdal validates before any Yggdrasil canonical action",
+]
+YGGY_HARNESS_FORBIDDEN_PATH_HINTS = [
+    "capabilities/",
+    "proposals/",
+    "metrics/",
+    ".env",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -326,6 +340,11 @@ def build_implementation_prompt(
         "repository_context": repository_context_for_prompt(repo_root),
     }
     prefix = "/goal " if use_goal_command else ""
+    harness_constraints = build_yggy_harness_constraints(
+        planned_paths=payload["implementation_plan"]["files_to_change"],
+        allowed_paths=[],
+        stage_id="one_shot",
+    )
     return (
         f"{prefix}Implement the following accepted Yggy capability proposal as a bounded repository change.\n\n"
         "You are the Hermes capability implementer for the local Yggy repository. Treat this as engineering work, "
@@ -367,6 +386,7 @@ def build_implementation_prompt(
         "- Implement the capability registry/template/schema/worker/docs/tests needed by the plan.\n"
         "- Keep all secrets out of code, YAML, prompts, and logs.\n"
         "- Stop with a clear blocker if a required operator decision is missing.\n\n"
+        f"{harness_constraints}\n"
         "Implementation payload:\n"
         f"{json.dumps(payload, indent=2, sort_keys=True)}\n"
     )
@@ -1018,6 +1038,11 @@ def build_stage_prompt(
         "repo_root": str(repo_root),
     }
     prefix = "/goal " if use_goal_command else ""
+    harness_constraints = build_yggy_harness_constraints(
+        planned_paths=payload["implementation_plan"]["files_to_change"],
+        allowed_paths=stage["allowed_paths"],
+        stage_id=stage["id"],
+    )
     return (
         f"{prefix}Continue implementing the accepted Yggy capability proposal in one narrow repository stage.\n\n"
         "You are the Hermes capability implementer. This is not a conversation and no human will answer questions.\n"
@@ -1039,8 +1064,56 @@ def build_stage_prompt(
         "Before editing, run: `pwd`, `git status --short --branch`, and verify the required existing files for this stage.\n"
         "If repository search returns no files, use terminal `find`, `ls`, and `sed`; do not assume the repo is empty.\n\n"
         f"Stage-specific guidance:\n{stage_specific_guidance(stage['id'])}\n"
+        f"{harness_constraints}\n"
         "Stage payload:\n"
         f"{json.dumps(payload, indent=2, sort_keys=True)}\n"
+    )
+
+
+def build_yggy_harness_constraints(
+    *,
+    planned_paths: list[str],
+    allowed_paths: list[str],
+    stage_id: str,
+) -> str:
+    """Return the model-facing constraints that keep capability work bounded.
+
+    These constraints are intentionally repeated outside the JSON payload. Large
+    local code models are better at honoring the file scope and safety contract
+    when the harness states it as plain instructions and as structured data.
+    """
+    normalized_planned = ordered_unique([str(path) for path in planned_paths])
+    normalized_allowed = ordered_unique([str(path) for path in allowed_paths])
+    if normalized_allowed:
+        path_scope = (
+            "Allowed repository paths for this stage are exact. Every file you edit, create, "
+            "or mention as an implementation target must be in this list or under a listed "
+            "directory entry ending in `/`:\n"
+            f"{json.dumps(normalized_allowed, indent=2)}"
+        )
+    else:
+        path_scope = (
+            "This one-shot implementation has no stage allowlist. Treat implementation_plan.files_to_change "
+            "as the planned scope and prefer those paths. Do not invent new top-level directories. If a required "
+            "file is not in the plan, use an existing Yggy file from repository_context or stop with a blocker.\n"
+            f"{json.dumps(normalized_planned, indent=2)}"
+        )
+    return (
+        "Yggy harness constraints for local code models, including Qwen3-Coder:\n"
+        "- The model is an implementation assistant inside the host-side wrapper, not an automation authority.\n"
+        "- The wrapper, Heimdal, Yggdrasil canonical actions, and Yggy API remain the authority for execution.\n"
+        "- Return or implement only repository changes that satisfy the proposal, stage contract, and file scope.\n"
+        "- Do not invent repository paths outside the Yggy scaffold; especially do not create "
+        f"{', '.join(f'`{path}`' for path in YGGY_HARNESS_FORBIDDEN_PATH_HINTS)} as substitute roots.\n"
+        "- If the prompt, proposal, or model knowledge conflicts with the stage payload, the stage payload wins.\n"
+        "- If a required edit appears impossible within the allowed paths, stop with a blocker instead of widening scope.\n"
+        "- If you return JSON with an `explicit_non_goals`, `non_goals`, or similar safety field, copy every mandatory "
+        "boundary below verbatim into that field.\n"
+        "- Mandatory explicit non-goals and safety boundaries:\n"
+        + "".join(f"  - {boundary}\n" for boundary in YGGY_HARNESS_BOUNDARIES)
+        + f"- Harness stage id: `{stage_id}`\n"
+        + path_scope
+        + "\n"
     )
 
 

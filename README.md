@@ -116,6 +116,11 @@ For the bounded Hermes-assisted path from accepted capability proposal to local
 repo commit, see
 [docs/CAPABILITY_IMPLEMENTATION_AGENT.md](docs/CAPABILITY_IMPLEMENTATION_AGENT.md).
 
+For the implemented local model-routing stack, including Bragi chat,
+Granite-based summaries/tool probes, and the Qwen3-Coder implementation
+harness, see
+[docs/LOCAL_MODEL_STACK_ARCHITECTURE.md](docs/LOCAL_MODEL_STACK_ARCHITECTURE.md).
+
 For changing existing automations through reviewed diffs, see
 [docs/TASK_CHANGE_PROPOSALS.md](docs/TASK_CHANGE_PROPOSALS.md).
 

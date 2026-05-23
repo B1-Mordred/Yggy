@@ -143,6 +143,24 @@ def classify_deterministic_automation_request(
     target_task_id = resolution.task_id if resolution.status == "single" else None
     candidates = [str(candidate.get("id")) for candidate in resolution.candidates if candidate.get("id")]
 
+    if looks_like_new_task_request(lowered):
+        capability_id = infer_registered_capability(text)
+        if capability_id:
+            return AutomationRequestClassification(
+                request_kind=AutomationRequestKind.CREATE_NEW,
+                target_kind=AutomationTargetKind.NEW_TASK,
+                capability_id=capability_id,
+                operation={"intent": "draft_task", "capability_id": capability_id},
+                confidence=0.86,
+                reason="request explicitly creates or sets up a new automation from a registered capability",
+            )
+        return AutomationRequestClassification(
+            request_kind=AutomationRequestKind.PROPOSE_NEW_CAPABILITY,
+            target_kind=AutomationTargetKind.NEW_CAPABILITY,
+            confidence=0.64,
+            reason="new automation request does not map to a registered capability",
+        )
+
     existing_kind = existing_operation_kind(lowered)
     if (
         existing_kind == AutomationRequestKind.INSPECT_EXISTING
@@ -390,18 +408,11 @@ def resolve_task(
             candidate["match_reason"] = reason
         candidates.append(candidate)
 
-    for phrase, task_id in sorted((task_aliases or {}).items(), key=lambda item: len(item[0]), reverse=True):
-        if phrase_matches(lowered, phrase):
-            add(task_id, reason=f"alias:{phrase}")
-
     normalized_text = normalize_match_text(text)
-    significant_text_terms = significant_task_terms(normalized_text)
     for task in visible_by_id.values():
         task_id = str(task.get("id") or "")
         normalized_id = normalize_match_text(task_id.replace("_", " "))
         normalized_name = normalize_match_text(str(task.get("name") or ""))
-        normalized_type = normalize_match_text(str(task.get("type") or ""))
-        haystack = " ".join(part for part in (normalized_id, normalized_name, normalized_type) if part)
         if normalized_id and normalized_id in normalized_text:
             add(task_id, task, reason="visible_task_id")
             continue
@@ -411,6 +422,20 @@ def resolve_task(
         if normalized_text and normalized_name and normalized_text in normalized_name and len(normalized_text) >= 8:
             add(task_id, task, reason="visible_task_name_substring")
             continue
+
+    visible_limited = candidates[:max_candidates]
+    if len(visible_limited) == 1:
+        return TaskResolution(status="single", task_id=str(visible_limited[0]["id"]), candidates=visible_limited, reason="one exact visible matching task")
+    if len(visible_limited) > 1:
+        return TaskResolution(status="multiple", candidates=visible_limited, reason="multiple exact visible matching tasks")
+
+    significant_text_terms = significant_task_terms(normalized_text)
+    for task in visible_by_id.values():
+        task_id = str(task.get("id") or "")
+        normalized_id = normalize_match_text(task_id.replace("_", " "))
+        normalized_name = normalize_match_text(str(task.get("name") or ""))
+        normalized_type = normalize_match_text(str(task.get("type") or ""))
+        haystack = " ".join(part for part in (normalized_id, normalized_name, normalized_type) if part)
         if significant_text_terms and all(term in haystack for term in significant_text_terms):
             add(task_id, task, reason="visible_task_terms")
             continue
@@ -420,6 +445,16 @@ def resolve_task(
         if {"health", "check"} <= set(significant_text_terms) and re.search(r"\bhealth\b.*\bcheck\b|\bserver_health\b", haystack):
             add(task_id, task, reason="health_check_like_task")
             continue
+
+    visible_limited = candidates[:max_candidates]
+    if len(visible_limited) == 1:
+        return TaskResolution(status="single", task_id=str(visible_limited[0]["id"]), candidates=visible_limited, reason="one visible matching task")
+    if len(visible_limited) > 1:
+        return TaskResolution(status="multiple", candidates=visible_limited, reason="multiple visible matching tasks")
+
+    for phrase, task_id in sorted((task_aliases or {}).items(), key=lambda item: len(item[0]), reverse=True):
+        if phrase_matches(lowered, phrase):
+            add(task_id, reason=f"alias:{phrase}")
 
     limited = candidates[:max_candidates]
     if len(limited) == 1:
@@ -557,6 +592,16 @@ def has_specific_change(text: str) -> bool:
 
 def looks_like_create_request(lowered: str) -> bool:
     return bool(re.search(rf"\b{CREATE_VERBS}\b", lowered))
+
+
+def looks_like_new_task_request(lowered: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(draft|create|set up|setup|schedule|build|prepare|monitor|watch|keep an eye|"
+            r"erstelle|richte|plane|überwache|ueberwache|beobachte)\b",
+            lowered,
+        )
+    )
 
 
 def infer_registered_capability(text: str) -> str | None:

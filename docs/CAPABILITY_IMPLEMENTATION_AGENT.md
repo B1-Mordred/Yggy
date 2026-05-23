@@ -123,11 +123,14 @@ python scripts/implement_capability_plan.py --proposal-id <proposal-id> --staged
 
 Staged implementation uses bounded one-shot Hermes chat queries by default,
 with `--max-turns` limiting each stage. Stage prompts are sent inline so the
-model receives the exact proposal contract and file allowlist directly instead
-of having to discover a temporary prompt file first. The persistent Hermes
-`/goal` loop can still be requested with `--goal-command`, but it is not the
-default because the wrapper already owns staging, validation, commit creation,
-and run status updates.
+model receives the exact proposal contract, file allowlist, and Yggy harness
+constraints directly instead of having to discover a temporary prompt file
+first. The harness section is deliberately plain text as well as structured
+JSON because the tested Qwen3-Coder model only stayed within the Yggy scaffold
+when the allowed paths and non-goals were explicit in the prompt. The persistent
+Hermes `/goal` loop can still be requested with `--goal-command`, but it is not
+the default because the wrapper already owns staging, validation, commit
+creation, and run status updates.
 
 Registry stages include a machine-derived list of existing capability IDs that
 must remain present. The post-generation gate also compares existing capability
@@ -164,10 +167,14 @@ Override them by passing one or more `--validation-command` flags.
 ## Hermes Profile
 
 Create a dedicated Hermes profile named `capability-implementer`. On the current
-host, `qwen3.5:9b` is the preferred small local model for this profile because
-Hermes accepts its context window and it is cheaper than the larger 20B+ models.
-The profile does not need Yggy admin keys, deployment permissions, Discord
-webhooks, or approval nonces.
+host, the recommended implementation model is
+`hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL`. It is slower and
+heavier than the chat models, but it produced valid repository plans when the
+host wrapper supplied exact Yggy harness constraints. Do not use it as an
+unconstrained planner; the wrapper must provide the accepted proposal, stage
+contract, allowed paths, mandatory non-goals, and validation gates. The profile
+does not need Yggy admin keys, deployment permissions, Discord webhooks, or
+approval nonces.
 
 System prompt:
 
@@ -196,6 +203,7 @@ of guessing.
 When the profile is owned by the `hermes` service account, set:
 
 ```bash
+YGGY_IMPLEMENTATION_HERMES_MODEL=hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL
 YGGY_IMPLEMENTATION_HERMES_USER=hermes
 YGGY_IMPLEMENTATION_HERMES_HOME=/srv/hermes/.hermes
 YGGY_IMPLEMENTATION_HERMES_OS_HOME=/srv/hermes

@@ -4808,10 +4808,13 @@ def should_use_hermes_classification(
 
 def classify_goal_request_with_context(user_text: str, *, use_hermes: bool = True) -> AutomationRequestClassification:
     classification = classify_goal_request(user_text, use_hermes=False)
-    if (
-        classification.request_kind == AutomationRequestKind.NEEDS_CLARIFICATION
-        and "target_task_id" in classification.missing_information
-    ):
+    if classification.request_kind in {
+        AutomationRequestKind.INSPECT_EXISTING,
+        AutomationRequestKind.RUN_EXISTING,
+        AutomationRequestKind.PAUSE_EXISTING,
+        AutomationRequestKind.MODIFY_EXISTING,
+        AutomationRequestKind.NEEDS_CLARIFICATION,
+    }:
         visible_tasks = visible_tasks_for_goal_router()
         if visible_tasks:
             classification = classify_goal_request(user_text, visible_tasks=visible_tasks, use_hermes=False)
