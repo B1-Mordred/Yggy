@@ -1989,8 +1989,61 @@ def task_alias_from_text(text: str) -> str | None:
 def is_simple_greeting(text: str) -> bool:
     compact = re.sub(r"[^a-z0-9 ]+", " ", text.lower())
     words = {word for word in compact.split() if word}
-    greeting_words = {"hello", "hi", "hey", "greetings", "yo", "howdy"}
+    greeting_words = {"hello", "hi", "hey", "greetings", "yo", "howdy", "morning", "evening"}
     return bool(words & greeting_words) and len(words) <= 5
+
+
+def is_automation_request_text(text: str) -> bool:
+    lowered = text.lower()
+    automation_terms = (
+        "automation",
+        "task",
+        "brief",
+        "digest",
+        "workflow",
+        "yggy",
+        "yggdrasil",
+        "heimdal",
+        "approve",
+        "approval",
+        "run ",
+        "send ",
+        "create ",
+        "draft ",
+        "schedule",
+        "monitor",
+        "pause",
+        "disable",
+        "enable",
+        "delete",
+        "restart",
+        "docker",
+        "webhook",
+    )
+    return any(term in lowered for term in automation_terms)
+
+
+def fallback_general_chat_answer(user_text: str) -> str:
+    lowered = user_text.lower()
+    if is_automation_request_text(user_text):
+        return (
+            "I can talk that through, but the chat model is slow right now. I will not pretend to have pulled any levers. "
+            "If this should become Yggy work, phrase the next step as a concrete draft, run, pause, or proposal request."
+        )
+    if re.search(r"\basgard\b", lowered):
+        return (
+            "Asgard is probably filing incident reports in triplicate and calling it prophecy. Around here, the roof still "
+            "holds, the logs still mutter, and nobody sensible trusts a quiet server for more than five minutes."
+        )
+    if re.search(r"\b(good )?(morning|evening)\b|\b(old friend|dear friend|dear old friend)\b", lowered):
+        return (
+            "Good to see you, old friend. The machines are humming, fate is pretending it has a roadmap, and I am here "
+            "with a dry cup and a sharper tongue. What is on your mind?"
+        )
+    return (
+        "I am here. The chat model is taking the scenic route through molasses, so you get the compact Bragi: "
+        "warm enough to talk, sober enough not to invent actions, and mildly offended by entropy. What are we thinking about?"
+    )
 
 
 def general_chat_answer(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:
@@ -2007,11 +2060,7 @@ def general_chat_answer(messages: list[dict[str, Any]], *, user_id: str = DEFAUL
         except Exception as exc:
             print(f"bragi general chat fallback: {exc}", file=sys.stderr)
             pass
-    return (
-        "I can talk that through with you. I have no tools in this chat path, so no levers will be pulled "
-        "and no sacred machinery disturbed. We can think it through, sharpen the idea, and hand it to Yggy "
-        "only if it becomes a proper supported automation."
-    )
+    return fallback_general_chat_answer(user_text)
 
 
 def ollama_chat(messages: list[dict[str, Any]], *, user_id: str = DEFAULT_USER_ID) -> str:

@@ -1568,6 +1568,35 @@ def test_simple_greeting_does_not_call_ollama(monkeypatch):
     assert "cannot map" not in answer.lower()
 
 
+def test_general_chat_timeout_fallback_stays_conversational(monkeypatch):
+    monkeypatch.setattr(bragi, "GENERAL_CHAT_ENABLED", True)
+    monkeypatch.setattr(bragi, "CHAT_MODEL", "slow-model")
+
+    def slow_chat(*_args, **_kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(bragi, "ollama_chat", slow_chat)
+
+    greeting = bragi.general_chat_answer([{"role": "user", "content": "dear old friend, the sky is dark tonight"}])
+    asgard = bragi.general_chat_answer([{"role": "user", "content": "how are the guys at asgard doing"}])
+
+    assert "Good to see you" in greeting
+    assert "Asgard" in asgard
+    assert "no tools in this chat path" not in greeting
+    assert "proper supported automation" not in asgard
+
+
+def test_general_chat_timeout_fallback_keeps_automation_boundary(monkeypatch):
+    monkeypatch.setattr(bragi, "GENERAL_CHAT_ENABLED", True)
+    monkeypatch.setattr(bragi, "CHAT_MODEL", "slow-model")
+    monkeypatch.setattr(bragi, "ollama_chat", lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("timed out")))
+
+    answer = bragi.general_chat_answer([{"role": "user", "content": "draft an automation to restart docker"}])
+
+    assert "will not pretend to have pulled any levers" in answer
+    assert "draft, run, pause, or proposal request" in answer
+
+
 def test_general_chat_prompt_preserves_bard_scholar_voice_and_boundaries():
     prompt = bragi.GENERAL_CHAT_SYSTEM_PROMPT
 
