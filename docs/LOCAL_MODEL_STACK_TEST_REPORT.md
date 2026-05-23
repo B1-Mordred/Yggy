@@ -11,7 +11,7 @@ constraints.
 Validated components:
 
 - Bragi general chat remains on `llama3.1:8b`.
-- Bragi goal clarifier remains the dedicated `bragi-clarifier` profile.
+- Bragi goal clarifier now uses the dedicated `heimdal-clarifier` profile.
 - Granite remains the recommended tool-loop and digest summarizer model.
 - Qwen3-Coder is used only by the host-side capability implementation harness
   with explicit Yggy constraints.
@@ -53,7 +53,7 @@ intake_store.connected: true
 channel_registry.enabled: 3
 goal_clarifier.enabled: true
 goal_clarifier.provider: hermes
-goal_clarifier.model: bragi-clarifier
+goal_clarifier.model: heimdal-clarifier
 ```
 
 ## Repository Validation

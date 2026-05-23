@@ -43,7 +43,7 @@ flowchart TD
     ChatModel --> UserReply[Natural Bragi Reply]
     Router -->|ambiguous automation| IntakeState[Persistent Bragi Intake]
     IntakeState --> Clarify[Ask User For Missing Slots Or Target]
-    Router -->|known automation candidate| HermesClarifier[Dedicated Bragi Clarifier]
+    Router -->|known automation candidate| HermesClarifier[Heimdal Clarifier]
     HermesClarifier --> Merge[Deterministic Merge And Safety Check]
     Merge --> Heimdal[Heimdal Capability Gateway]
     Heimdal -->|accepted canonical intent| Yggdrasil[Yggdrasil Canonical Action]

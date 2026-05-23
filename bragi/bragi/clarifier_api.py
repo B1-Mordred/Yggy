@@ -14,7 +14,7 @@ from .goal_models import AutomationRequestClassification
 HOST = os.getenv("BRAGI_CLARIFIER_HOST", "127.0.0.1")
 PORT = int(os.getenv("BRAGI_CLARIFIER_PORT", "8651"))
 API_KEY = os.getenv("BRAGI_CLARIFIER_API_KEY", os.getenv("API_SERVER_KEY", "")).strip()
-MODEL_NAME = os.getenv("BRAGI_CLARIFIER_MODEL_NAME", "bragi-clarifier")
+MODEL_NAME = os.getenv("BRAGI_CLARIFIER_MODEL_NAME", "heimdal-clarifier")
 MAX_CANDIDATES = int(os.getenv("BRAGI_CLARIFIER_MAX_CANDIDATES", "5"))
 
 
@@ -137,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            json_response(self, 200, {"status": "ok", "service": "bragi-clarifier", "model": MODEL_NAME})
+            json_response(self, 200, {"status": "ok", "service": "heimdal-clarifier", "model": MODEL_NAME})
             return
         if self.path == "/v1/models":
             if not self.authorized():
@@ -183,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
                 self,
                 200,
                 {
-                    "id": f"chatcmpl-bragi-clarifier-{created}",
+                    "id": f"chatcmpl-heimdal-clarifier-{created}",
                     "object": "chat.completion",
                     "created": created,
                     "model": str(payload.get("model") or MODEL_NAME),
