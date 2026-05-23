@@ -255,6 +255,11 @@ def ensure_branch(workspace: Path, branch: str) -> None:
 def ensure_workspace_venv(source_root: Path, workspace: Path) -> None:
     source_venv = source_root / ".venv"
     target_venv = workspace / ".venv"
+    exclude_path = workspace / ".git" / "info" / "exclude"
+    if exclude_path.exists():
+        current = exclude_path.read_text(encoding="utf-8")
+        if ".venv\n" not in current and "\n.venv\n" not in current:
+            exclude_path.write_text(f"{current.rstrip()}\n.venv\n", encoding="utf-8")
     if target_venv.exists() or not source_venv.exists():
         return
     target_venv.symlink_to(source_venv, target_is_directory=True)
