@@ -59,11 +59,13 @@ def _enable_sqlite_foreign_keys(engine, database_url: str) -> None:
 
 def init_db() -> None:
     from . import models  # noqa: F401
+    from .services.capability_gap_service import ensure_capability_gap_defaults
     from .services.task_version_service import ensure_task_config_version_baseline
 
     Base.metadata.create_all(bind=get_engine())
     with Session(get_engine()) as session:
         ensure_task_config_version_baseline(session)
+        ensure_capability_gap_defaults(session)
 
 
 def get_session() -> Generator[Session, None, None]:

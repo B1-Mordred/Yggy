@@ -307,6 +307,8 @@ def test_disk_usage_monitoring_routes_to_non_executable_capability_proposal(monk
 
     def fake_api_request(method, path, payload=None):
         calls.append((method, path, payload))
+        if (method, path) == ("POST", "/capability-gaps/match"):
+            return {"matched": False, "gap": None}
         assert (method, path) == ("POST", "/capability-proposals/draft")
         return {
             "id": "capability_proposal_storage_usage",
@@ -332,10 +334,10 @@ def test_disk_usage_monitoring_routes_to_non_executable_capability_proposal(monk
         ]
     )
 
-    assert calls[0][0:2] == ("POST", "/capability-proposals/draft")
-    assert calls[0][2]["suggested_capability_id"] == "storage_usage.v1"
-    assert calls[0][2]["suggested_task_type"] == "storage_usage"
-    assert "shell access" in " ".join(calls[0][2]["safety_rules"])
+    assert calls[-1][0:2] == ("POST", "/capability-proposals/draft")
+    assert calls[-1][2]["suggested_capability_id"] == "storage_usage.v1"
+    assert calls[-1][2]["suggested_task_type"] == "storage_usage"
+    assert "shell access" in " ".join(calls[-1][2]["safety_rules"])
     assert "Capability proposal drafted" in answer
     assert "This is backlog state only" in answer
     assert bragi.build_candidate_intent("frist we need the new api endpoint for monitoring disk usage") is None
@@ -359,6 +361,8 @@ def test_unsupported_safe_idea_routes_to_non_executable_capability_proposal(monk
 
     def fake_api_request(method, path, payload=None):
         calls.append((method, path, payload))
+        if (method, path) == ("POST", "/capability-gaps/match"):
+            return {"matched": False, "gap": None}
         assert (method, path) == ("POST", "/capability-proposals/draft")
         return {
             "id": "capability_proposal_ups_battery",
@@ -374,7 +378,7 @@ def test_unsupported_safe_idea_routes_to_non_executable_capability_proposal(monk
 
     answer = bragi.route_chat([{"role": "user", "content": "track UPS battery status and alert me"}])
 
-    assert calls[0][0:2] == ("POST", "/capability-proposals/draft")
+    assert calls[-1][0:2] == ("POST", "/capability-proposals/draft")
     assert "Capability proposal drafted" in answer
     assert "This is backlog state only" in answer
 
@@ -416,10 +420,10 @@ How do these suggestions sound? Would you like to refine this automation further
     assert "prior automation idea for review" in answer
     assert "Capability proposal drafted" in answer
     assert "This is backlog state only" in answer
-    assert calls[0][0:2] == ("POST", "/capability-proposals/draft")
-    assert calls[0][2]["suggested_capability_id"] == "smart_home_lighting_absence.v1"
-    assert calls[0][2]["suggested_task_type"] == "smart_home_lighting"
-    assert calls[0][2]["likely_approval_level"] == "L3_EXTERNAL_SIDE_EFFECT"
+    assert calls[-1][0:2] == ("POST", "/capability-proposals/draft")
+    assert calls[-1][2]["suggested_capability_id"] == "smart_home_lighting_absence.v1"
+    assert calls[-1][2]["suggested_task_type"] == "smart_home_lighting"
+    assert calls[-1][2]["likely_approval_level"] == "L3_EXTERNAL_SIDE_EFFECT"
 
 
 def test_confirmation_without_pending_context_gives_clear_boundary():

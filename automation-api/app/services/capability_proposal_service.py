@@ -4,11 +4,12 @@ import re
 import uuid
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.models import CapabilityImplementationPlanModel, CapabilityProposalModel, utcnow
 from app.schemas import CapabilityProposalCreate
 from app.services.capability_gateway import CapabilityError, get_capability
+from app.services.capability_gap_service import sync_capability_gap_status, upsert_capability_gap_from_proposal
 from app.services.validation_service import find_secret_paths, redact_secrets
 
 
@@ -71,6 +72,7 @@ def create_capability_proposal(
         review_notes=str(redact_secrets(payload.review_notes or "")),
     )
     session.add(proposal)
+    upsert_capability_gap_from_proposal(session, proposal)
     return proposal
 
 
@@ -118,6 +120,15 @@ def close_capability_proposal(proposal: CapabilityProposalModel, *, status: str,
     proposal.decided_at = utcnow()
     if reason:
         proposal.review_notes = append_review_note(proposal.review_notes, reason)
+    # Keep Bragi's capability-gap routing aligned with operator decisions.
+    # Accepted proposals remain active gaps until the capability is implemented;
+    # rejected or closed proposals stop generating new executable-looking routes.
+    try:
+        session = object_session(proposal)
+        if session is not None:
+            sync_capability_gap_status(session, proposal.suggested_capability_id, status=status, proposal_id=proposal.id)
+    except Exception:
+        pass
 
 
 def create_implementation_plan(
@@ -150,6 +161,12 @@ def create_implementation_plan(
     proposal.status = "implementation_planned"
     proposal.decided_at = utcnow()
     proposal.review_notes = append_review_note(proposal.review_notes, reason or "Implementation plan created.")
+    sync_capability_gap_status(
+        session,
+        proposal.suggested_capability_id,
+        status="implementation_planned",
+        proposal_id=proposal.id,
+    )
     return plan
 
 
@@ -182,6 +199,7 @@ def mark_implementation_plan_status(
     proposal.status = status
     proposal.decided_at = utcnow()
     proposal.review_notes = append_review_note(proposal.review_notes, reason or f"Implementation plan marked {status}.")
+    sync_capability_gap_status(session, proposal.suggested_capability_id, status=status, proposal_id=proposal.id)
     return plan
 
 

@@ -117,6 +117,9 @@ def test_ops_dashboard_uses_login_page_and_keeps_basic_compatibility(client, mon
     assert "capability-filter-q" in allowed
     assert "capability-page-size" in allowed
     assert "data-capability-action" in allowed
+    assert "Capability Gap Routing" in allowed
+    assert "capability-gap-save" in allowed
+    assert "capability-gap" in allowed
     assert "source-filter-q" in allowed
     assert "source-filter-source-id" in allowed
     assert "source-page-size" in allowed

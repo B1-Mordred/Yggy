@@ -80,6 +80,7 @@ def classify_automation_request(
     *,
     visible_tasks: list[dict[str, Any]] | None = None,
     task_aliases: dict[str, str] | None = None,
+    capability_gaps: list[dict[str, Any]] | None = None,
     max_candidates: int = 5,
     hermes_client: HermesClarifierClient | None = None,
     use_hermes: bool = False,
@@ -89,6 +90,7 @@ def classify_automation_request(
         user_text,
         visible_tasks=visible_tasks,
         task_aliases=task_aliases,
+        capability_gaps=capability_gaps,
         max_candidates=max_candidates,
     )
     if not use_hermes or hermes_client is None or deterministic.request_kind == AutomationRequestKind.UNSAFE:
@@ -117,6 +119,7 @@ def classify_deterministic_automation_request(
     *,
     visible_tasks: list[dict[str, Any]] | None = None,
     task_aliases: dict[str, str] | None = None,
+    capability_gaps: list[dict[str, Any]] | None = None,
     max_candidates: int = 5,
 ) -> AutomationRequestClassification:
     text = str(user_text or "").strip()
@@ -150,6 +153,16 @@ def classify_deterministic_automation_request(
             reason="help, explanation, or ordinary chat request",
         )
 
+    gap = match_configured_capability_gap(text, capability_gaps or [])
+    if gap is not None:
+        return AutomationRequestClassification(
+            request_kind=AutomationRequestKind.PROPOSE_NEW_CAPABILITY,
+            target_kind=AutomationTargetKind.NEW_CAPABILITY,
+            operation={"suggested_capability_id": gap.get("suggested_capability_id"), "suggested_task_type": gap.get("suggested_task_type")},
+            confidence=0.84,
+            reason=f"request matches configured capability gap `{gap.get('id')}`",
+        )
+
     if requires_new_monitoring_capability(text):
         return AutomationRequestClassification(
             request_kind=AutomationRequestKind.PROPOSE_NEW_CAPABILITY,
@@ -171,7 +184,7 @@ def classify_deterministic_automation_request(
     candidates = [str(candidate.get("id")) for candidate in resolution.candidates if candidate.get("id")]
 
     if looks_like_new_task_request(lowered):
-        capability_id = infer_registered_capability(text)
+        capability_id = infer_registered_capability(text, capability_gaps=capability_gaps)
         if capability_id:
             return AutomationRequestClassification(
                 request_kind=AutomationRequestKind.CREATE_NEW,
@@ -274,7 +287,7 @@ def classify_deterministic_automation_request(
         )
 
     if looks_like_create_request(lowered):
-        capability_id = infer_registered_capability(text)
+        capability_id = infer_registered_capability(text, capability_gaps=capability_gaps)
         if capability_id:
             return AutomationRequestClassification(
                 request_kind=AutomationRequestKind.CREATE_NEW,
@@ -631,10 +644,12 @@ def looks_like_new_task_request(lowered: str) -> bool:
     )
 
 
-def infer_registered_capability(text: str) -> str | None:
+def infer_registered_capability(text: str, *, capability_gaps: list[dict[str, Any]] | None = None) -> str | None:
     lowered = text.lower()
     if re.search(r"\b(printer|toner|ink|cartridge|supply|supplies)\b", lowered):
         return "printer_supply_status.v1"
+    if match_configured_capability_gap(text, capability_gaps or []) is not None:
+        return None
     if requires_new_monitoring_capability(text):
         return None
     health_subject = re.search(
@@ -692,6 +707,46 @@ def requires_new_monitoring_capability(text: str) -> bool:
     if unknown_check_id and (host_resource or threshold_context or "server_health.v1" in lowered):
         return True
     return False
+
+
+def match_configured_capability_gap(text: str, capability_gaps: list[dict[str, Any]]) -> dict[str, Any] | None:
+    lowered = normalize_match_text(str(text or ""))
+    if not lowered:
+        return None
+    best: tuple[int, dict[str, Any]] | None = None
+    for gap in capability_gaps:
+        if not isinstance(gap, dict):
+            continue
+        if not bool(gap.get("effective_enabled", gap.get("enabled", False))):
+            continue
+        if str(gap.get("status") or "active") != "active":
+            continue
+        if str(gap.get("route") or "") != "propose_new_capability":
+            continue
+        trigger_terms = [str(item) for item in gap.get("trigger_terms", []) if str(item).strip()]
+        context_terms = [str(item) for item in gap.get("context_terms", []) if str(item).strip()]
+        exclude_terms = [str(item) for item in gap.get("exclude_terms", []) if str(item).strip()]
+        if any(configured_term_matches(lowered, term) for term in exclude_terms):
+            continue
+        trigger_score = sum(1 for term in trigger_terms if configured_term_matches(lowered, term))
+        if trigger_score == 0:
+            continue
+        context_score = sum(1 for term in context_terms if configured_term_matches(lowered, term))
+        if context_terms and context_score == 0:
+            continue
+        score = trigger_score * 3 + context_score
+        if best is None or score > best[0]:
+            best = (score, gap)
+    return best[1] if best else None
+
+
+def configured_term_matches(normalized_text: str, term: str) -> bool:
+    normalized = normalize_match_text(term)
+    if not normalized:
+        return False
+    if " " in normalized:
+        return normalized in normalized_text
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", normalized_text))
 
 
 def looks_like_useful_unsupported_automation(lowered: str) -> bool:

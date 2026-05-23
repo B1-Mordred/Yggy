@@ -1,0 +1,60 @@
+version: 1
+
+gaps:
+  - id: storage_usage.v1
+    enabled: true
+    status: active
+    route: propose_new_capability
+    title: Storage And Host Resource Monitoring
+    purpose: Review a bounded read-only host-resource monitoring capability for disk, storage, or other explicit local resource metrics before those checks can be used by server-health automations.
+    suggested_capability_id: storage_usage.v1
+    suggested_task_type: storage_usage
+    likely_approval_level: L1_NOTIFY_ONLY
+    trigger_terms:
+      - disk
+      - disk usage
+      - disk_usage
+      - storage
+      - storage usage
+      - storage_usage
+      - filesystem
+      - file system
+      - free space
+      - mount
+      - partition
+      - volume
+    context_terms:
+      - monitor
+      - monitoring
+      - check
+      - health
+      - usage
+      - threshold
+      - warning
+      - critical
+      - endpoint
+      - api endpoint
+      - new check
+      - add checks
+      - server_health.v1
+    exclude_terms: []
+    required_inputs:
+      - approved read-only metrics endpoint ID
+      - explicit mount, volume, or filesystem allowlist
+      - warning threshold, such as 10 percent free
+      - critical threshold, such as 5 percent free
+      - polling schedule
+      - whitelisted notification target
+    safety_rules:
+      - must start disabled and dry-run
+      - must use a narrow read-only endpoint owned by Yggy or an approved metrics exporter
+      - must not give Bragi, Hermes, or Open WebUI shell access
+      - must not mount or expose the Docker socket
+      - must not inspect arbitrary host paths outside the explicit allowlist
+      - must not write, delete, clean up, resize, or repair filesystems automatically
+    non_goals:
+      - no arbitrary shell execution such as df or du from the model path
+      - no Docker socket access
+      - no broad host filesystem access
+      - no automatic cleanup, deletion, package updates, or service restarts
+    review_notes: Seed gap for routing host-resource monitoring requests into capability backlog until a bounded implementation exists.

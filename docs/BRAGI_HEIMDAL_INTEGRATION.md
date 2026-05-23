@@ -496,6 +496,40 @@ report this proposal and plan status through read-only context so the user can
 ask what happened with an automation idea, but Bragi still cannot implement,
 approve, or execute it.
 
+## Capability Gap Routing
+
+Bragi also has an explicit capability-gap registry for requests that look
+automation-shaped but are not executable yet. The checked-in seed file is:
+
+```text
+configs/capability_gaps.yaml
+```
+
+The automation API loads that seed into the runtime `capability_gaps` table.
+The local `/ops` UI exposes **Capability Gap Routing** in the Capabilities view,
+where an authenticated operator can enable, disable, create, or update gap
+entries. Bragi can read and match those entries through the tool-key endpoint:
+
+```text
+GET /capability-gaps
+POST /capability-gaps/match
+```
+
+A matching active gap routes the request to `propose_new_capability`; it does
+not create a task, approval, run, task-change proposal, or Yggdrasil request.
+Capability proposal creation also auto-generates or updates a matching gap so
+future similar requests stay classified as backlog until the capability is
+implemented. When a capability proposal is rejected, closed, implemented, or
+superseded, the matching gap is updated accordingly. Implemented or superseded
+gaps are disabled so Bragi stops treating the request as unsupported once the
+real registered capability exists.
+
+The initial seeded gap is `storage_usage.v1`, covering disk, storage,
+filesystem, free-space, mount, partition, and volume monitoring requests. This
+prevents Bragi from forcing a missing disk-space endpoint into `server_health.v1`.
+Such requests become capability backlog until a bounded read-only metrics
+endpoint and worker support are implemented.
+
 The `/ops` UI can queue a separate `capability_implementation_run` for a planned
 proposal. This is still not model-facing execution. If the local host-side
 runner is active, it will pick up queued runs and invoke the bounded

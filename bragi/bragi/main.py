@@ -46,6 +46,7 @@ from .goal_router import (
     AutomationRequestKind,
     AutomationTargetKind,
     classify_automation_request,
+    match_configured_capability_gap,
     requires_new_monitoring_capability,
 )
 from .goal_models import GOAL_CAPABILITY_IDS
@@ -432,6 +433,39 @@ def read_yaml_registry(relative: str, collection_key: str) -> list[dict[str, Any
     if not isinstance(items, list):
         return []
     return [context_redact(item) for item in items if isinstance(item, dict)]
+
+
+def local_capability_gap_registry() -> list[dict[str, Any]]:
+    gaps = read_yaml_registry("capability_gaps.yaml", "gaps")
+    for gap in gaps:
+        gap.setdefault("effective_enabled", bool(gap.get("enabled", True) and gap.get("status", "active") == "active"))
+        gap.setdefault("source", "local_config")
+    return gaps
+
+
+def capability_gap_registry_for_goal_router() -> list[dict[str, Any]]:
+    try:
+        response = api_request("GET", "/capability-gaps")
+        gaps = response.get("gaps") if isinstance(response.get("gaps"), list) else []
+        if gaps:
+            return [context_redact(gap) for gap in gaps if isinstance(gap, dict)]
+    except Exception as exc:
+        print(f"bragi capability gap lookup failed: {exc.__class__.__name__}", file=sys.stderr)
+    return local_capability_gap_registry()
+
+
+def configured_capability_gap_for_text(user_text: str) -> dict[str, Any] | None:
+    local = match_configured_capability_gap(user_text, local_capability_gap_registry())
+    if local is not None:
+        return local
+    try:
+        response = api_request("POST", "/capability-gaps/match", {"text": user_text[:4000]})
+        gap = response.get("gap") if isinstance(response, dict) else None
+        if isinstance(gap, dict):
+            return context_redact(gap)
+    except Exception as exc:
+        print(f"bragi capability gap match failed: {exc.__class__.__name__}", file=sys.stderr)
+    return match_configured_capability_gap(user_text, local_capability_gap_registry())
 
 
 def load_channel_registry() -> list[dict[str, Any]]:
@@ -3944,43 +3978,49 @@ def capability_proposal_payload(
     channel: str = "openwebui",
 ) -> dict[str, Any]:
     lowered = user_text.lower()
-    if requires_new_monitoring_capability(user_text):
+    configured_gap = configured_capability_gap_for_text(user_text)
+    if configured_gap is not None or requires_new_monitoring_capability(user_text):
+        gap = configured_gap or {}
         return {
-            "title": "Storage And Host Resource Monitoring",
+            "title": str(gap.get("title") or "Storage And Host Resource Monitoring"),
             "requested_by": user_id or "bragi",
             "source_channel": canonical_intake_channel(channel),
             "original_request_preview": redact_diagnostic_text(user_text)[:1000],
-            "purpose": (
-                "Review a bounded read-only host-resource monitoring capability for disk, storage, or other explicit "
-                "local resource metrics before those checks can be used by server-health automations."
+            "purpose": str(
+                gap.get("purpose")
+                or (
+                    "Review a bounded read-only host-resource monitoring capability for disk, storage, or other explicit "
+                    "local resource metrics before those checks can be used by server-health automations."
+                )
             ),
-            "suggested_capability_id": "storage_usage.v1",
-            "suggested_task_type": "storage_usage",
-            "likely_approval_level": "L1_NOTIFY_ONLY",
-            "required_inputs": [
+            "suggested_capability_id": str(gap.get("suggested_capability_id") or "storage_usage.v1"),
+            "suggested_task_type": str(gap.get("suggested_task_type") or "storage_usage"),
+            "likely_approval_level": str(gap.get("likely_approval_level") or "L1_NOTIFY_ONLY"),
+            "required_inputs": list(gap.get("required_inputs") or [
                 "approved read-only metrics endpoint ID",
                 "explicit mount, volume, or filesystem allowlist",
                 "warning threshold, such as 10 percent free",
                 "critical threshold, such as 5 percent free",
                 "polling schedule",
                 "whitelisted notification target",
-            ],
-            "safety_rules": [
+            ]),
+            "safety_rules": list(gap.get("safety_rules") or [
                 "must start disabled and dry-run",
                 "must use a narrow read-only endpoint owned by Yggy or an approved metrics exporter",
                 "must not give Bragi, Hermes, or Open WebUI shell access",
                 "must not mount or expose the Docker socket",
                 "must not inspect arbitrary host paths outside the explicit allowlist",
                 "must not write, delete, clean up, resize, or repair filesystems automatically",
-            ],
-            "non_goals": [
+            ]),
+            "non_goals": list(gap.get("non_goals") or [
                 "no arbitrary shell execution such as df or du from the model path",
                 "no Docker socket access",
                 "no broad host filesystem access",
                 "no automatic cleanup, deletion, package updates, or service restarts",
-            ],
+            ]),
             "review_notes": str(
                 (result or {}).get("message")
+                or gap.get("review_notes")
                 or "Bragi classified this as a new monitoring capability requirement, not an executable server_health.v1 task."
             ),
         }
@@ -4939,6 +4979,7 @@ def classify_goal_request(
         user_text,
         visible_tasks=visible_tasks,
         task_aliases=TASK_ALIASES,
+        capability_gaps=local_capability_gap_registry(),
         max_candidates=GOAL_ROUTER_MAX_CANDIDATES,
         hermes_client=hermes,
         use_hermes=hermes is not None,

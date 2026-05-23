@@ -25,6 +25,7 @@ from app.database import get_session
 from app.models import (
     ApprovalModel,
     AuditEventModel,
+    CapabilityGapModel,
     CapabilityProposalModel,
     HeartbeatModel,
     RunModel,
@@ -61,6 +62,13 @@ from app.services.capability_proposal_service import (
     implementation_plan_for_proposal,
     mark_implementation_plan_status,
 )
+from app.services.capability_gap_service import (
+    CapabilityGapConfig,
+    CapabilityGapError,
+    capability_gap_to_dict,
+    list_capability_gaps,
+    upsert_capability_gap,
+)
 from app.services.capability_implementation_service import (
     CapabilityImplementationError,
     create_implementation_run,
@@ -87,6 +95,7 @@ OPS_VERSION_REVERT_ACTION_HEADER = "version-revert"
 OPS_TASK_CHANGE_ACTION_HEADER = "task-change-proposal"
 OPS_CAPABILITY_PROPOSAL_ACTION_HEADER = "capability-proposal"
 OPS_CAPABILITY_IMPLEMENTATION_ACTION_HEADER = "capability-implementation"
+OPS_CAPABILITY_GAP_ACTION_HEADER = "capability-gap"
 OPS_SOURCE_PROPOSAL_ACTION_HEADER = "source-proposal"
 MAX_RUN_DETAIL_ITEMS = 10
 MAX_RUN_DETAIL_ERRORS = 10
@@ -321,6 +330,13 @@ def require_ops_capability_implementation_action_header(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops capability implementation action header")
 
 
+def require_ops_capability_gap_action_header(
+    x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
+) -> None:
+    if x_yggy_ops_action != OPS_CAPABILITY_GAP_ACTION_HEADER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="missing ops capability gap action header")
+
+
 def require_ops_source_proposal_action_header(
     x_yggy_ops_action: str | None = Header(default=None, alias="X-Yggy-Ops-Action"),
 ) -> None:
@@ -451,6 +467,11 @@ def ops_status(
         .limit(20)
         .all()
     )
+    active_capability_gaps = (
+        session.query(CapabilityGapModel)
+        .filter(CapabilityGapModel.status == "active", CapabilityGapModel.enabled.is_(True))
+        .count()
+    )
     open_source_proposals = (
         session.query(SourceProposalModel)
         .filter(SourceProposalModel.status.in_(["pending", "approved"]))
@@ -515,6 +536,7 @@ def ops_status(
             "approved_task_change_proposals": len(approved_task_changes),
             "open_task_change_proposals": len(pending_task_changes) + len(approved_task_changes),
             "pending_capability_proposals": len(pending_capability_proposals),
+            "active_capability_gaps": active_capability_gaps,
             "pending_source_proposals": len(pending_source_proposals),
             "approved_source_proposals": len(approved_source_proposals),
             "open_source_proposals": len(pending_source_proposals) + len(approved_source_proposals),
@@ -981,6 +1003,54 @@ def ops_capability_implementation_runs(
         "count": len(runs),
         "runs": [implementation_run_to_dict(run) for run in runs],
     }
+
+
+@router.get("/ops/capability-gaps", include_in_schema=False)
+def ops_capability_gaps(
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+) -> dict:
+    gaps = [capability_gap_to_dict(gap) for gap in list_capability_gaps(session)]
+    return {
+        "generated_at": utcnow(),
+        "count": len(gaps),
+        "gaps": gaps,
+        "authority": "runtime_db_seeded_from_configs/capability_gaps.yaml",
+    }
+
+
+@router.put("/ops/capability-gaps/{gap_id}", include_in_schema=False)
+def ops_update_capability_gap(
+    gap_id: str,
+    payload: CapabilityGapConfig,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_capability_gap_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    if payload.id != gap_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="gap id in path and payload must match")
+    try:
+        gap = upsert_capability_gap(session, payload, source="ops_dashboard")
+    except CapabilityGapError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    audit_event(
+        session,
+        "ops_dashboard",
+        "capability_gap.upsert",
+        "capability_gap",
+        gap.id,
+        {
+            "suggested_capability_id": gap.suggested_capability_id,
+            "suggested_task_type": gap.suggested_task_type,
+            "enabled": gap.enabled,
+            "status": gap.status,
+            "surface": "ops_ui",
+        },
+    )
+    session.commit()
+    return capability_gap_to_dict(gap)
 
 
 @router.get("/ops/source-proposals", include_in_schema=False)
@@ -2578,6 +2648,16 @@ DASHBOARD_HTML = f"""<!doctype html>
     .approval-actions {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
     .approval-message {{ min-height: 18px; }}
     .danger {{ border-color: var(--bad); color: var(--bad); }}
+    .form-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }}
+    .form-grid label {{ display: grid; gap: 4px; color: var(--muted); font-size: 12px; }}
+    .form-grid input, .form-grid select, .form-grid textarea {{ width: 100%; }}
+    .form-grid textarea {{ min-height: 70px; resize: vertical; }}
+    .form-grid .wide {{ grid-column: 1 / -1; }}
     .detail-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
     .detail-block {{ min-width: 0; }}
     .detail-block.wide {{ grid-column: 1 / -1; }}
@@ -2878,6 +2958,60 @@ DASHBOARD_HTML = f"""<!doctype html>
         </div>
         <div id="capabilities"></div>
         <div class="pager" id="capability-pagination"></div>
+      </section>
+      <section class="section panel">
+        <div class="section-head">
+          <div>
+            <h2>Capability Gap Routing</h2>
+            <div class="meta" id="capability-gap-summary">Not loaded yet.</div>
+          </div>
+          <button id="capability-gap-refresh" type="button">Refresh Gaps</button>
+        </div>
+        <div class="meta">Capability gaps tell Bragi when an automation-shaped request is useful but not executable yet. Matching gaps become non-executable capability proposals only.</div>
+        <div id="capability-gaps"></div>
+        <details class="section">
+          <summary>Create or update a capability gap</summary>
+          <div class="form-grid" id="capability-gap-form">
+            <label>ID <input id="gap-id" type="text" placeholder="storage_usage.v1"></label>
+            <label>Suggested capability <input id="gap-suggested-capability-id" type="text" placeholder="storage_usage.v1"></label>
+            <label>Task type <input id="gap-suggested-task-type" type="text" placeholder="storage_usage"></label>
+            <label>Approval level
+              <select id="gap-approval-level">
+                <option value="L1_NOTIFY_ONLY">L1_NOTIFY_ONLY</option>
+                <option value="L0_READ_ONLY">L0_READ_ONLY</option>
+                <option value="L2_LOCAL_WRITE">L2_LOCAL_WRITE</option>
+                <option value="L3_EXTERNAL_SIDE_EFFECT">L3_EXTERNAL_SIDE_EFFECT</option>
+              </select>
+            </label>
+            <label>Status
+              <select id="gap-status">
+                <option value="active">active</option>
+                <option value="disabled">disabled</option>
+                <option value="implemented">implemented</option>
+                <option value="superseded">superseded</option>
+              </select>
+            </label>
+            <label>Enabled
+              <select id="gap-enabled">
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+            <label class="wide">Title <input id="gap-title" type="text" placeholder="Storage And Host Resource Monitoring"></label>
+            <label class="wide">Purpose <textarea id="gap-purpose" placeholder="Why this gap exists and what it should become"></textarea></label>
+            <label class="wide">Trigger terms <textarea id="gap-trigger-terms" placeholder="Comma or newline separated: disk, storage, free space"></textarea></label>
+            <label class="wide">Context terms <textarea id="gap-context-terms" placeholder="Comma or newline separated: monitor, threshold, endpoint"></textarea></label>
+            <label class="wide">Required inputs <textarea id="gap-required-inputs"></textarea></label>
+            <label class="wide">Safety rules <textarea id="gap-safety-rules"></textarea></label>
+            <label class="wide">Non-goals <textarea id="gap-non-goals"></textarea></label>
+            <label class="wide">Review notes <textarea id="gap-review-notes"></textarea></label>
+          </div>
+          <div class="approval-actions">
+            <button id="capability-gap-save" type="button">Save Gap</button>
+            <button id="capability-gap-clear" type="button">Clear Form</button>
+            <span class="meta approval-message" id="capability-gap-message"></span>
+          </div>
+        </details>
       </section>
     </section>
     <section class="view" data-view="sources">
@@ -3235,7 +3369,10 @@ DASHBOARD_HTML = f"""<!doctype html>
       if (view === 'runs') loadRuns();
       if (view === 'audit') loadAudit();
       if (view === 'proposals') loadTaskChangeProposals();
-      if (view === 'capabilities') loadCapabilityProposals();
+      if (view === 'capabilities') {{
+        loadCapabilityProposals();
+        loadCapabilityGaps();
+      }}
       if (view === 'sources') loadSourceProposals();
       if (view === 'approvals') loadReviewQueue('approvals');
     }}
@@ -4158,6 +4295,91 @@ DASHBOARD_HTML = f"""<!doctype html>
         + capabilityProposalCards(proposals, 'No capability proposals match the current filters.');
       wireCapabilityProposalButtons(container);
     }}
+    function splitLines(value) {{
+      return String(value || '').split(/[,\n]/).map(item => item.trim()).filter(Boolean);
+    }}
+    function joinLines(items) {{
+      return Array.isArray(items) ? items.join('\\n') : '';
+    }}
+    function capabilityGapCards(gaps) {{
+      return gaps.length ? gaps.map(item => {{
+        const effective = item.effective_enabled ? 'effective' : 'inactive';
+        return `<div class="approval">
+          <div class="approval-head">
+            <div>
+              <code>${{esc(item.id)}}</code>
+              <span class="pill">${{esc(item.status)}}</span>
+              <span class="pill">${{esc(item.enabled)}}</span>
+              <span class="pill">${{esc(effective)}}</span>
+              <span class="pill">${{esc(item.source || 'unknown')}}</span>
+            </div>
+            <span class="meta">updated ${{esc(item.updated_at || '')}}</span>
+          </div>
+          <div><strong>${{esc(item.title)}}</strong></div>
+          <div>${{esc(item.purpose)}}</div>
+          <div class="meta">
+            route <code>${{esc(item.route)}}</code>;
+            suggested capability <code>${{esc(item.suggested_capability_id)}}</code>;
+            task type <code>${{esc(item.suggested_task_type)}}</code>;
+            approval <code>${{esc(item.likely_approval_level)}}</code>
+          </div>
+          <div><strong>Trigger terms</strong><br>${{sourcePillList(item.trigger_terms)}}</div>
+          <div><strong>Context terms</strong><br>${{sourcePillList(item.context_terms)}}</div>
+          <div><strong>Safety rules</strong>${{itemList(item.safety_rules)}}</div>
+          <div class="approval-actions">
+            <button type="button" data-gap-edit="${{esc(item.id)}}">Edit</button>
+          </div>
+        </div>`;
+      }}).join('<hr>') : '<div class="empty">No capability gaps configured.</div>';
+    }}
+    function setCapabilityGapForm(item) {{
+      byId('gap-id').value = item?.id || '';
+      byId('gap-suggested-capability-id').value = item?.suggested_capability_id || item?.id || '';
+      byId('gap-suggested-task-type').value = item?.suggested_task_type || '';
+      byId('gap-approval-level').value = item?.likely_approval_level || 'L1_NOTIFY_ONLY';
+      byId('gap-status').value = item?.status || 'active';
+      byId('gap-enabled').value = String(item?.enabled ?? true);
+      byId('gap-title').value = item?.title || '';
+      byId('gap-purpose').value = item?.purpose || '';
+      byId('gap-trigger-terms').value = joinLines(item?.trigger_terms);
+      byId('gap-context-terms').value = joinLines(item?.context_terms);
+      byId('gap-required-inputs').value = joinLines(item?.required_inputs);
+      byId('gap-safety-rules').value = joinLines(item?.safety_rules);
+      byId('gap-non-goals').value = joinLines(item?.non_goals);
+      byId('gap-review-notes').value = item?.review_notes || '';
+    }}
+    function capabilityGapPayloadFromForm() {{
+      return {{
+        id: fieldValue('gap-id'),
+        enabled: fieldValue('gap-enabled') === 'true',
+        status: fieldValue('gap-status') || 'active',
+        route: 'propose_new_capability',
+        title: fieldValue('gap-title'),
+        purpose: fieldValue('gap-purpose'),
+        suggested_capability_id: fieldValue('gap-suggested-capability-id'),
+        suggested_task_type: fieldValue('gap-suggested-task-type'),
+        likely_approval_level: fieldValue('gap-approval-level') || 'L1_NOTIFY_ONLY',
+        trigger_terms: splitLines(fieldValue('gap-trigger-terms')),
+        context_terms: splitLines(fieldValue('gap-context-terms')),
+        exclude_terms: [],
+        required_inputs: splitLines(fieldValue('gap-required-inputs')),
+        safety_rules: splitLines(fieldValue('gap-safety-rules')),
+        non_goals: splitLines(fieldValue('gap-non-goals')),
+        review_notes: fieldValue('gap-review-notes'),
+      }};
+    }}
+    function renderCapabilityGaps(gaps) {{
+      const container = byId('capability-gaps');
+      container.dataset.gaps = JSON.stringify(gaps || []);
+      container.innerHTML = capabilityGapCards(gaps || []);
+      container.querySelectorAll('[data-gap-edit]').forEach(button => {{
+        button.addEventListener('click', () => {{
+          const items = JSON.parse(container.dataset.gaps || '[]');
+          const item = items.find(entry => entry.id === button.dataset.gapEdit);
+          if (item) setCapabilityGapForm(item);
+        }});
+      }});
+    }}
     function sourcePillList(items) {{
       return Array.isArray(items) && items.length
         ? items.slice(0, 6).map(item => `<span class="pill">${{esc(item)}}</span>`).join(' ')
@@ -4309,6 +4531,49 @@ DASHBOARD_HTML = f"""<!doctype html>
         renderPager('capability-pagination', 'capabilities', data.pagination.total, data.pagination.returned, loadCapabilityProposals);
       }} catch (error) {{
         summary.textContent = `Unable to load capability proposals: ${{error.message}}`;
+      }}
+    }}
+    async function loadCapabilityGaps() {{
+      const summary = byId('capability-gap-summary');
+      summary.textContent = 'Loading capability gaps...';
+      try {{
+        const response = await fetch('/ops/capability-gaps', {{credentials: 'same-origin'}});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const data = await response.json();
+        const gaps = data.gaps || [];
+        const active = gaps.filter(item => item.effective_enabled).length;
+        summary.textContent = `${{active}} active of ${{data.count || gaps.length}} configured gaps.`;
+        renderCapabilityGaps(gaps);
+      }} catch (error) {{
+        summary.textContent = `Unable to load capability gaps: ${{error.message}}`;
+      }}
+    }}
+    async function saveCapabilityGap() {{
+      const message = byId('capability-gap-message');
+      const payload = capabilityGapPayloadFromForm();
+      if (!payload.id) {{
+        message.textContent = 'Gap ID is required.';
+        return;
+      }}
+      try {{
+        const response = await fetch(`/ops/capability-gaps/${{encodeURIComponent(payload.id)}}`, {{
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: {{'Content-Type': 'application/json', 'X-Yggy-Ops-Action': 'capability-gap'}},
+          body: JSON.stringify(payload),
+        }});
+        if (!response.ok) {{
+          const error = await response.json().catch(() => ({{detail: `status ${{response.status}}`}}));
+          throw new Error(error.detail || `status ${{response.status}}`);
+        }}
+        const saved = await response.json();
+        message.textContent = `Saved ${{saved.id}}.`;
+        await loadCapabilityGaps();
+      }} catch (error) {{
+        message.textContent = `Unable to save gap: ${{error.message}}`;
       }}
     }}
     async function loadSourceProposals() {{
@@ -4686,14 +4951,14 @@ DASHBOARD_HTML = f"""<!doctype html>
       setTabCount('tasks', data.counts.tasks);
       setTabCount('runs', data.recent_runs.length);
       setTabCount('proposals', data.counts.open_task_change_proposals || 0);
-      setTabCount('capabilities', data.counts.pending_capability_proposals || 0);
+      setTabCount('capabilities', (data.counts.pending_capability_proposals || 0) + (data.counts.active_capability_gaps || 0));
       setTabCount('sources', data.counts.open_source_proposals || 0);
       setTabCount('approvals', data.counts.pending_general_approvals || 0);
       document.getElementById('metrics').innerHTML = [
         metric('Service', statusLabel(data.service.status), `worker age ${{text(data.service.worker.age_seconds)}}s`),
         metric('Tasks', data.counts.tasks, `${{data.counts.enabled_tasks}} enabled`),
         metric('Active Runs', data.counts.active_runs, 'queued or running'),
-        metric('Pending Reviews', data.counts.pending_reviews || data.counts.pending_approvals, `${{data.counts.pending_task_change_proposals || 0}} task changes; ${{data.counts.pending_capability_proposals || 0}} capabilities; ${{data.counts.open_source_proposals || 0}} sources; ${{data.counts.pending_general_approvals || 0}} general`),
+        metric('Pending Reviews', data.counts.pending_reviews || data.counts.pending_approvals, `${{data.counts.pending_task_change_proposals || 0}} task changes; ${{data.counts.pending_capability_proposals || 0}} capabilities; ${{data.counts.active_capability_gaps || 0}} gaps; ${{data.counts.open_source_proposals || 0}} sources; ${{data.counts.pending_general_approvals || 0}} general`),
       ].join('');
       document.getElementById('service').innerHTML = `
         <h2>Service Health</h2>
@@ -4949,7 +5214,10 @@ DASHBOARD_HTML = f"""<!doctype html>
         if (activeView === 'runs') await loadRuns();
         if (activeView === 'audit') await loadAudit();
         if (activeView === 'proposals') await loadTaskChangeProposals();
-        if (activeView === 'capabilities') await loadCapabilityProposals();
+        if (activeView === 'capabilities') {{
+          await loadCapabilityProposals();
+          await loadCapabilityGaps();
+        }}
         if (activeView === 'sources') await loadSourceProposals();
         if (activeView === 'approvals') await loadReviewQueue('approvals');
       }}
@@ -4960,6 +5228,9 @@ DASHBOARD_HTML = f"""<!doctype html>
     document.getElementById('audit-refresh').addEventListener('click', loadAudit);
     document.getElementById('proposal-refresh').addEventListener('click', loadTaskChangeProposals);
     document.getElementById('capability-refresh').addEventListener('click', loadCapabilityProposals);
+    document.getElementById('capability-gap-refresh').addEventListener('click', loadCapabilityGaps);
+    document.getElementById('capability-gap-save').addEventListener('click', saveCapabilityGap);
+    document.getElementById('capability-gap-clear').addEventListener('click', () => setCapabilityGapForm(null));
     document.getElementById('source-refresh').addEventListener('click', loadSourceProposals);
     document.getElementById('approval-refresh').addEventListener('click', () => loadReviewQueue('approvals'));
     document.getElementById('saved-view-select').addEventListener('change', event => applySavedView(event.target.value));

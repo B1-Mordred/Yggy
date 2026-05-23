@@ -173,6 +173,31 @@ class CapabilityImplementationRunModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CapabilityGapModel(Base):
+    __tablename__ = "capability_gaps"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="active", nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(64), default="ops_dashboard", nullable=False)
+    route: Mapped[str] = mapped_column(String(64), default="propose_new_capability", nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    suggested_capability_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    suggested_task_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    likely_approval_level: Mapped[str] = mapped_column(String(64), nullable=False)
+    trigger_terms: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    context_terms: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    exclude_terms: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    required_inputs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    safety_rules: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    non_goals: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    review_notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    linked_capability_proposal_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class ChannelNotificationModel(Base):
     __tablename__ = "channel_notifications"
     __table_args__ = (UniqueConstraint("dedupe_key", name="uq_channel_notifications_dedupe_key"),)

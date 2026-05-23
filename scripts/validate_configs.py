@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from app.policy import PolicyViolation, load_policy, load_printer_registry, validate_policy_config, validate_task_policy  # noqa: E402
 from app.schemas import TaskConfig, TopicConfig  # noqa: E402
 from app.services.capability_gateway import CapabilityError, validate_capability_registry  # noqa: E402
+from app.services.capability_gap_service import validate_capability_gap_registry  # noqa: E402
 from exporter.config import load_config as load_metrics_config  # noqa: E402
 from printer_exporter.config import load_config as load_printer_exporter_config  # noqa: E402
 from task_template_lib import load_templates, render_task_from_template  # noqa: E402
@@ -157,6 +158,14 @@ def validate_capabilities() -> list[str]:
     return []
 
 
+def validate_capability_gaps() -> list[str]:
+    try:
+        validate_capability_gap_registry(ROOT / "configs" / "capability_gaps.yaml")
+    except Exception as exc:
+        return [f"{ROOT / 'configs' / 'capability_gaps.yaml'}: {exc}"]
+    return []
+
+
 def validate_identities() -> list[str]:
     path = ROOT / "configs" / "identities.yaml"
     if not path.exists():
@@ -264,6 +273,7 @@ def main() -> int:
         + validate_printers()
         + validate_task_templates()
         + validate_capabilities()
+        + validate_capability_gaps()
         + validate_identities()
         + validate_channels()
     )
