@@ -20,6 +20,17 @@ fallback. That path cannot approve, configure, run, or forward automations. It
 does not receive shell, Docker, filesystem, Discord, database, n8n, or admin
 credentials.
 
+Configure the no-tool chat lane independently from heavier local models:
+
+```env
+BRAGI_OLLAMA_BASE_URL=http://host.docker.internal:11435
+BRAGI_CHAT_MODEL=llama3.1:8b
+```
+
+`BRAGI_OLLAMA_BASE_URL` takes precedence over the generic `OLLAMA_BASE_URL`
+inside Bragi. This keeps the conversational llama model isolated from the
+capability-implementation model lane.
+
 Bragi exposes an OpenAI-compatible API:
 
 ```text

@@ -5,14 +5,17 @@ import argparse
 import contextlib
 import fcntl
 import os
+import re
 import shutil
 import shlex
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -51,6 +54,14 @@ class RunnerConfig:
     mark_failed_on_wrapper_error: bool
     extra_args: tuple[str, ...]
     created_after: str
+    manual_only: bool
+    manual_override: bool
+    quiet_hours_start: str
+    quiet_hours_end: str
+    quiet_hours_timezone: str
+    implementation_ollama_host: str
+    implementation_model: str
+    stop_model_after_run: bool
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -150,6 +161,48 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("YGGY_IMPLEMENTATION_RUNNER_CREATED_AFTER", ""),
         help="Optional ISO timestamp/string gate; queued runs older than this are ignored.",
     )
+    parser.add_argument(
+        "--manual-only",
+        action=argparse.BooleanOptionalAction,
+        default=env_bool("YGGY_IMPLEMENTATION_RUNNER_MANUAL_ONLY", False),
+        help="Do not automatically process queued runs unless --manual-override is set.",
+    )
+    parser.add_argument(
+        "--manual-override",
+        action="store_true",
+        default=env_bool("YGGY_IMPLEMENTATION_RUNNER_MANUAL_OVERRIDE", False),
+        help="Allow a one-shot/manual runner invocation to process runs despite manual-only or quiet hours.",
+    )
+    parser.add_argument(
+        "--quiet-hours-start",
+        default=os.getenv("YGGY_IMPLEMENTATION_RUNNER_QUIET_HOURS_START", ""),
+        help="Optional local quiet-hours start in HH:MM. Queued runs wait unless --manual-override is set.",
+    )
+    parser.add_argument(
+        "--quiet-hours-end",
+        default=os.getenv("YGGY_IMPLEMENTATION_RUNNER_QUIET_HOURS_END", ""),
+        help="Optional local quiet-hours end in HH:MM.",
+    )
+    parser.add_argument(
+        "--quiet-hours-timezone",
+        default=os.getenv("YGGY_IMPLEMENTATION_RUNNER_QUIET_HOURS_TIMEZONE", os.getenv("TZ", "Europe/Berlin")),
+    )
+    parser.add_argument(
+        "--implementation-ollama-host",
+        default=os.getenv("YGGY_IMPLEMENTATION_OLLAMA_HOST", ""),
+        help="Optional dedicated Ollama host passed to Hermes implementation subprocesses.",
+    )
+    parser.add_argument(
+        "--implementation-model",
+        default=os.getenv("YGGY_IMPLEMENTATION_HERMES_MODEL", ""),
+        help="Implementation model name used for post-run Ollama cleanup.",
+    )
+    parser.add_argument(
+        "--stop-model-after-run",
+        action=argparse.BooleanOptionalAction,
+        default=env_bool("YGGY_IMPLEMENTATION_RUNNER_STOP_MODEL_AFTER_RUN", True),
+        help="Stop the implementation model after each runner subprocess when ollama is available.",
+    )
     return parser.parse_args()
 
 
@@ -177,6 +230,14 @@ def config_from_args(args: argparse.Namespace) -> RunnerConfig:
         mark_failed_on_wrapper_error=bool(args.mark_failed_on_wrapper_error),
         extra_args=tuple(shlex.split(args.extra_args)),
         created_after=str(args.created_after or "").strip(),
+        manual_only=bool(args.manual_only),
+        manual_override=bool(args.manual_override),
+        quiet_hours_start=str(args.quiet_hours_start or "").strip(),
+        quiet_hours_end=str(args.quiet_hours_end or "").strip(),
+        quiet_hours_timezone=str(args.quiet_hours_timezone or "Europe/Berlin").strip(),
+        implementation_ollama_host=str(args.implementation_ollama_host or "").strip(),
+        implementation_model=str(args.implementation_model or "").strip(),
+        stop_model_after_run=bool(args.stop_model_after_run),
     )
 
 
@@ -304,6 +365,8 @@ def implementation_command(config: RunnerConfig, run: dict[str, Any], repo_root:
         command.append("--allow-dirty")
     if config.no_yolo:
         command.append("--no-yolo")
+    if config.implementation_ollama_host:
+        command.extend(["--ollama-host", config.implementation_ollama_host])
     command.extend(config.extra_args)
     return command
 
@@ -328,15 +391,35 @@ def process_run(config: RunnerConfig, api_key: str, run: dict[str, Any]) -> int:
     if config.dry_run:
         return 0
 
-    completed = subprocess.run(
-        command,
-        cwd=config.source_root,
-        env=child_environment(),
-        timeout=config.command_timeout or None,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=config.source_root,
+            env=child_environment(),
+            timeout=config.command_timeout or None,
+        )
+    finally:
+        stop_implementation_model(config)
     if completed.returncode != 0 and config.mark_failed_on_wrapper_error:
         mark_failed_if_unclaimed(config, api_key, run["id"], completed.returncode)
     return completed.returncode
+
+
+def stop_implementation_model(config: RunnerConfig) -> None:
+    if not config.stop_model_after_run or not config.implementation_model:
+        return
+    if not shutil.which("ollama"):
+        return
+    env = os.environ.copy()
+    if config.implementation_ollama_host:
+        env["OLLAMA_HOST"] = config.implementation_ollama_host
+    subprocess.run(
+        ["ollama", "stop", config.implementation_model],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
 
 
 def mark_failed_if_unclaimed(config: RunnerConfig, api_key: str, run_id: str, returncode: int) -> None:
@@ -362,6 +445,8 @@ def mark_failed_if_unclaimed(config: RunnerConfig, api_key: str, run_id: str, re
 
 
 def process_once(config: RunnerConfig, api_key: str) -> int:
+    if should_wait_for_manual_or_quiet_hours(config):
+        return 0
     runs = list_queued_runs(config, api_key)
     if not runs:
         print("No queued capability implementation runs.", flush=True)
@@ -373,6 +458,47 @@ def process_once(config: RunnerConfig, api_key: str) -> int:
         if result != 0:
             failures += 1
     return 1 if failures else 0
+
+
+def should_wait_for_manual_or_quiet_hours(config: RunnerConfig) -> bool:
+    if config.manual_override:
+        return False
+    if config.manual_only:
+        print("Capability implementation runner is in manual-only mode; queued runs will wait.", flush=True)
+        return True
+    if in_quiet_hours(config):
+        print(
+            "Capability implementation runner is inside quiet hours "
+            f"({config.quiet_hours_start}-{config.quiet_hours_end} {config.quiet_hours_timezone}); queued runs will wait.",
+            flush=True,
+        )
+        return True
+    return False
+
+
+def in_quiet_hours(config: RunnerConfig, *, now: datetime | None = None) -> bool:
+    if not config.quiet_hours_start or not config.quiet_hours_end:
+        return False
+    try:
+        start = parse_hhmm(config.quiet_hours_start)
+        end = parse_hhmm(config.quiet_hours_end)
+        timezone = ZoneInfo(config.quiet_hours_timezone)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        print(f"Ignoring invalid runner quiet-hours configuration: {exc}", file=sys.stderr, flush=True)
+        return False
+    current = now.astimezone(timezone).time() if now else datetime.now(timezone).time()
+    if start == end:
+        return False
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
+
+
+def parse_hhmm(value: str):
+    match = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", value.strip())
+    if not match:
+        raise ValueError(f"invalid HH:MM value: {value}")
+    return datetime.strptime(f"{int(match.group(1)):02d}:{match.group(2)}", "%H:%M").time()
 
 
 def main() -> int:

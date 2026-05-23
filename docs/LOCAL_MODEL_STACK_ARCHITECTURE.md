@@ -23,10 +23,34 @@ work where the wrapper can give it exact Yggy harness constraints.
 Current repository defaults preserve Bragi personality:
 
 ```env
+BRAGI_OLLAMA_BASE_URL=http://host.docker.internal:11435
 BRAGI_CHAT_MODEL=llama3.1:8b
 LLM_SUMMARIZER_MODEL=granite4.1:8b
+YGGY_IMPLEMENTATION_OLLAMA_HOST=http://127.0.0.1:11436
 YGGY_IMPLEMENTATION_HERMES_MODEL=hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL
 ```
+
+## Dedicated Ollama Lanes
+
+Bragi's chat model is intentionally kept on a separate Ollama listener from
+heavy implementation work. This prevents long Qwen3-Coder runs from occupying
+the same model-server context that serves ordinary Bragi conversation.
+
+| Lane | Host listener | Primary model | Unit template | Purpose |
+| --- | --- | --- | --- | --- |
+| Bragi chat | Docker host gateway `172.17.0.1:11435` | `llama3.1:8b` | `deploy/systemd/ollama-bragi.service` | Low-latency no-tool chat/personality replies for Dockerized Bragi. |
+| Capability implementation | `127.0.0.1:11436` | `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL` | `deploy/systemd/ollama-implementation.service` | Heavy repository implementation through the bounded Hermes harness. |
+| General/default | `127.0.0.1:11434` | deployment-specific | existing Ollama service | Worker summarization or other local defaults not bound to Bragi chat. |
+
+Both dedicated services use the same local Ollama model directory, so models do
+not need to be downloaded twice. The Bragi listener is bound to the Docker host
+gateway instead of LAN-facing interfaces; if your Docker host gateway is not
+`172.17.0.1`, adjust `deploy/systemd/ollama-bragi.service` and keep
+`BRAGI_OLLAMA_BASE_URL` pointed at `host.docker.internal`. The implementation
+runner passes
+`YGGY_IMPLEMENTATION_OLLAMA_HOST` to Hermes and stops the configured
+implementation model after each run. Bragi uses `BRAGI_OLLAMA_BASE_URL`, falling
+back to `OLLAMA_BASE_URL` only when the dedicated setting is absent.
 
 ## Conversation And Automation Routing
 
@@ -107,7 +131,7 @@ flowchart TD
     HostCLI --> AdminFetch[Fetch Proposal With Admin Key In Wrapper Only]
     AdminFetch --> Stages[Build Proposal-Derived Stages]
     Stages --> HarnessPrompt[Yggy Harness Prompt]
-    HarnessPrompt --> Qwen[Qwen3-Coder via Hermes Capability Implementer]
+    HarnessPrompt --> Qwen[Qwen3-Coder via Hermes Capability Implementer on 11436]
     Qwen --> RepoEdits[Repository Edits Only]
     RepoEdits --> StageGate[Stage Allowlist And Artifact Gates]
     StageGate --> Validation[Config Validation And Pytest]

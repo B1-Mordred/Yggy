@@ -71,6 +71,7 @@ def parse_args() -> argparse.Namespace:
         help="Clone the configured Hermes profile into a fresh per-run profile so stale sessions cannot contaminate the run.",
     )
     parser.add_argument("--model", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_MODEL", ""))
+    parser.add_argument("--ollama-host", default=os.getenv("YGGY_IMPLEMENTATION_OLLAMA_HOST", ""))
     parser.add_argument("--hermes-user", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_USER", ""))
     parser.add_argument("--hermes-home", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_HOME", "/srv/hermes/.hermes"))
     parser.add_argument("--hermes-os-home", default=os.getenv("YGGY_IMPLEMENTATION_HERMES_OS_HOME", "/srv/hermes"))
@@ -426,6 +427,9 @@ def run_hermes(
         "LANG": os.getenv("LANG", "C.UTF-8"),
         "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
     }
+    if args.ollama_host:
+        env["OLLAMA_HOST"] = args.ollama_host
+        env["OLLAMA_BASE_URL"] = args.ollama_host.rstrip("/")
     hermes_command = [
         str(hermes_bin),
         "-p",
@@ -483,6 +487,9 @@ def ensure_fresh_hermes_profile(args: argparse.Namespace, run_id: str) -> str:
         "LANG": os.getenv("LANG", "C.UTF-8"),
         "LC_ALL": os.getenv("LC_ALL", "C.UTF-8"),
     }
+    if args.ollama_host:
+        env["OLLAMA_HOST"] = args.ollama_host
+        env["OLLAMA_BASE_URL"] = args.ollama_host.rstrip("/")
     if args.hermes_user:
         env_args = [f"{key}={value}" for key, value in env.items()]
         command = ["sudo", "-n", "-u", args.hermes_user, "env", "-i", *env_args, *command]

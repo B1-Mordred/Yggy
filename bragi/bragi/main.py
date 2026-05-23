@@ -60,7 +60,7 @@ YGGDRASIL_BASE_URL = os.getenv("YGGDRASIL_BASE_URL", "http://host.docker.interna
 YGGDRASIL_API_KEY = os.getenv("BRAGI_YGGDRASIL_API_KEY", os.getenv("API_SERVER_KEY", "")).strip()
 HTTP_TIMEOUT = int(os.getenv("BRAGI_HTTP_TIMEOUT", "30"))
 GENERAL_CHAT_ENABLED = os.getenv("BRAGI_GENERAL_CHAT_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
+OLLAMA_BASE_URL = os.getenv("BRAGI_OLLAMA_BASE_URL", os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")).rstrip("/")
 CHAT_MODEL = os.getenv("BRAGI_CHAT_MODEL", os.getenv("LLM_SUMMARIZER_MODEL", "llama3.1:8b")).strip()
 CHAT_TEMPERATURE = float(os.getenv("BRAGI_CHAT_TEMPERATURE", "0.55"))
 CHAT_TIMEOUT = float(os.getenv("BRAGI_CHAT_TIMEOUT", "30"))
@@ -5406,6 +5406,7 @@ def health() -> dict[str, Any]:
         "yggdrasil_base_url": YGGDRASIL_BASE_URL,
         "general_chat_enabled": GENERAL_CHAT_ENABLED,
         "chat_model": CHAT_MODEL,
+        "ollama_base_url": OLLAMA_BASE_URL,
         "chat_num_ctx": CHAT_NUM_CTX,
         "chat_max_tokens": CHAT_MAX_TOKENS,
         "memory_file": MEMORY_FILE,

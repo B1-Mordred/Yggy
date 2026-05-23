@@ -59,6 +59,22 @@ pressing **Start implementation** in `/ops` is enough to make the queued run
 begin. If the runner service is stopped, the run remains queued and can still be
 processed manually.
 
+Production-style runner controls are deliberately conservative:
+
+- `YGGY_IMPLEMENTATION_RUNNER_BATCH_SIZE=1` so only one heavy implementation
+  run starts at a time.
+- `YGGY_IMPLEMENTATION_RUNNER_MANUAL_ONLY=true` holds queued runs until an
+  operator starts a one-shot runner with `--manual-override`. The provided
+  systemd unit leaves this disabled by default and instead uses quiet hours.
+- `YGGY_IMPLEMENTATION_RUNNER_QUIET_HOURS_START` and
+  `YGGY_IMPLEMENTATION_RUNNER_QUIET_HOURS_END` hold queued runs during local
+  quiet hours unless `--manual-override` is supplied.
+- `YGGY_IMPLEMENTATION_OLLAMA_HOST` points Hermes at the dedicated
+  implementation Ollama lane instead of Bragi's chat lane.
+- `YGGY_IMPLEMENTATION_RUNNER_STOP_MODEL_AFTER_RUN=true` asks Ollama to unload
+  the configured implementation model after a completed or failed subprocess,
+  keeping Bragi's `llama3.1:8b` lane responsive.
+
 Manual fallback is still the host-side CLI:
 
 ```bash
@@ -164,6 +180,28 @@ Run continuously:
 python scripts/capability_implementation_runner.py --poll-seconds 20
 ```
 
+Hold queued work until a human starts it explicitly:
+
+```bash
+YGGY_IMPLEMENTATION_RUNNER_MANUAL_ONLY=true \
+python scripts/capability_implementation_runner.py
+```
+
+Process one batch despite manual-only mode or quiet hours:
+
+```bash
+python scripts/capability_implementation_runner.py --once --manual-override
+```
+
+Use local quiet hours:
+
+```bash
+YGGY_IMPLEMENTATION_RUNNER_QUIET_HOURS_START=22:00 \
+YGGY_IMPLEMENTATION_RUNNER_QUIET_HOURS_END=06:00 \
+YGGY_IMPLEMENTATION_RUNNER_QUIET_HOURS_TIMEZONE=Europe/Berlin \
+python scripts/capability_implementation_runner.py
+```
+
 The runner defaults to staged implementation with a fresh Hermes profile. A
 safe production-style runner should use a managed workspace that contains no
 `.env` or other secret files:
@@ -200,7 +238,10 @@ The unit runs as `mordred`, reads the admin key from `/srv/Yggy/.env` through
 the wrapper process, uses `/srv/Yggy/.implementation-workspaces/capability-runner`
 as a secret-free managed workspace, and invokes Hermes as the `hermes` service
 account with the `capability-implementer` profile. The Hermes subprocess still
-receives a scrubbed environment.
+receives a scrubbed environment. It points the implementation model at
+`http://127.0.0.1:11436`, while Dockerized Bragi chat uses the separate
+Docker-host-gateway Ollama lane exposed to the container as
+`http://host.docker.internal:11435`.
 
 Use a different Hermes profile or model:
 
