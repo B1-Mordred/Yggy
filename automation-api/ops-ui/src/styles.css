@@ -746,6 +746,27 @@ th {
   gap: 7px;
 }
 
+.implementation-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px;
+  gap: 9px;
+  margin-bottom: 8px;
+}
+
+.implementation-summary {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.implementation-scroll {
+  max-height: 760px;
+  overflow: auto;
+  padding-right: 3px;
+  overscroll-behavior: contain;
+}
+
 .timeline-item {
   display: flex;
   align-items: center;
@@ -922,5 +943,13 @@ th {
   .attention-items,
   .topbar-actions {
     display: grid;
+  }
+
+  .implementation-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .implementation-scroll {
+    max-height: 520px;
   }
 }

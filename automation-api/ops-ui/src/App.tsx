@@ -61,7 +61,7 @@ const VIEWS: Array<{ id: ViewId; label: string; icon: any; description: string }
   { id: 'system', label: 'System', icon: Server, description: 'Runtime and security' }
 ];
 
-const PAGE_SIZES = [5, 10, 20, 50, 100];
+const PAGE_SIZES = [5, 10, 20, 25, 50, 100];
 
 export default function App() {
   return <OpsApp />;
@@ -255,6 +255,8 @@ function useOpsEvents() {
 
 function BuilderView({ runAction }: { runAction: (action: OpsAction) => void }) {
   const [proposalStatus, setProposalStatus] = useState('pending');
+  const [implementationStatus, setImplementationStatus] = useState('');
+  const [implementationLimit, setImplementationLimit] = useState(25);
   const proposalsQuery = useQuery<JsonRecord>({
     queryKey: ['capability-proposals', proposalStatus],
     queryFn: () => fetchJson(`/ops/capability-proposals${queryString({ status: proposalStatus, page_size: 20 })}`)
@@ -264,8 +266,14 @@ function BuilderView({ runAction }: { runAction: (action: OpsAction) => void }) 
     queryFn: () => fetchJson('/ops/capability-gaps')
   });
   const implementationQuery = useQuery<JsonRecord>({
-    queryKey: ['capability-implementation-runs'],
-    queryFn: () => fetchJson('/ops/capability-implementation-runs?limit=100'),
+    queryKey: ['capability-implementation-runs', implementationStatus, implementationLimit],
+    queryFn: () =>
+      fetchJson(
+        `/ops/capability-implementation-runs${queryString({
+          status: implementationStatus,
+          limit: implementationLimit
+        })}`
+      ),
     refetchInterval: 30_000
   });
 
@@ -309,7 +317,24 @@ function BuilderView({ runAction }: { runAction: (action: OpsAction) => void }) 
 
       <section className="panel">
         <PanelTitle icon={Radio} title="Implementation runs" subtitle="Heavy jobs stay serialized and visible." />
-        <div className="timeline-list">
+        <div className="implementation-toolbar">
+          <label>
+            Status
+            <select value={implementationStatus} onChange={(event) => setImplementationStatus(event.target.value)}>
+              <option value="">All</option>
+              <option value="queued">Queued</option>
+              <option value="running">Running</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </label>
+          <PageSizeSelect value={implementationLimit} onChange={setImplementationLimit} label="Runs" />
+        </div>
+        <div className="implementation-summary">
+          Showing {runs.length} {implementationStatus ? implementationStatus : 'recent'} run{runs.length === 1 ? '' : 's'}
+        </div>
+        <div className="timeline-list implementation-scroll">
           {runs.length ? (
             runs.map((run: JsonRecord) => <ImplementationRun key={run.id} run={run} />)
           ) : (
@@ -1235,10 +1260,10 @@ function SearchBox({ value, onChange, placeholder }: { value: string; onChange: 
   );
 }
 
-function PageSizeSelect({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+function PageSizeSelect({ value, onChange, label = 'Rows' }: { value: number; onChange: (value: number) => void; label?: string }) {
   return (
     <label>
-      Rows
+      {label}
       <select value={value} onChange={(event) => onChange(Number(event.target.value))}>
         {PAGE_SIZES.map((size) => (
           <option key={size} value={size}>
