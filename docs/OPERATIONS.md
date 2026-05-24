@@ -590,6 +590,15 @@ systemd unit template lives at
 `deploy/systemd/yggy-capability-implementation-runner.service`. See
 `docs/CAPABILITY_IMPLEMENTATION_AGENT.md` for the full operator model.
 
+After `/ops` approves the deployment gate, the same host-side runner can also
+process `deploy_approved` runs if
+`YGGY_IMPLEMENTATION_RUNNER_DEPLOY_ENABLED=true` is set on the host. That
+deployment phase applies only the reviewed commit SHA into the production
+checkout and runs the fixed Yggy Compose command for the configured service
+allowlist. It does not accept commands from Hermes, Bragi, chat history, or the
+capability proposal itself. The default unit and `.env.example` keep deployment
+disabled until an operator enables it deliberately.
+
 Bragi can also create approved-source proposals through `POST /sources/propose`
 when the user explicitly asks to register one public RSS/feed or website URL.
 Tool-created source proposals do not return the approval nonce. Operators can

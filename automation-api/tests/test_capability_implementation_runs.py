@@ -177,6 +177,28 @@ def test_completed_implementation_can_wait_for_ops_deploy_gate(client):
         headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-implementation"},
         json={"reason": "Deploy after review."},
     )
+    deploying = client.patch(
+        f"/capability-implementation-runs/{created['id']}",
+        headers=ADMIN_HEADERS,
+        json={
+            "status": "deploying",
+            "summary": "Host deploy runner started.",
+            "post_deploy_results": {"planned": ["validate configs"], "executed": False},
+        },
+    )
+    deployed = client.patch(
+        f"/capability-implementation-runs/{created['id']}",
+        headers=ADMIN_HEADERS,
+        json={
+            "status": "deployed",
+            "summary": "Host deploy runner completed.",
+            "post_deploy_results": {
+                "planned": ["validate configs"],
+                "executed": True,
+                "deployment": {"status": "completed", "services": ["automation-api"]},
+            },
+        },
+    )
 
     assert pending.status_code == 200
     assert pending.json()["status"] == "completed_pending_deploy"
@@ -187,6 +209,11 @@ def test_completed_implementation_can_wait_for_ops_deploy_gate(client):
     assert without_header.status_code == 403
     assert approved.status_code == 200
     assert approved.json()["status"] == "deploy_approved"
+    assert deploying.status_code == 200
+    assert deploying.json()["status"] == "deploying"
+    assert deployed.status_code == 200
+    assert deployed.json()["status"] == "deployed"
+    assert deployed.json()["post_deploy_results"]["executed"] is True
     notifications = client.get(
         "/channels/notifications/pending?channel=discord&user_id=bragi",
         headers=ADMIN_HEADERS,
@@ -196,9 +223,13 @@ def test_completed_implementation_can_wait_for_ops_deploy_gate(client):
         "running",
         "completed_pending_deploy",
         "deploy_approved",
+        "deploying",
+        "deployed",
     ]
     assert "ops deployment gate" in notifications[2]["message"]
     assert "approved deployment" in notifications[3]["message"]
+    assert "Deployment is running" in notifications[4]["message"]
+    assert "Deployment completed" in notifications[5]["message"]
 
 
 def test_cannot_queue_capability_implementation_without_active_plan(client):

@@ -1211,6 +1211,7 @@ function ImplementationRun({ run, runAction }: { run: JsonRecord; runAction: (ac
   };
   const stageResults = run.stage_results || {};
   const stageCount = Object.keys(stageResults).length;
+  const deployment = run.post_deploy_results?.deployment;
   const pendingDeploy = run.status === 'completed_pending_deploy' || run.status === 'deploy_failed';
   return (
     <div className="timeline-item vertical">
@@ -1222,6 +1223,13 @@ function ImplementationRun({ run, runAction }: { run: JsonRecord; runAction: (ac
       {stageCount ? <div className="muted">{stageCount} implementation stage{stageCount === 1 ? '' : 's'} recorded</div> : null}
       {run.post_deploy_results?.planned?.length ? (
         <div className="muted">Post-deploy smoke: {run.post_deploy_results.planned.join(', ')}</div>
+      ) : null}
+      {deployment ? (
+        <div className="implementation-summary">
+          <strong>Deploy:</strong> {deployment.status || 'recorded'}
+          {deployment.services?.length ? <span> | Services: {deployment.services.join(', ')}</span> : null}
+          {deployment.deploy_commit ? <span> | Commit: <code>{String(deployment.deploy_commit).slice(0, 12)}</code></span> : null}
+        </div>
       ) : null}
       <div className="muted">{run.id}</div>
       <div className="muted">{formatDate(run.updated_at || run.created_at)}</div>

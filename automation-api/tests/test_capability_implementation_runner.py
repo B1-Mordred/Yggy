@@ -49,6 +49,19 @@ def runner_config(tmp_path: Path, **overrides):
         "implementation_ollama_host": "",
         "implementation_model": "",
         "stop_model_after_run": True,
+        "deploy_enabled": False,
+        "deploy_root": tmp_path,
+        "deploy_services": (
+            "automation-api",
+            "automation-worker",
+            "bragi",
+            "channel-bridge",
+            "metrics-exporter",
+            "printer-status-exporter",
+        ),
+        "deploy_timeout": 900,
+        "deploy_dry_run": False,
+        "deploy_require_clean_index": True,
     }
     values.update(overrides)
     return runner.RunnerConfig(**values)
@@ -211,3 +224,121 @@ def test_stop_implementation_model_targets_dedicated_ollama_host(monkeypatch, tm
     command, kwargs = calls[0]
     assert command == ["ollama", "stop", "hf.co/example/model:Q4_K_M"]
     assert kwargs["env"]["OLLAMA_HOST"] == "http://127.0.0.1:11436"
+
+
+def test_process_once_deploy_enabled_prioritizes_deploy_approved(monkeypatch, tmp_path):
+    config = runner_config(tmp_path, deploy_enabled=True)
+    processed: list[str] = []
+
+    def fake_api_request(method, path, *, base_url, api_key, payload=None):
+        assert method == "GET"
+        assert path == "/capability-implementation-runs?status=deploy_approved&limit=2"
+        return [{"id": "run-deploy", "created_at": "2026-05-24T10:00:00", "commit_sha": "abcdef"}]
+
+    monkeypatch.setattr(runner, "api_request", fake_api_request)
+    monkeypatch.setattr(runner, "process_deploy_run", lambda config, api_key, run: processed.append(run["id"]) or 0)
+    monkeypatch.setattr(
+        runner,
+        "list_queued_runs",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("queued implementation runs should wait")),
+    )
+
+    assert runner.process_once(config, "admin-key") == 0
+    assert processed == ["run-deploy"]
+
+
+def test_deployment_commands_are_fixed_to_configured_services(tmp_path):
+    config = runner_config(tmp_path, deploy_services=("automation-api", "bragi"))
+
+    commands = runner.deployment_commands(config)
+
+    assert commands == [
+        (["docker", "compose", "-f", "docker-compose.automation.yml", "config"], False),
+        (["docker", "compose", "-f", "docker-compose.automation.yml", "up", "-d", "--build", "automation-api", "bragi"], True),
+        (["curl", "-fsS", "http://127.0.0.1:8088/health"], True),
+        (["docker", "compose", "-f", "docker-compose.automation.yml", "ps"], True),
+    ]
+
+
+def test_deploy_preconditions_reject_tracked_dirty_and_untracked_collisions(tmp_path):
+    assert runner.tracked_dirty_status_lines([" M README.md", "?? tmp.txt"]) == [" M README.md"]
+    assert runner.untracked_path_collisions(["?? automation-api/app/new.py", "?? scratch.txt"], {"automation-api/app/new.py"}) == [
+        "automation-api/app/new.py"
+    ]
+
+
+def test_process_deploy_run_success_patches_deployed(monkeypatch, tmp_path):
+    config = runner_config(tmp_path, deploy_enabled=True, deploy_services=("automation-api", "bragi"))
+    payloads: list[dict] = []
+
+    def fake_api_request(method, path, *, base_url, api_key, payload=None):
+        assert method == "PATCH"
+        assert path == "/capability-implementation-runs/run-deploy"
+        payloads.append(payload or {})
+        return {"id": "run-deploy", "status": payload["status"]}
+
+    monkeypatch.setattr(runner, "api_request", fake_api_request)
+    monkeypatch.setattr(
+        runner,
+        "deploy_reviewed_commit",
+        lambda config, run: {
+            "status": "completed",
+            "source_commit": run["commit_sha"],
+            "deploy_commit": "deploy123",
+            "services": list(config.deploy_services),
+            "commands": [{"command": ["docker", "compose", "ps"], "returncode": 0}],
+            "completed_at": "2026-05-24T10:01:00Z",
+        },
+    )
+
+    result = runner.process_deploy_run(
+        config,
+        "admin-key",
+        {
+            "id": "run-deploy",
+            "status": "deploy_approved",
+            "capability_id": "storage.v1",
+            "commit_sha": "abcdef1234567890",
+            "post_deploy_results": {"planned": ["validate configs"], "executed": False},
+        },
+    )
+
+    assert result == 0
+    assert [payload["status"] for payload in payloads] == ["deploying", "deployed"]
+    assert payloads[0]["post_deploy_results"]["deployment"]["services"] == ["automation-api", "bragi"]
+    assert payloads[1]["post_deploy_results"]["executed"] is True
+    assert payloads[1]["post_deploy_results"]["deployment"]["deploy_commit"] == "deploy123"
+
+
+def test_process_deploy_run_failure_marks_deploy_failed(monkeypatch, tmp_path):
+    config = runner_config(tmp_path, deploy_enabled=True)
+    payloads: list[dict] = []
+
+    def fake_api_request(method, path, *, base_url, api_key, payload=None):
+        assert method == "PATCH"
+        payloads.append(payload or {})
+        return {"id": "run-deploy", "status": payload["status"]}
+
+    monkeypatch.setattr(runner, "api_request", fake_api_request)
+
+    def fail_deploy(config, run):
+        raise runner.DeploymentError("tracked checkout is dirty", evidence={"tracked_dirty": [" M README.md"]})
+
+    monkeypatch.setattr(runner, "deploy_reviewed_commit", fail_deploy)
+
+    result = runner.process_deploy_run(
+        config,
+        "admin-key",
+        {
+            "id": "run-deploy",
+            "status": "deploy_approved",
+            "capability_id": "storage.v1",
+            "commit_sha": "abcdef1234567890",
+            "post_deploy_results": {"planned": ["health"], "executed": False},
+        },
+    )
+
+    assert result == 1
+    assert [payload["status"] for payload in payloads] == ["deploying", "deploy_failed"]
+    assert payloads[-1]["post_deploy_results"]["deployment"]["status"] == "failed"
+    assert payloads[-1]["post_deploy_results"]["deployment"]["evidence"]["tracked_dirty"] == [" M README.md"]

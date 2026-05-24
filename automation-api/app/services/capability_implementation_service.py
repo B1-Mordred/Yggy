@@ -188,6 +188,7 @@ def implementation_run_to_dict(run: CapabilityImplementationRunModel) -> dict[st
             "operator_handoff": {
                 "cli_command": f"python scripts/implement_capability_plan.py --run-id {run.id}",
                 "runner_command": "python scripts/capability_implementation_runner.py --once",
+                "deploy_runner_command": "YGGY_IMPLEMENTATION_RUNNER_DEPLOY_ENABLED=true python scripts/capability_implementation_runner.py --once --manual-override",
                 "queued_only": run.status == "queued",
                 "requires_host_cli": True,
                 "requires_host_runner": True,
@@ -201,7 +202,7 @@ def implementation_run_to_dict(run: CapabilityImplementationRunModel) -> dict[st
                 "can_run_automation": False,
                 "can_push": False,
                 "can_deploy_without_ops_approval": False,
-                "local_commit_only": True,
+                "local_commit_only": run.status not in {"deploying", "deployed", "deploy_failed"},
             },
         }
     )

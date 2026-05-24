@@ -75,6 +75,10 @@ Production-style runner controls are deliberately conservative:
 - `YGGY_IMPLEMENTATION_RUNNER_STOP_MODEL_AFTER_RUN=true` asks Ollama to unload
   the configured implementation model after a completed or failed subprocess,
   keeping Bragi's `llama3.1:8b` lane responsive.
+- `YGGY_IMPLEMENTATION_RUNNER_DEPLOY_ENABLED=false` keeps the host deployment
+  executor disabled until an operator explicitly enables it on the host.
+- `YGGY_IMPLEMENTATION_RUNNER_DEPLOY_SERVICES` is the fixed allowlist of Yggy
+  Compose services the deploy executor may rebuild and restart.
 
 Manual fallback is still the host-side CLI:
 
@@ -105,9 +109,15 @@ Discord, task YAML, or documentation.
     local commit SHA, stage results, and a post-deploy smoke plan.
 14. The operator reviews the result in `/ops`.
 15. The operator either rejects the deployment gate or approves deployment.
+16. If the host deploy executor is enabled, it applies the reviewed commit into
+    the production checkout and runs only the fixed Yggy service deployment
+    command.
+17. The executor records post-deploy evidence and marks the run `deployed` or
+    `deploy_failed`.
 
-The CLI does not push. Deployment is a separate ops decision. Bragi, Hermes,
-Open WebUI, Discord, and Yggdrasil do not receive deployment authority.
+The CLI does not push. Deployment is a separate ops decision and host-side
+operation. Bragi, Hermes, Open WebUI, Discord, and Yggdrasil do not receive
+deployment authority.
 
 ## Implementation Spec And Compiled Plan
 
@@ -211,6 +221,22 @@ host-side deployment executor may later move the run through `deploying`,
 `deployed`, or `deploy_failed`, but only after the ops gate has set
 `deploy_approved`.
 
+When enabled, the deployment executor:
+
+- polls only `deploy_approved` implementation runs
+- applies the reviewed `commit_sha` into `YGGY_IMPLEMENTATION_RUNNER_DEPLOY_ROOT`
+- refuses deployment if the production checkout has tracked changes
+- refuses deployment if untracked files collide with implementation paths
+- runs `docker compose -f docker-compose.automation.yml config`
+- runs `docker compose -f docker-compose.automation.yml up -d --build` only for
+  `YGGY_IMPLEMENTATION_RUNNER_DEPLOY_SERVICES`
+- runs fixed local health/status checks
+- stores command evidence in `post_deploy_results`
+
+The executor does not accept deployment commands from Hermes, Bragi, chat
+history, capability proposals, or generated code. A failed deployment is marked
+`deploy_failed` for operator review; v1 does not perform automatic rollback.
+
 ## CLI
 
 Dry-run the generated Hermes prompt:
@@ -250,6 +276,13 @@ Process one batch despite manual-only mode or quiet hours:
 python scripts/capability_implementation_runner.py --once --manual-override
 ```
 
+Process one deployment-approved run after the ops gate:
+
+```bash
+YGGY_IMPLEMENTATION_RUNNER_DEPLOY_ENABLED=true \
+python scripts/capability_implementation_runner.py --once --manual-override
+```
+
 Use local quiet hours:
 
 ```bash
@@ -267,6 +300,15 @@ safe production-style runner should use a managed workspace that contains no
 YGGY_IMPLEMENTATION_RUNNER_WORKSPACE=/srv/Yggy/.implementation-workspaces/capability-runner \
 YGGY_IMPLEMENTATION_HERMES_USER=hermes \
 YGGY_IMPLEMENTATION_HERMES_PROFILE=capability-implementer \
+python scripts/capability_implementation_runner.py
+```
+
+Enable the deploy executor only on the host after reviewing the boundary:
+
+```bash
+YGGY_IMPLEMENTATION_RUNNER_DEPLOY_ENABLED=true \
+YGGY_IMPLEMENTATION_RUNNER_DEPLOY_ROOT=/srv/Yggy \
+YGGY_IMPLEMENTATION_RUNNER_DEPLOY_SERVICES=automation-api,automation-worker,bragi,channel-bridge,metrics-exporter,printer-status-exporter \
 python scripts/capability_implementation_runner.py
 ```
 
@@ -299,6 +341,10 @@ receives a scrubbed environment. It points the implementation model at
 `http://127.0.0.1:11436`, while Dockerized Bragi chat uses the separate
 Docker-host-gateway Ollama lane exposed to the container as
 `http://host.docker.internal:11435`.
+The deployment executor variables are present in the unit but disabled by
+default. Set `YGGY_IMPLEMENTATION_RUNNER_DEPLOY_ENABLED=true` only on the host
+after deciding that approved implementation commits may be applied to the
+production checkout by the fixed runner.
 
 Use a different Hermes profile or model:
 
