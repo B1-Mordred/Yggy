@@ -15,6 +15,7 @@ import {
   History,
   Loader2,
   LogOut,
+  Moon,
   Pause,
   Play,
   Radio,
@@ -23,6 +24,7 @@ import {
   Server,
   ShieldCheck,
   SlidersHorizontal,
+  Sun,
   Trash2,
   X
 } from 'lucide-react';
@@ -45,6 +47,10 @@ type Toast = {
   detail?: string;
 };
 
+type ThemeMode = 'light' | 'dark';
+
+const THEME_STORAGE_KEY = 'yggy.ops.theme';
+
 const VIEWS: Array<{ id: ViewId; label: string; icon: any; description: string }> = [
   { id: 'builder', label: 'Builder', icon: Hammer, description: 'Capability work queue' },
   { id: 'tasks', label: 'Tasks', icon: ClipboardList, description: 'Existing automations' },
@@ -65,6 +71,7 @@ function OpsApp() {
   const queryClient = useQueryClient();
   const [view, setView] = useState<ViewId>('builder');
   const [density, setDensity] = useState<'comfortable' | 'compact'>('compact');
+  const [theme, setTheme] = useState<ThemeMode>(() => loadThemeMode());
   const [toast, setToast] = useState<Toast | null>(null);
   const statusQuery = useQuery<JsonRecord>({
     queryKey: ['ops-status'],
@@ -101,8 +108,12 @@ function OpsApp() {
   const status = statusQuery.data || {};
   const counts = (status.counts || {}) as JsonRecord;
 
+  useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
+
   return (
-    <div className={`ops-shell density-${density}`}>
+    <div className={`ops-shell density-${density} theme-${theme}`}>
       <aside className="sidebar">
         <div className="brand-block">
           <div className="brand-mark">Y</div>
@@ -155,6 +166,16 @@ function OpsApp() {
                 <option value="comfortable">Comfortable</option>
               </select>
             </label>
+            <button
+              className={`theme-toggle ${theme === 'dark' ? 'active' : ''}`}
+              onClick={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              aria-pressed={theme === 'dark'}
+              type="button"
+            >
+              {theme === 'dark' ? <Moon size={15} /> : <Sun size={15} />}
+              <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
+            </button>
             <button className="icon-button" onClick={() => queryClient.invalidateQueries()} title="Refresh" type="button">
               <RefreshCcw size={17} />
             </button>
@@ -183,6 +204,15 @@ function OpsApp() {
       </main>
     </div>
   );
+}
+
+function loadThemeMode(): ThemeMode {
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return stored === 'dark' ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
 }
 
 function useOpsEvents() {

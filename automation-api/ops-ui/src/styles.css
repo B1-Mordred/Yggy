@@ -15,9 +15,73 @@
   --warn-soft: #fff4da;
   --bad: #b42318;
   --bad-soft: #fff0ef;
+  --button-disabled-bg: #e6ebf2;
+  --input-bg: #ffffff;
+  --code-bg: #edf2f8;
+  --code-text: #243247;
+  --table-head-text: #425069;
+  --sidebar-bg: #ffffff;
+  --brand-bg: #18202a;
+  --brand-text: #ffffff;
+  --nav-text: #253247;
+  --nav-active-text: #153d91;
+  --icon-bg: #ffffff;
+  --attention-action-bg: #fffaf0;
+  --attention-action-text: #5f3900;
+  --attention-count-bg: #805000;
+  --selected-row: #f3f7ff;
+  --status-bg: #ffffff;
+  --status-text: #39465a;
+  --tag-bg: #ffffff;
+  --tag-text: #40506a;
+  --raw-bg: #0f172a;
+  --raw-text: #e5edf8;
+  --focus: rgba(36, 87, 197, 0.22);
   --shadow: 0 20px 60px rgba(15, 23, 42, 0.11);
   --radius: 8px;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.theme-dark {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --panel: #151b23;
+  --panel-soft: #101820;
+  --text: #e6edf3;
+  --muted: #9aa7b8;
+  --line: #2f3a49;
+  --line-strong: #47566a;
+  --accent: #8fb4ff;
+  --accent-soft: #1b2a44;
+  --ok: #63d991;
+  --ok-soft: #10271d;
+  --warn: #ffc66d;
+  --warn-soft: #33230c;
+  --bad: #ff8a80;
+  --bad-soft: #341817;
+  --button-disabled-bg: #242d38;
+  --input-bg: #0f151d;
+  --code-bg: #1f2b3a;
+  --code-text: #d8e4f4;
+  --table-head-text: #c0cbda;
+  --sidebar-bg: #111820;
+  --brand-bg: #d8e4f4;
+  --brand-text: #101820;
+  --nav-text: #d8e4f4;
+  --nav-active-text: #dbe8ff;
+  --icon-bg: #101820;
+  --attention-action-bg: #3b2b12;
+  --attention-action-text: #ffe4aa;
+  --attention-count-bg: #cc8a1f;
+  --selected-row: #182845;
+  --status-bg: #111820;
+  --status-text: #d8e4f4;
+  --tag-bg: #111820;
+  --tag-text: #d8e4f4;
+  --raw-bg: #060a10;
+  --raw-text: #d8e4f4;
+  --focus: rgba(143, 180, 255, 0.28);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.34);
 }
 
 * {
@@ -64,7 +128,7 @@ button {
 button:disabled {
   cursor: not-allowed;
   border-color: var(--line);
-  background: #e6ebf2;
+  background: var(--button-disabled-bg);
   color: var(--muted);
 }
 
@@ -93,7 +157,7 @@ textarea {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--input-bg);
   color: var(--text);
   padding: 8px 10px;
 }
@@ -106,7 +170,7 @@ input:focus,
 select:focus,
 textarea:focus,
 button:focus {
-  outline: 2px solid rgba(36, 87, 197, 0.22);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -119,8 +183,8 @@ a {
 code {
   overflow-wrap: anywhere;
   border-radius: 4px;
-  background: #edf2f8;
-  color: #243247;
+  background: var(--code-bg);
+  color: var(--code-text);
   padding: 2px 5px;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
@@ -144,7 +208,7 @@ th {
   top: 0;
   z-index: 1;
   background: var(--panel-soft);
-  color: #425069;
+  color: var(--table-head-text);
   font-size: 12px;
   text-transform: uppercase;
 }
@@ -153,6 +217,8 @@ th {
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr);
   min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .density-compact {
@@ -181,7 +247,7 @@ th {
   flex-direction: column;
   gap: 18px;
   border-right: 1px solid var(--line);
-  background: #ffffff;
+  background: var(--sidebar-bg);
   padding: 18px 14px;
 }
 
@@ -199,8 +265,8 @@ th {
   width: 38px;
   height: 38px;
   border-radius: 8px;
-  background: #18202a;
-  color: #ffffff;
+  background: var(--brand-bg);
+  color: var(--brand-text);
   font-weight: 800;
 }
 
@@ -225,7 +291,7 @@ th {
   width: 100%;
   border-color: transparent;
   background: transparent;
-  color: #253247;
+  color: var(--nav-text);
   font-weight: 700;
 }
 
@@ -233,7 +299,7 @@ th {
 .nav-item.active {
   border-color: var(--line);
   background: var(--accent-soft);
-  color: #153d91;
+  color: var(--nav-active-text);
 }
 
 .nav-item b {
@@ -322,8 +388,20 @@ th {
   min-width: 34px;
   padding: 0;
   border-color: var(--line);
-  background: #ffffff;
+  background: var(--icon-bg);
   color: var(--text);
+}
+
+.theme-toggle {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.theme-toggle.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--nav-active-text);
 }
 
 .summary-grid {
@@ -388,13 +466,13 @@ th {
 .attention-items button {
   min-height: 28px;
   border-color: #d7b772;
-  background: #fffaf0;
-  color: #5f3900;
+  background: var(--attention-action-bg);
+  color: var(--attention-action-text);
 }
 
 .attention-items b {
   border-radius: 999px;
-  background: #805000;
+  background: var(--attention-count-bg);
   color: #fff;
   padding: 1px 6px;
 }
@@ -467,7 +545,7 @@ th {
 }
 
 .selected-row {
-  background: #f3f7ff;
+  background: var(--selected-row);
 }
 
 .inline-link {
@@ -534,8 +612,8 @@ th {
   min-height: 22px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
-  background: #ffffff;
-  color: #39465a;
+  background: var(--status-bg);
+  color: var(--status-text);
   padding: 2px 8px;
   font-size: 12px;
   font-weight: 800;
@@ -571,7 +649,7 @@ th {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--panel);
   padding: 8px;
 }
 
@@ -603,9 +681,9 @@ th {
 .tag-list span {
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: #ffffff;
+  background: var(--tag-bg);
   padding: 3px 8px;
-  color: #40506a;
+  color: var(--tag-text);
   font-size: 12px;
 }
 
@@ -624,7 +702,7 @@ th {
 .gap-chip {
   justify-content: space-between;
   border-color: var(--line);
-  background: #ffffff;
+  background: var(--panel);
   color: var(--text);
   text-align: left;
 }
@@ -675,7 +753,7 @@ th {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #ffffff;
+  background: var(--panel);
   padding: 8px;
 }
 
@@ -695,8 +773,8 @@ th {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #0f172a;
-  color: #e5edf8;
+  background: var(--raw-bg);
+  color: var(--raw-text);
   padding: 10px;
   font-size: 12px;
   line-height: 1.45;
