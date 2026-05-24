@@ -39,7 +39,7 @@ from app.models import (
 from app.policy import PolicyViolation, load_policy, validate_task_policy
 from app.routers.health import WORKER_HEARTBEAT_MAX_AGE_SECONDS, heartbeat_to_dict
 from app.routers.tasks import queue_task_run
-from app.schemas import ApprovalLevel, TaskConfig, approval_at_least
+from app.schemas import ApprovalLevel, CapabilityImplementationRunUpdate, TaskConfig, approval_at_least
 from app.services.approval_service import create_approval_request, approve_request, reject_request, verify_nonce
 from app.services.task_version_service import (
     config_diff,
@@ -74,9 +74,12 @@ from app.services.capability_gap_service import (
 from app.services.capability_implementation_service import (
     CapabilityImplementationError,
     create_implementation_run,
+    get_implementation_run,
     implementation_run_to_dict,
     list_implementation_runs,
+    update_implementation_run,
 )
+from app.services.capability_implementation_planner import compile_implementation_plan
 from app.services.channel_notification_service import enqueue_implementation_status_notification
 from app.services.source_proposal_service import (
     SourceProposalError,
@@ -985,6 +988,50 @@ def ops_capability_proposal_detail(
     return _capability_proposal_summary(session, proposal)
 
 
+@router.post("/ops/capability-proposals/{proposal_id}/compile-plan", include_in_schema=False)
+def ops_compile_capability_implementation_plan(
+    proposal_id: str,
+    payload: OpsCapabilityProposalDecision | None = None,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_capability_proposal_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    proposal = session.get(CapabilityProposalModel, proposal_id)
+    if not proposal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="capability proposal not found")
+    reason = payload.reason if payload else ""
+    try:
+        plan = implementation_plan_for_proposal(session, proposal.id)
+        if plan is None:
+            plan = create_implementation_plan(
+                session,
+                proposal,
+                created_by="ops_dashboard",
+                reason=reason or "Compiled implementation plan from ops dashboard.",
+            )
+        else:
+            plan.compiled_plan = compile_implementation_plan(proposal)
+            if reason:
+                plan.review_notes = f"{plan.review_notes.rstrip()}\n\nCompile reason: {reason}"[:2000]
+    except CapabilityProposalError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    audit_event(
+        session,
+        "ops_dashboard",
+        "capability.implementation_plan_compiled",
+        "capability_proposal",
+        proposal.id,
+        {
+            "suggested_capability_id": proposal.suggested_capability_id,
+            "suggested_task_type": proposal.suggested_task_type,
+            "surface": "ops_ui",
+            "reason": reason,
+        },
+    )
+    session.commit()
+    return _capability_proposal_summary(session, proposal)
+
+
 @router.post("/ops/capability-proposals/{proposal_id}/implement", include_in_schema=False)
 def ops_queue_capability_implementation(
     proposal_id: str,
@@ -1097,6 +1144,110 @@ def ops_capability_implementation_runs(
         "count": len(runs),
         "runs": [implementation_run_to_dict(run) for run in runs],
     }
+
+
+@router.get("/ops/capability-implementation-runs/{run_id}/artifacts", include_in_schema=False)
+def ops_capability_implementation_run_artifacts(
+    run_id: str,
+    _: None = Depends(require_ops_access),
+    session: Session = Depends(get_session),
+) -> dict:
+    run = get_implementation_run(session, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="capability implementation run not found")
+    return {
+        "generated_at": utcnow(),
+        "run_id": run.id,
+        "artifacts": redact_secrets(run.artifacts or {}),
+        "stage_results": redact_secrets(run.stage_results or {}),
+        "post_deploy_results": redact_secrets(run.post_deploy_results or {}),
+        "test_results": redact_secrets(run.test_results or {}),
+    }
+
+
+@router.post("/ops/capability-implementation-runs/{run_id}/approve-deploy", include_in_schema=False)
+def ops_approve_capability_deploy(
+    run_id: str,
+    payload: OpsCapabilityImplementationRequest | None = None,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_capability_implementation_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    return _ops_transition_capability_deploy(
+        session=session,
+        run_id=run_id,
+        next_status="deploy_approved",
+        action="capability_implementation.deploy_approved",
+        reason=payload.reason if payload else "",
+    )
+
+
+@router.post("/ops/capability-implementation-runs/{run_id}/reject-deploy", include_in_schema=False)
+def ops_reject_capability_deploy(
+    run_id: str,
+    payload: OpsCapabilityImplementationRequest | None = None,
+    _: None = Depends(require_ops_access),
+    __: None = Depends(require_ops_capability_implementation_action_header),
+    session: Session = Depends(get_session),
+) -> dict:
+    return _ops_transition_capability_deploy(
+        session=session,
+        run_id=run_id,
+        next_status="superseded",
+        action="capability_implementation.deploy_rejected",
+        reason=payload.reason if payload else "",
+    )
+
+
+def _ops_transition_capability_deploy(
+    *,
+    session: Session,
+    run_id: str,
+    next_status: Literal["deploy_approved", "superseded"],
+    action: str,
+    reason: str = "",
+) -> dict:
+    run = get_implementation_run(session, run_id)
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="capability implementation run not found")
+    before = run.status
+    summary = reason.strip() or (
+        "Deployment approved from ops dashboard."
+        if next_status == "deploy_approved"
+        else "Deployment rejected from ops dashboard."
+    )
+    try:
+        update_implementation_run(
+            run,
+            CapabilityImplementationRunUpdate(
+                status=next_status,
+                summary=summary,
+            ),
+        )
+    except CapabilityImplementationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    audit_event(
+        session,
+        "ops_dashboard",
+        action,
+        "capability_implementation_run",
+        run.id,
+        {
+            "proposal_id": run.proposal_id,
+            "capability_id": run.capability_id,
+            "previous_status": before,
+            "next_status": run.status,
+            "branch": run.branch,
+            "commit_sha": run.commit_sha,
+            "surface": "ops_ui",
+            "reason": summary,
+        },
+    )
+    proposal = session.get(CapabilityProposalModel, run.proposal_id)
+    if proposal is not None:
+        enqueue_implementation_status_notification(session, run=run, proposal=proposal, previous_status=before)
+    session.commit()
+    return implementation_run_to_dict(run)
 
 
 @router.get("/ops/capability-gaps", include_in_schema=False)
@@ -1885,7 +2036,7 @@ def _capability_proposal_summary(session: Session, proposal: CapabilityProposalM
     ]
     return _bounded_value(
         redact_secrets(payload),
-        max_depth=MAX_AUDIT_DETAIL_DEPTH,
+        max_depth=6,
         max_keys=MAX_AUDIT_DETAIL_KEYS,
         text_limit=MAX_AUDIT_DETAIL_TEXT,
         field_text_limit=MAX_AUDIT_DETAIL_TEXT,

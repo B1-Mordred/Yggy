@@ -135,6 +135,22 @@ def render_implementation_status_message(
             "and nothing was deployed by this notification."
             f"{commit_line}"
         )
+    elif status == "completed_pending_deploy":
+        commit_line = f"\nCommit: `{short_commit}`" if short_commit else ""
+        body = (
+            "Implementation completed and is waiting at the ops deployment gate. The code exists locally; production is still untouched."
+            f"{commit_line}"
+        )
+    elif status == "deploy_approved":
+        body = "An ops operator approved deployment. The runner may now rebuild or restart only the bounded Yggy-owned services."
+    elif status == "deploying":
+        body = "Deployment is running under the host-side gate. The model is not holding the wrench; it only left the reviewed commit."
+    elif status == "deployed":
+        body = "Deployment completed and post-deploy evidence was recorded. The new capability is ready for guarded task creation."
+    elif status == "deploy_failed":
+        body = "Deployment failed after the ops gate. Annoying, but still contained."
+        if error:
+            body = f"{body}\nReason: {error}"
     elif status == "failed":
         body = "Implementation failed. Irritating, but better on the bench than bleeding into production."
         if error:
@@ -154,7 +170,7 @@ def render_implementation_status_message(
         parts.append(f"Branch: `{branch}`")
     if previous and previous != status:
         parts.append(f"Previous status: `{previous}`")
-    if summary and status in {"queued", "running", "completed"}:
+    if summary and status in {"queued", "running", "completed", "completed_pending_deploy", "deploy_approved", "deploying", "deployed"}:
         parts.extend(["", f"Summary: {summary}"])
     parts.extend(
         [

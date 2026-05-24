@@ -16,14 +16,38 @@ class CapabilityImplementationError(ValueError):
     pass
 
 
-IMPLEMENTATION_RUN_STATUSES = {"queued", "running", "completed", "failed"}
-ACTIVE_IMPLEMENTATION_RUN_STATUSES = {"queued", "running"}
-TERMINAL_IMPLEMENTATION_RUN_STATUSES = {"completed", "failed"}
+IMPLEMENTATION_RUN_STATUSES = {
+    "queued",
+    "running",
+    "failed",
+    "completed",
+    "completed_pending_deploy",
+    "deploy_approved",
+    "deploying",
+    "deployed",
+    "deploy_failed",
+    "superseded",
+}
+ACTIVE_IMPLEMENTATION_RUN_STATUSES = {
+    "queued",
+    "running",
+    "completed_pending_deploy",
+    "deploy_approved",
+    "deploying",
+    "deploy_failed",
+}
+TERMINAL_IMPLEMENTATION_RUN_STATUSES = {"completed", "failed", "deployed", "superseded"}
 IMPLEMENTATION_RUN_TRANSITIONS = {
     "queued": {"running", "failed"},
-    "running": {"completed", "failed"},
+    "running": {"completed", "completed_pending_deploy", "failed"},
     "failed": set(),
+    "completed_pending_deploy": {"deploy_approved", "superseded"},
+    "deploy_approved": {"deploying", "deploy_failed", "superseded"},
+    "deploying": {"deployed", "deploy_failed"},
+    "deploy_failed": {"deploy_approved", "superseded"},
+    "superseded": set(),
     "completed": set(),
+    "deployed": set(),
 }
 
 
@@ -60,6 +84,9 @@ def create_implementation_run(
             )
         ),
         test_results={},
+        artifacts={},
+        stage_results={},
+        post_deploy_results={},
         error="",
         created_by=created_by,
     )
@@ -121,11 +148,17 @@ def update_implementation_run(
         run.summary = str(redact_secrets(payload.summary))
     if payload.test_results is not None:
         run.test_results = redact_secrets(payload.test_results)
+    if payload.artifacts is not None:
+        run.artifacts = redact_secrets(payload.artifacts)
+    if payload.stage_results is not None:
+        run.stage_results = redact_secrets(payload.stage_results)
+    if payload.post_deploy_results is not None:
+        run.post_deploy_results = redact_secrets(payload.post_deploy_results)
     if payload.error is not None:
         run.error = str(redact_secrets(payload.error))
 
-    if run.status == "completed" and not run.commit_sha:
-        raise CapabilityImplementationError("completed implementation runs must record commit_sha")
+    if run.status in {"completed", "completed_pending_deploy", "deploy_approved", "deploying", "deployed", "deploy_failed"} and not run.commit_sha:
+        raise CapabilityImplementationError("completed or deployment-gated implementation runs must record commit_sha")
     if run.status in TERMINAL_IMPLEMENTATION_RUN_STATUSES and run.completed_at is None:
         run.completed_at = utcnow()
     run.updated_at = utcnow()
@@ -144,6 +177,9 @@ def implementation_run_to_dict(run: CapabilityImplementationRunModel) -> dict[st
             "commit_sha": run.commit_sha,
             "summary": run.summary,
             "test_results": run.test_results,
+            "artifacts": run.artifacts or {},
+            "stage_results": run.stage_results or {},
+            "post_deploy_results": run.post_deploy_results or {},
             "error": run.error,
             "created_by": run.created_by,
             "created_at": run.created_at,
@@ -156,12 +192,15 @@ def implementation_run_to_dict(run: CapabilityImplementationRunModel) -> dict[st
                 "requires_host_cli": True,
                 "requires_host_runner": True,
                 "runner_picks_up_queued_runs": True,
+                "deploy_gate_required": run.status == "completed_pending_deploy",
+                "deploy_approval_surface": "ops",
             },
             "execution": {
                 "creates_task": False,
                 "creates_approval": False,
                 "can_run_automation": False,
                 "can_push": False,
+                "can_deploy_without_ops_approval": False,
                 "local_commit_only": True,
             },
         }

@@ -185,10 +185,21 @@ def main() -> int:
     try:
         if run is None:
             run = create_or_reuse_run(args.base_url, api_key, proposal["id"])
-        if run["status"] == "completed":
-            print(f"Implementation run {run['id']} is already completed.", file=sys.stderr)
+        if run["status"] in {"completed", "completed_pending_deploy", "deploy_approved", "deploying", "deployed", "superseded"}:
+            print(f"Implementation run {run['id']} is already {run['status']}.", file=sys.stderr)
             return 2
-        patch_run(args.base_url, api_key, run["id"], {"status": "running", "branch": run.get("branch") or ""})
+        context_pack = implementation_context_pack(repo_root, proposal)
+        patch_run(
+            args.base_url,
+            api_key,
+            run["id"],
+            {
+                "status": "running",
+                "branch": run.get("branch") or "",
+                "artifacts": {"context_pack": context_pack},
+                "stage_results": {},
+            },
+        )
     except RegistryError as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -213,16 +224,18 @@ def main() -> int:
     try:
         switch_branch(repo_root, branch)
         if args.staged:
-            run_staged_hermes(args, repo_root, proposal)
+            stage_results = run_staged_hermes(args, repo_root, proposal)
         else:
             prompt_path = write_prompt_file(prompt)
             run_hermes(args, repo_root, prompt_path, prompt)
+            stage_results = {"one_shot": {"status": "completed", "attempts": 1}}
         changed = git_status(repo_root)
         if not changed:
             raise RuntimeError("Hermes completed but did not leave repository changes to validate or commit")
         safety_results = run_post_generation_safety_checks(repo_root, proposal)
         validation_results = run_validations(repo_root, args.validation_command or DEFAULT_VALIDATION_COMMANDS)
         validation_results["post_generation_safety"] = safety_results
+        post_deploy_smoke = build_post_deploy_smoke_plan(proposal)
         if args.no_commit:
             patch_run(
                 args.base_url,
@@ -233,6 +246,8 @@ def main() -> int:
                     "branch": current_branch(repo_root),
                     "summary": "Implementation validated but left uncommitted because --no-commit was used.",
                     "test_results": validation_results,
+                    "stage_results": stage_results,
+                    "post_deploy_results": {"planned": post_deploy_smoke, "executed": False},
                 },
             )
             print(json.dumps({"run_id": run["id"], "status": "validated_uncommitted", "branch": current_branch(repo_root)}, indent=2))
@@ -243,14 +258,29 @@ def main() -> int:
             api_key,
             run["id"],
             {
-                "status": "completed",
+                "status": "completed_pending_deploy",
                 "branch": current_branch(repo_root),
                 "commit_sha": commit_sha,
-                "summary": f"Implemented {proposal['suggested_capability_id']} locally and validated the repository.",
+                "summary": (
+                    f"Implemented {proposal['suggested_capability_id']} locally and validated the repository. "
+                    "Waiting for explicit ops deployment approval."
+                ),
                 "test_results": validation_results,
+                "stage_results": stage_results,
+                "post_deploy_results": {"planned": post_deploy_smoke, "executed": False},
             },
         )
-        print(json.dumps({"run_id": run["id"], "status": "completed", "branch": current_branch(repo_root), "commit_sha": commit_sha}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "run_id": run["id"],
+                    "status": "completed_pending_deploy",
+                    "branch": current_branch(repo_root),
+                    "commit_sha": commit_sha,
+                },
+                indent=2,
+            )
+        )
         return 0
     except Exception as exc:  # noqa: BLE001 - this is a CLI boundary
         try:
@@ -326,6 +356,7 @@ def build_implementation_prompt(
             "required_inputs": proposal.get("required_inputs") or [],
             "safety_rules": proposal.get("safety_rules") or [],
             "non_goals": proposal.get("non_goals") or [],
+            "implementation_spec": proposal.get("implementation_spec") or {},
         },
         "implementation_plan": {
             "id": plan.get("id"),
@@ -335,10 +366,12 @@ def build_implementation_prompt(
             "required_decisions": plan.get("required_decisions") or [],
             "security_boundaries": plan.get("security_boundaries") or [],
             "acceptance_tests": plan.get("acceptance_tests") or [],
+            "compiled_plan": plan.get("compiled_plan") or {},
         },
         "hermes_profile": profile,
         "model_hint": model or None,
         "repository_context": repository_context_for_prompt(repo_root),
+        "implementation_context_pack": implementation_context_pack(repo_root, proposal),
     }
     prefix = "/goal " if use_goal_command else ""
     harness_constraints = build_yggy_harness_constraints(
@@ -543,43 +576,180 @@ def repository_context_for_prompt(repo_root: Path) -> dict[str, Any]:
     }
 
 
-def run_staged_hermes(args: argparse.Namespace, repo_root: Path, proposal: dict[str, Any]) -> None:
+def implementation_context_pack(repo_root: Path, proposal: dict[str, Any]) -> dict[str, Any]:
+    task_type = str(proposal.get("suggested_task_type") or "")
+    capability_id = str(proposal.get("suggested_capability_id") or "")
+    plan = proposal.get("implementation_plan") or {}
+    compiled_plan = plan.get("compiled_plan") if isinstance(plan.get("compiled_plan"), dict) else {}
+    context = repository_context_for_prompt(repo_root)
+    return {
+        "capability_id": capability_id,
+        "task_type": task_type,
+        "archetype": (proposal.get("implementation_spec") or {}).get("archetype") or compiled_plan.get("archetype"),
+        "current_branch": context.get("current_branch"),
+        "existing_files": context.get("existing_files", []),
+        "closest_existing_capabilities": closest_capability_context(repo_root, proposal),
+        "compiled_stage_ids": [stage.get("id") for stage in compiled_plan.get("stages", []) if isinstance(stage, dict)],
+        "planned_files": plan.get("files_to_change") or [],
+        "forbidden_material": [
+            ".env",
+            "admin API keys",
+            "approval nonces",
+            "webhook URLs",
+            "Discord tokens",
+            "private keys",
+        ],
+    }
+
+
+def closest_capability_context(repo_root: Path, proposal: dict[str, Any]) -> list[dict[str, Any]]:
+    capability_path = repo_root / "configs" / "capabilities.yaml"
+    if not capability_path.exists():
+        return []
+    task_type = str(proposal.get("suggested_task_type") or "").lower()
+    purpose = str(proposal.get("purpose") or "").lower()
+    try:
+        data = yaml.safe_load(capability_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return []
+    entries = data.get("capabilities") if isinstance(data, dict) else []
+    if not isinstance(entries, list):
+        return []
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        text = " ".join(str(entry.get(key) or "").lower() for key in ("id", "purpose", "maps_to_task_type", "maps_to_template"))
+        score = 0
+        for token in task_type.replace("-", "_").split("_"):
+            if token and token in text:
+                score += 3
+        for token in purpose.split():
+            if len(token) > 4 and token in text:
+                score += 1
+        if score:
+            scored.append((score, entry))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [
+        {
+            "id": entry.get("id"),
+            "maps_to_task_type": entry.get("maps_to_task_type"),
+            "maps_to_template": entry.get("maps_to_template"),
+            "default_approval_level": entry.get("default_approval_level"),
+        }
+        for _, entry in scored[:3]
+    ]
+
+
+def build_post_deploy_smoke_plan(proposal: dict[str, Any]) -> list[str]:
+    plan = proposal.get("implementation_plan") or {}
+    compiled = plan.get("compiled_plan") if isinstance(plan.get("compiled_plan"), dict) else {}
+    smoke = compiled.get("post_deploy_smoke") if isinstance(compiled, dict) else []
+    if isinstance(smoke, list) and smoke:
+        return [str(item) for item in smoke if str(item).strip()]
+    return ["validate configs", "verify capability registry entry", "render disabled dry-run task template"]
+
+
+def run_staged_hermes(args: argparse.Namespace, repo_root: Path, proposal: dict[str, Any]) -> dict[str, Any]:
     stages = build_implementation_stages(proposal)
     allowed_so_far: set[str] = set()
+    stage_results: dict[str, Any] = {}
     for index, stage in enumerate(stages, start=1):
         allowed_so_far.update(stage["allowed_paths"])
         apply_deterministic_stage_seed(repo_root, proposal, stage)
         if stage["id"] in DETERMINISTIC_SEED_STAGE_IDS and stage_already_satisfied(repo_root, proposal, stage):
+            stage_results[stage["id"]] = {"status": "already_satisfied", "attempts": 0, "changed_paths": []}
             continue
         before_paths = set(changed_repo_paths(repo_root))
-        prompt = build_stage_prompt(
-            proposal,
-            stage=stage,
-            stage_index=index,
-            stage_count=len(stages),
-            repo_root=repo_root,
-            existing_changes=sorted(before_paths),
-            use_goal_command=args.goal_command,
-        )
-        prompt_path = write_prompt_file(prompt)
-        run_hermes(args, repo_root, prompt_path, prompt, force_inline_prompt=True)
-        after_paths = set(changed_repo_paths(repo_root))
-        new_paths = sorted(after_paths - before_paths)
-        if not after_paths:
-            raise RuntimeError(f"Hermes stage {stage['id']} completed without repository changes")
-        if stage["id"] not in DETERMINISTIC_SEED_STAGE_IDS and not new_paths:
-            raise RuntimeError(f"Hermes stage {stage['id']} completed without stage-specific repository changes")
-        scope_errors = [
-            path
-            for path in sorted(after_paths)
-            if path not in before_paths and not path_allowed(path, allowed_so_far)
-        ]
-        if scope_errors:
-            raise RuntimeError(
-                f"Hermes stage {stage['id']} changed files outside the staged allowlist:\n"
-                + "\n".join(f"- {path}" for path in scope_errors)
+        last_error = ""
+        max_attempts = int(stage.get("max_repair_attempts", 2)) + 1
+        for attempt in range(1, max_attempts + 1):
+            prompt = build_stage_prompt(
+                proposal,
+                stage=stage,
+                stage_index=index,
+                stage_count=len(stages),
+                repo_root=repo_root,
+                existing_changes=sorted(before_paths),
+                use_goal_command=args.goal_command,
             )
-        validate_stage_artifacts(repo_root, proposal, stage, new_paths=new_paths, changed_paths=sorted(after_paths))
+            if last_error:
+                prompt = build_stage_repair_prompt(
+                    base_prompt=prompt,
+                    stage=stage,
+                    attempt=attempt,
+                    last_error=last_error,
+                    changed_paths=sorted(changed_repo_paths(repo_root)),
+                )
+            prompt_path = write_prompt_file(prompt)
+            try:
+                run_hermes(args, repo_root, prompt_path, prompt, force_inline_prompt=True)
+                after_paths = set(changed_repo_paths(repo_root))
+                new_paths = sorted(after_paths - before_paths)
+                if not after_paths:
+                    raise RuntimeError(f"Hermes stage {stage['id']} completed without repository changes")
+                if stage["id"] not in DETERMINISTIC_SEED_STAGE_IDS and not new_paths:
+                    raise RuntimeError(f"Hermes stage {stage['id']} completed without stage-specific repository changes")
+                scope_errors = [
+                    path
+                    for path in sorted(after_paths)
+                    if path not in before_paths and not path_allowed(path, allowed_so_far)
+                ]
+                if scope_errors:
+                    raise RuntimeError(
+                        f"Hermes stage {stage['id']} changed files outside the staged allowlist:\n"
+                        + "\n".join(f"- {path}" for path in scope_errors)
+                    )
+                validate_stage_artifacts(repo_root, proposal, stage, new_paths=new_paths, changed_paths=sorted(after_paths))
+                stage_results[stage["id"]] = {
+                    "status": "completed",
+                    "attempts": attempt,
+                    "changed_paths": sorted(after_paths),
+                    "new_paths": new_paths,
+                }
+                break
+            except Exception as exc:  # noqa: BLE001 - this is a bounded model repair loop
+                last_error = truncate_text(f"{exc.__class__.__name__}: {exc}", 2000)
+                stage_results[stage["id"]] = {
+                    "status": "retrying" if attempt < max_attempts else "failed",
+                    "attempts": attempt,
+                    "error": last_error,
+                    "changed_paths": sorted(changed_repo_paths(repo_root)),
+                }
+                if attempt >= max_attempts:
+                    raise
+        else:  # pragma: no cover - loop always breaks or raises
+            raise RuntimeError(f"Hermes stage {stage['id']} did not complete")
+    return stage_results
+
+
+def build_stage_repair_prompt(
+    *,
+    base_prompt: str,
+    stage: dict[str, Any],
+    attempt: int,
+    last_error: str,
+    changed_paths: list[str],
+) -> str:
+    return (
+        base_prompt
+        + "\n\nRepair attempt payload:\n"
+        + json.dumps(
+            {
+                "repair_attempt": attempt,
+                "stage_id": stage["id"],
+                "last_error": truncate_text(last_error, 2000),
+                "changed_paths": changed_paths,
+                "instruction": (
+                    "Repair only this stage within the same allowed paths. Do not widen scope, do not ask questions, "
+                    "and do not undo unrelated existing changes."
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
 
 def stage_already_satisfied(repo_root: Path, proposal: dict[str, Any], stage: dict[str, Any]) -> bool:
@@ -797,6 +967,10 @@ def build_implementation_stages(proposal: dict[str, Any]) -> list[dict[str, Any]
     """
     task_type = str(proposal.get("suggested_task_type") or "new_capability")
     plan = proposal.get("implementation_plan") or {}
+    compiled_plan = plan.get("compiled_plan") if isinstance(plan.get("compiled_plan"), dict) else {}
+    compiled_stages = compiled_plan.get("stages") if isinstance(compiled_plan, dict) else []
+    if isinstance(compiled_stages, list) and compiled_stages:
+        return [normalize_compiled_stage(stage_data, task_type=task_type) for stage_data in compiled_stages if isinstance(stage_data, dict)]
     planned_files = [str(item) for item in plan.get("files_to_change") or [] if str(item).strip()]
 
     config_paths = [
@@ -943,6 +1117,23 @@ def build_implementation_stages(proposal: dict[str, Any]) -> list[dict[str, Any]
     return [stage for stage in stages if stage["allowed_paths"]]
 
 
+def normalize_compiled_stage(stage_data: dict[str, Any], *, task_type: str) -> dict[str, Any]:
+    stage_id = str(stage_data.get("id") or "custom_stage")
+    allowed_paths = [str(item) for item in stage_data.get("allowed_paths") or [] if str(item).strip()]
+    if not allowed_paths:
+        allowed_paths = [f"automation-worker/worker/handlers/{task_type}.py"]
+    return {
+        "id": stage_id,
+        "title": str(stage_data.get("title") or title_from_identifier(stage_id)),
+        "goal": str(stage_data.get("goal") or "Implement this bounded stage according to the compiled plan."),
+        "allowed_paths": ordered_unique(allowed_paths),
+        "required_existing": [str(item) for item in stage_data.get("required_existing") or [] if str(item).strip()],
+        "required_after": [str(item) for item in stage_data.get("required_after") or [] if str(item).strip()],
+        "validation_hint": str(stage_data.get("validation_hint") or "Stay inside the compiled stage scope."),
+        "max_repair_attempts": int(stage_data.get("max_repair_attempts", 2)),
+    }
+
+
 def planned_paths_matching(paths: list[str], prefixes: tuple[str, ...]) -> list[str]:
     matched: list[str] = []
     for path in paths:
@@ -1019,6 +1210,7 @@ def build_stage_prompt(
             "required_inputs": proposal.get("required_inputs") or [],
             "safety_rules": proposal.get("safety_rules") or [],
             "non_goals": proposal.get("non_goals") or [],
+            "implementation_spec": proposal.get("implementation_spec") or {},
         },
         "implementation_plan": {
             "id": plan.get("id"),
@@ -1027,6 +1219,7 @@ def build_stage_prompt(
             "required_decisions": plan.get("required_decisions") or [],
             "security_boundaries": plan.get("security_boundaries") or [],
             "acceptance_tests": plan.get("acceptance_tests") or [],
+            "compiled_plan": plan.get("compiled_plan") or {},
         },
         "stage": {
             "number": stage_index,
@@ -1042,6 +1235,7 @@ def build_stage_prompt(
         "stage_contract": stage_contract_for_prompt(proposal, stage["id"]),
         "existing_capability_ids_must_remain": existing_capability_ids(repo_root),
         "existing_uncommitted_changes": existing_changes,
+        "implementation_context_pack": implementation_context_pack(repo_root, proposal),
         "repo_root": str(repo_root),
     }
     prefix = "/goal " if use_goal_command else ""

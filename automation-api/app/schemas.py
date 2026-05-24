@@ -613,6 +613,7 @@ class CapabilityProposalCreate(BaseModel):
     required_inputs: list[str] = Field(default_factory=list, max_length=20)
     safety_rules: list[str] = Field(default_factory=list, max_length=30)
     non_goals: list[str] = Field(default_factory=list, max_length=30)
+    implementation_spec: dict[str, Any] = Field(default_factory=dict)
     review_notes: str = Field(default="", max_length=2000)
 
     @field_validator("suggested_capability_id")
@@ -637,6 +638,13 @@ class CapabilityProposalCreate(BaseModel):
             raise ValueError("proposal list entries may not be empty")
         return cleaned
 
+    @field_validator("implementation_spec")
+    @classmethod
+    def implementation_spec_must_be_object(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError("implementation_spec must be an object")
+        return value
+
 
 class CapabilityProposalClose(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -656,11 +664,25 @@ class CapabilityImplementationRunCreate(BaseModel):
 class CapabilityImplementationRunUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["queued", "running", "completed", "failed"] | None = None
+    status: Literal[
+        "queued",
+        "running",
+        "failed",
+        "completed",
+        "completed_pending_deploy",
+        "deploy_approved",
+        "deploying",
+        "deployed",
+        "deploy_failed",
+        "superseded",
+    ] | None = None
     branch: str | None = Field(default=None, max_length=255)
     commit_sha: str | None = Field(default=None, max_length=64)
     summary: str | None = Field(default=None, max_length=4000)
     test_results: dict[str, Any] | None = None
+    artifacts: dict[str, Any] | None = None
+    stage_results: dict[str, Any] | None = None
+    post_deploy_results: dict[str, Any] | None = None
     error: str | None = Field(default=None, max_length=4000)
 
     @field_validator("branch")

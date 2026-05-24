@@ -79,12 +79,14 @@ def test_admin_can_queue_and_complete_capability_implementation_run(client):
         "creates_approval": False,
         "can_run_automation": False,
         "can_push": False,
+        "can_deploy_without_ops_approval": False,
         "local_commit_only": True,
     }
     assert body["operator_handoff"]["cli_command"] == f"python scripts/implement_capability_plan.py --run-id {body['id']}"
     assert body["operator_handoff"]["runner_command"] == "python scripts/capability_implementation_runner.py --once"
     assert body["operator_handoff"]["requires_host_runner"] is True
     assert body["operator_handoff"]["runner_picks_up_queued_runs"] is True
+    assert body["operator_handoff"]["deploy_approval_surface"] == "ops"
     assert duplicate.status_code == 409
     assert "active implementation run" in duplicate.text
     queued_notifications = client.get(
@@ -137,6 +139,66 @@ def test_admin_can_queue_and_complete_capability_implementation_run(client):
     assert [item["metadata"]["status"] for item in notifications] == ["queued", "running", "completed"]
     assert notifications[-1]["resource_id"] == body["id"]
     assert "No task was enabled" in notifications[-1]["message"]
+
+
+def test_completed_implementation_can_wait_for_ops_deploy_gate(client):
+    planned = create_planned_proposal(client)
+    created = client.post(
+        "/capability-implementation-runs",
+        headers=ADMIN_HEADERS,
+        json={"proposal_id": planned["id"], "created_by": "local_cli", "reason": "Implement locally."},
+    ).json()
+
+    client.patch(
+        f"/capability-implementation-runs/{created['id']}",
+        headers=ADMIN_HEADERS,
+        json={"status": "running", "branch": created["branch"]},
+    )
+    pending = client.patch(
+        f"/capability-implementation-runs/{created['id']}",
+        headers=ADMIN_HEADERS,
+        json={
+            "status": "completed_pending_deploy",
+            "commit_sha": "abcdef1234567890",
+            "summary": "Implemented and waiting for deploy.",
+            "test_results": {"commands": [{"command": "pytest", "returncode": 0}]},
+            "stage_results": {"registry_config": {"status": "completed", "attempts": 1}},
+            "post_deploy_results": {"planned": ["validate configs"], "executed": False},
+        },
+    )
+    duplicate = client.post(
+        "/capability-implementation-runs",
+        headers=ADMIN_HEADERS,
+        json={"proposal_id": planned["id"], "created_by": "local_cli"},
+    )
+    without_header = client.post(f"/ops/capability-implementation-runs/{created['id']}/approve-deploy", headers=ADMIN_HEADERS)
+    approved = client.post(
+        f"/ops/capability-implementation-runs/{created['id']}/approve-deploy",
+        headers={**ADMIN_HEADERS, "X-Yggy-Ops-Action": "capability-implementation"},
+        json={"reason": "Deploy after review."},
+    )
+
+    assert pending.status_code == 200
+    assert pending.json()["status"] == "completed_pending_deploy"
+    assert pending.json()["operator_handoff"]["deploy_gate_required"] is True
+    assert pending.json()["stage_results"]["registry_config"]["status"] == "completed"
+    assert pending.json()["post_deploy_results"]["executed"] is False
+    assert duplicate.status_code == 409
+    assert without_header.status_code == 403
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "deploy_approved"
+    notifications = client.get(
+        "/channels/notifications/pending?channel=discord&user_id=bragi",
+        headers=ADMIN_HEADERS,
+    ).json()["notifications"]
+    assert [item["metadata"]["status"] for item in notifications] == [
+        "queued",
+        "running",
+        "completed_pending_deploy",
+        "deploy_approved",
+    ]
+    assert "ops deployment gate" in notifications[2]["message"]
+    assert "approved deployment" in notifications[3]["message"]
 
 
 def test_cannot_queue_capability_implementation_without_active_plan(client):

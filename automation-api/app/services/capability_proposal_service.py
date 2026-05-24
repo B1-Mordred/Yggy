@@ -10,6 +10,7 @@ from app.models import CapabilityImplementationPlanModel, CapabilityProposalMode
 from app.schemas import CapabilityProposalCreate
 from app.services.capability_gateway import CapabilityError, get_capability
 from app.services.capability_gap_service import sync_capability_gap_status, upsert_capability_gap_from_proposal
+from app.services.capability_implementation_planner import compile_implementation_plan, normalize_implementation_spec
 from app.services.validation_service import find_secret_paths, redact_secrets
 
 
@@ -69,6 +70,17 @@ def create_capability_proposal(
         required_inputs=redact_secrets(payload.required_inputs),
         safety_rules=redact_secrets(payload.safety_rules),
         non_goals=redact_secrets(payload.non_goals),
+        implementation_spec=normalize_implementation_spec(
+            title=payload.title,
+            purpose=payload.purpose,
+            capability_id=payload.suggested_capability_id,
+            task_type=payload.suggested_task_type,
+            likely_approval_level=payload.likely_approval_level.value,
+            required_inputs=payload.required_inputs,
+            safety_rules=payload.safety_rules,
+            non_goals=payload.non_goals,
+            supplied=payload.implementation_spec,
+        ),
         review_notes=str(redact_secrets(payload.review_notes or "")),
     )
     session.add(proposal)
@@ -155,6 +167,7 @@ def create_implementation_plan(
         required_decisions=implementation_plan_decisions(proposal),
         security_boundaries=implementation_plan_boundaries(proposal),
         acceptance_tests=implementation_plan_tests(proposal),
+        compiled_plan=compile_implementation_plan(proposal),
         review_notes=str(redact_secrets(reason or "Implementation planning created from accepted capability proposal.")),
     )
     session.add(plan)
@@ -310,6 +323,7 @@ def capability_proposal_to_dict(
             "required_inputs": proposal.required_inputs,
             "safety_rules": proposal.safety_rules,
             "non_goals": proposal.non_goals,
+            "implementation_spec": proposal.implementation_spec or {},
             "review_notes": proposal.review_notes,
             "created_at": proposal.created_at,
             "decided_at": proposal.decided_at,
@@ -338,6 +352,7 @@ def implementation_plan_to_dict(plan: CapabilityImplementationPlanModel) -> dict
             "required_decisions": plan.required_decisions,
             "security_boundaries": plan.security_boundaries,
             "acceptance_tests": plan.acceptance_tests,
+            "compiled_plan": plan.compiled_plan or {},
             "review_notes": plan.review_notes,
             "created_at": plan.created_at,
             "updated_at": plan.updated_at,

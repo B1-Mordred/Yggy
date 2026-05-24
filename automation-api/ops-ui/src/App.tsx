@@ -336,7 +336,7 @@ function BuilderView({ runAction }: { runAction: (action: OpsAction) => void }) 
         </div>
         <div className="timeline-list implementation-scroll">
           {runs.length ? (
-            runs.map((run: JsonRecord) => <ImplementationRun key={run.id} run={run} />)
+            runs.map((run: JsonRecord) => <ImplementationRun key={run.id} run={run} runAction={runAction} />)
           ) : (
             <EmptyState text="No implementation runs are queued or recorded." />
           )}
@@ -369,6 +369,18 @@ function CapabilityProposalCard({ proposal, runAction }: { proposal: JsonRecord;
       label: 'Queue implementation'
     });
   };
+  const compilePlan = () => {
+    const note = reason('Compile implementation plan');
+    if (note === null) return;
+    runAction({
+      path: `/ops/capability-proposals/${proposal.id}/compile-plan`,
+      header: 'capabilityProposal',
+      body: { reason: note },
+      label: 'Compile implementation plan'
+    });
+  };
+  const compiledStages = proposal.implementation_plan?.compiled_plan?.stages || [];
+  const implementationSpec = proposal.implementation_spec || {};
 
   return (
     <article className="work-card">
@@ -390,6 +402,19 @@ function CapabilityProposalCard({ proposal, runAction }: { proposal: JsonRecord;
       </div>
       <TagList title="Required inputs" items={proposal.required_inputs} />
       <TagList title="Safety rules" items={proposal.safety_rules} />
+      {implementationSpec.archetype ? (
+        <div className="implementation-spec">
+          <KeyValue label="Archetype" value={implementationSpec.archetype} />
+          <KeyValue label="Spec version" value={implementationSpec.version || 1} />
+        </div>
+      ) : null}
+      {compiledStages.length ? (
+        <div className="stage-strip">
+          {compiledStages.map((stage: JsonRecord) => (
+            <span key={stage.id}>{stage.id}</span>
+          ))}
+        </div>
+      ) : null}
       <div className="button-row">
         {proposal.status === 'pending' ? (
           <>
@@ -406,6 +431,10 @@ function CapabilityProposalCard({ proposal, runAction }: { proposal: JsonRecord;
         <button onClick={() => decision('plan', 'Plan implementation')} className="secondary" type="button">
           <FileText size={15} />
           Plan
+        </button>
+        <button onClick={compilePlan} className="secondary" type="button">
+          <SlidersHorizontal size={15} />
+          Compile
         </button>
         <button onClick={implement} className="primary" type="button">
           <Play size={15} />
@@ -1168,7 +1197,21 @@ function AttentionQueue({ status, setView }: { status: JsonRecord; setView: (vie
   );
 }
 
-function ImplementationRun({ run }: { run: JsonRecord }) {
+function ImplementationRun({ run, runAction }: { run: JsonRecord; runAction: (action: OpsAction) => void }) {
+  const transitionDeploy = (action: 'approve-deploy' | 'reject-deploy') => {
+    const label = action === 'approve-deploy' ? 'Approve deploy' : 'Reject deploy';
+    const note = window.prompt(`${label} reason`, '') ?? null;
+    if (note === null) return;
+    runAction({
+      path: `/ops/capability-implementation-runs/${run.id}/${action}`,
+      header: 'capabilityImplementation',
+      body: { reason: note },
+      label
+    });
+  };
+  const stageResults = run.stage_results || {};
+  const stageCount = Object.keys(stageResults).length;
+  const pendingDeploy = run.status === 'completed_pending_deploy' || run.status === 'deploy_failed';
   return (
     <div className="timeline-item vertical">
       <div className="timeline-head">
@@ -1176,8 +1219,22 @@ function ImplementationRun({ run }: { run: JsonRecord }) {
         <code>{run.capability_id}</code>
       </div>
       <div>{run.summary || run.error || 'No summary recorded yet.'}</div>
+      {stageCount ? <div className="muted">{stageCount} implementation stage{stageCount === 1 ? '' : 's'} recorded</div> : null}
+      {run.post_deploy_results?.planned?.length ? (
+        <div className="muted">Post-deploy smoke: {run.post_deploy_results.planned.join(', ')}</div>
+      ) : null}
       <div className="muted">{run.id}</div>
       <div className="muted">{formatDate(run.updated_at || run.created_at)}</div>
+      {pendingDeploy ? (
+        <div className="button-row tight">
+          <button onClick={() => transitionDeploy('approve-deploy')} className="secondary" title="Approve deployment gate" type="button">
+            <Check size={14} />
+          </button>
+          <button onClick={() => transitionDeploy('reject-deploy')} className="secondary danger" title="Reject deployment gate" type="button">
+            <X size={14} />
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1219,7 +1276,7 @@ function PanelTitle({ icon: Icon, title, subtitle }: { icon: any; title: string;
 
 function StatusPill({ value }: { value?: any }) {
   const text = String(value || 'unknown');
-  const className = text.includes('failed') || text.includes('rejected') || text.includes('degraded') ? 'bad' : text.includes('pending') || text.includes('queued') || text.includes('planned') ? 'warn' : text.includes('enabled') || text.includes('approved') || text.includes('ok') || text.includes('implemented') ? 'ok' : '';
+  const className = text.includes('failed') || text.includes('rejected') || text.includes('degraded') ? 'bad' : text.includes('pending') || text.includes('queued') || text.includes('planned') || text.includes('deploying') ? 'warn' : text.includes('enabled') || text.includes('approved') || text.includes('ok') || text.includes('implemented') || text.includes('completed') || text.includes('deployed') ? 'ok' : '';
   return <span className={`status-pill ${className}`}>{text}</span>;
 }
 

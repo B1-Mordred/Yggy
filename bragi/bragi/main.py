@@ -4018,6 +4018,21 @@ def capability_proposal_payload(
                 "no broad host filesystem access",
                 "no automatic cleanup, deletion, package updates, or service restarts",
             ]),
+            "implementation_spec": bragi_implementation_spec(
+                archetype="monitoring_check",
+                capability_id=str(gap.get("suggested_capability_id") or "storage_usage.v1"),
+                task_type=str(gap.get("suggested_task_type") or "storage_usage"),
+                registry_requirements=[
+                    "approved read-only metrics endpoint IDs",
+                    "explicit mount, volume, or filesystem allowlist",
+                    "warning and critical thresholds",
+                ],
+                worker_contract=[
+                    "read-only metrics collection",
+                    "structured low-space anomalies",
+                    "no shell, Docker socket, or arbitrary filesystem traversal",
+                ],
+            ),
             "review_notes": str(
                 (result or {}).get("message")
                 or gap.get("review_notes")
@@ -4054,6 +4069,13 @@ def capability_proposal_payload(
                 "no broad filesystem access",
                 "no printer administration changes",
             ],
+            "implementation_spec": bragi_implementation_spec(
+                archetype="monitoring_check",
+                capability_id="printer_supply_status.v1",
+                task_type="printer_supply_status",
+                registry_requirements=["approved printer IDs", "read-only status endpoint or protocol", "low-supply threshold"],
+                worker_contract=["read-only printer supply check", "no printer configuration writes", "no LAN scanning"],
+            ),
             "review_notes": str((result or {}).get("message") or "Bragi classified this as useful but unsupported."),
         }
     if is_smart_home_lighting_request(user_text):
@@ -4089,6 +4111,13 @@ def capability_proposal_payload(
                 "no broad smart-home administration",
                 "no direct device control from Bragi or Hermes",
             ],
+            "implementation_spec": bragi_implementation_spec(
+                archetype="custom_bounded_worker",
+                capability_id="smart_home_lighting_absence.v1",
+                task_type="smart_home_lighting",
+                registry_requirements=["approved device IDs", "approved controller integration", "approved presence source IDs"],
+                worker_contract=["bounded approved-device command only", "dry-run first", "no direct control from Bragi or Hermes"],
+            ),
             "review_notes": str((result or {}).get("message") or "Bragi classified this as useful but unsupported."),
         }
     topic = slug(user_text[:60], "new_capability")
@@ -4104,7 +4133,41 @@ def capability_proposal_payload(
         "required_inputs": ["clear task scope", "trigger or schedule", "approved data source", "whitelisted output target"],
         "safety_rules": ["must be implemented as a bounded capability before use", "must not bypass Yggy approval"],
         "non_goals": ["no arbitrary execution", "no secrets in model context", "no broad host administration"],
+        "implementation_spec": bragi_implementation_spec(
+            archetype="custom_bounded_worker",
+            capability_id=f"{topic}.v1",
+            task_type=topic,
+            registry_requirements=["versioned capability ID", "explicit approval level", "approved input IDs"],
+            worker_contract=["bounded handler only", "no shell or Docker", "fail closed on unsupported inputs"],
+        ),
         "review_notes": str((result or {}).get("message") or "Unsupported automation idea captured for review."),
+    }
+
+
+def bragi_implementation_spec(
+    *,
+    archetype: str,
+    capability_id: str,
+    task_type: str,
+    registry_requirements: list[str],
+    worker_contract: list[str],
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "archetype": archetype,
+        "capability_id": capability_id,
+        "task_type": task_type,
+        "registry_requirements": registry_requirements,
+        "template_requirements": ["disabled by default", "dry_run true", "explicit trigger/output/policy/runtime defaults"],
+        "api_contract": ["Heimdal validates approved IDs and required slots before Yggdrasil receives a request"],
+        "worker_contract": worker_contract,
+        "ui_requirements": ["show spec, compiled plan, run status, deploy gate, and evidence in /ops"],
+        "test_scenarios": [
+            "valid draft renders disabled and dry-run",
+            "unapproved inputs are rejected",
+            "handler failures are recorded without crashing",
+        ],
+        "post_deploy_smoke": ["validate configs", "verify capability registry entry", "render disabled dry-run task template"],
     }
 
 

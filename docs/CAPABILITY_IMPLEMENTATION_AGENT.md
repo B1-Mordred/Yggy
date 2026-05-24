@@ -13,15 +13,16 @@ Bragi
   may create non-executable capability proposals for useful unsupported ideas
 
 Ops UI / Yggy API
-  may accept a proposal, create an implementation plan, and queue an
-  implementation-run record
+  may accept a proposal, compile an implementation plan, queue an
+  implementation-run record, and approve a separate deployment gate
 
 Host runner
   polls queued implementation-run records and invokes the bounded host CLI
 
 Host CLI
   may invoke the dedicated Hermes implementation profile against the local repo
-  and create a local git commit after tests pass
+  and create a local git commit after tests pass; successful runs wait for ops
+  deployment approval
 
 Hermes capability-implementer profile
   may edit the repository only through the host CLI process
@@ -38,9 +39,9 @@ The Dockerized automation API keeps its existing production boundary:
 - no Docker socket
 - read-only root filesystem
 - no host shell execution
-- no push or deployment authority
+- no push or model-facing deployment authority
 
-Because of that, the `/ops` button named **Start implementation** only creates a
+Because of that, the `/ops` button named **Queue implementation** only creates a
 `capability_implementation_run` database record. It does not run Hermes, mutate
 the repository, create a task, create an approval, run a worker, or call
 Yggdrasil inside the API request.
@@ -100,10 +101,38 @@ Discord, task YAML, or documentation.
 10. The CLI invokes Hermes with a scrubbed environment.
 11. The CLI reruns validation.
 12. If validation passes, the CLI creates a local git commit.
-13. The CLI marks the implementation run `completed` with the local commit SHA.
+13. The CLI marks the implementation run `completed_pending_deploy` with the
+    local commit SHA, stage results, and a post-deploy smoke plan.
+14. The operator reviews the result in `/ops`.
+15. The operator either rejects the deployment gate or approves deployment.
 
-The CLI does not push. The operator still reviews the commit and chooses when
-to push, deploy, rebuild, or restart services.
+The CLI does not push. Deployment is a separate ops decision. Bragi, Hermes,
+Open WebUI, Discord, and Yggdrasil do not receive deployment authority.
+
+## Implementation Spec And Compiled Plan
+
+Capability proposals now carry an `implementation_spec` object. Bragi may
+provide it when enough non-secret implementation facts are known; otherwise the
+API derives a conservative default from the proposal fields.
+
+The implementation plan stores a deterministic `compiled_plan` with staged
+work packages. Each stage has:
+
+- exact allowed paths
+- required existing files
+- required generated files
+- a validation hint
+- a bounded repair budget
+
+The host CLI passes the compiled plan and a redacted implementation context pack
+to Hermes. The context pack names nearby existing capabilities, planned files,
+compiled stage IDs, and forbidden material. It never includes `.env`, admin
+keys, approval nonces, webhook URLs, Discord tokens, private keys, or raw
+credentials.
+
+The staged harness may run a bounded repair loop for a failed stage. Repair
+attempts receive only the stage contract, current changed paths, and the
+failure summary. They cannot widen the file allowlist.
 
 ## Requester Status Updates
 
@@ -116,6 +145,11 @@ Status notifications are emitted for:
 
 - `queued`
 - `running`
+- `completed_pending_deploy`
+- `deploy_approved`
+- `deploying`
+- `deployed`
+- `deploy_failed`
 - `completed`
 - `failed`
 
@@ -140,19 +174,42 @@ deploy code, or contact Yggdrasil as an authority.
 
 The implementation runner is capability-neutral. It must not contain
 capability-specific payload writers or hard-coded code for one previous job.
-For staged runs it derives stages from the proposal and implementation plan:
+For staged runs it uses the compiled implementation plan when available and
+falls back to generic proposal-derived stages for older proposals:
 
 - capability registry and policy/config allowlists
 - renderable disabled dry-run task template
 - API schemas, Heimdal validation, template rendering, and focused API tests
 - bounded worker handler, dispatch, and worker tests
+- ops UI visibility when needed
 - narrow operator documentation and final test alignment
+- post-deploy smoke planning
 
 Each stage gets an explicit file allowlist. The wrapper then applies generic
 Yggy safety gates: existing capability entries must not be rewritten, generated
 templates must be disabled and dry-run by default, worker code must not gain
 shell/Docker/host-filesystem authority, and full repository validation must pass
 before a local commit is recorded.
+
+## Deployment Gate
+
+Successful implementation runs do not directly deploy. They stop at
+`completed_pending_deploy`. The `/ops` Builder view shows the commit SHA,
+summary, stage evidence, post-deploy smoke plan, and deployment actions.
+
+Allowed deployment-gate transitions are:
+
+```text
+completed_pending_deploy -> deploy_approved
+completed_pending_deploy -> superseded
+deploy_failed -> deploy_approved
+deploy_failed -> superseded
+```
+
+The API records the approval decision and emits a requester status update. A
+host-side deployment executor may later move the run through `deploying`,
+`deployed`, or `deploy_failed`, but only after the ops gate has set
+`deploy_approved`.
 
 ## CLI
 

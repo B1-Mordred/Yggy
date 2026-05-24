@@ -250,6 +250,30 @@ API/CLI
 
 Run logs are redacted by the automation API before model-facing return paths.
 
+## Unsupported Capability Development Path
+
+Useful unsupported requests do not go to Yggdrasil as executable natural
+language. Bragi creates or continues a capability-development intake and then
+submits a non-executable capability proposal when the required facts are known.
+
+```mermaid
+flowchart TD
+    A[Unsupported but useful request] --> B[Bragi capability intake]
+    B --> C[Capability proposal with implementation_spec]
+    C --> D[Ops review and accept]
+    D --> E[Deterministic compiled_plan]
+    E --> F[Queue implementation run]
+    F --> G[Host runner + Hermes implementer]
+    G --> H[Validation and local commit]
+    H --> I[completed_pending_deploy]
+    I --> J[Ops deployment gate]
+    J --> K[Post-deploy evidence]
+```
+
+The implementation path can write repository code only through the host-side
+runner. It does not create tasks, approve tasks, run automations, push code, or
+deploy without the explicit ops deployment gate.
+
 ## Safety Boundaries
 
 Hard boundaries preserved by this pipeline:
